@@ -76,6 +76,7 @@
         <select id="pm-type"><option value="user">user</option><option value="group">group</option></select>
         <input id="pm-tenant" placeholder="tenant" title="principal's tenant; yours unless you are super admin">
         <input id="pm-principal" placeholder="name" required>
+        <input id="pm-exp" placeholder="days" title="optional: grant auto-expires after N days (e.g. 3 for a customer share)" inputmode="decimal">
         <label class="check">r<input id="pm-r" type="checkbox" checked></label>
         <label class="check">w<input id="pm-w" type="checkbox"></label>
         <label class="check">d<input id="pm-d" type="checkbox"></label>
@@ -104,6 +105,7 @@
         <input id="u-tenant" placeholder="tenant" class="super-only" hidden>
         <input id="u-name" placeholder="username" required>
         <input id="u-pass" placeholder="password" required type="password">
+        <input id="u-exp" placeholder="expires in days" title="optional: customer account that lapses after N days" inputmode="decimal">
         <label class="check">admin<input id="u-admin" type="checkbox"></label>
         <button type="submit">create user</button>
       </form>

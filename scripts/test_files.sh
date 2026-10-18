@@ -12,12 +12,13 @@ SFX=$RANDOM
 AJ=/tmp/fx-admin-$$.jar   # super admin cookie jar
 UJ=/tmp/fx-user-$$.jar    # regular user cookie jar
 TAJ=/tmp/fx-tadmin-$$.jar # tenant admin cookie jar
+BJ=/tmp/fx-brief-$$.jar # short-lived customer cookie jar
 T="t$SFX"                 # throwaway tenant
 USER="u$SFX"
 GROUP="g$SFX"
 PASS=0 FAIL=0
 
-cleanup() { rm -f "$AJ" "$UJ" "$TAJ"; }
+cleanup() { rm -f "$AJ" "$UJ" "$TAJ" "$BJ"; }
 trap cleanup EXIT
 
 t() { # t <jar|-> <name> <want_status> <METHOD> <path> [json-body]
@@ -102,6 +103,35 @@ t "$UJ" "effective shows source" 200 GET "/api/v1/perms?path=$D/incoming"
 S=$(jq -r '.effective.source' /tmp/resp.json)
 check "effective.source == $D/incoming" "$([ "$S" = "$D/incoming" ]; echo $?)" "got: $S"
 t "$UJ" "delete still denied (no d bit)" 403 DELETE "/api/v1/fs?path=$D/incoming/ok.txt"
+
+echo "== expiring access (customer shares) =="
+now2() { date -u -v+2S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '+2 seconds' +%Y-%m-%dT%H:%M:%SZ; }
+SHARE="/share-$SFX"
+t "$AJ" "mkdir $SHARE" 201 POST /api/v1/fs/mkdir "{\"path\":\"$SHARE\"}"
+t "$AJ" "write deliverable" 200 POST /api/v1/fs/write "{\"path\":\"$SHARE/deliv.txt\",\"content\":\"3-day dropbox\"}"
+t "$AJ" "grant with past expiry" 200 PUT /api/v1/perms "{\"path\":\"$SHARE\",\"principal_type\":\"user\",\"principal\":\"$USER\",\"tenant\":\"$T\",\"read\":true,\"expires_at\":\"2000-01-01T00:00:00Z\"}"
+t "$UJ" "past-expiry grant invisible" 403 GET "/api/v1/fs?path=$SHARE"
+t "$UJ" "perms view flags expired" 200 GET "/api/v1/perms?path=$SHARE"
+EX=$(jq -e 'any(.grants[] | select(.principal_type=="user" and .principal_name=="'"$USER"'"); .expired)' /tmp/resp.json >/dev/null; echo $?)
+check "grant row carries expired=true" "$EX"
+t "$AJ" "negative days rejected" 422 PUT /api/v1/perms "{\"path\":\"$SHARE\",\"principal_type\":\"user\",\"principal\":\"$USER\",\"tenant\":\"$T\",\"read\":true,\"expires_days\":-1}"
+t "$AJ" "grant 2s window" 200 PUT /api/v1/perms "{\"path\":\"$SHARE\",\"principal_type\":\"user\",\"principal\":\"$USER\",\"tenant\":\"$T\",\"read\":true,\"expires_at\":\"$(now2)\"}"
+t "$UJ" "share readable in window" 200 GET "/api/v1/fs?path=$SHARE"
+sleep 3
+t "$UJ" "share gone after window" 403 GET "/api/v1/fs?path=$SHARE"
+t "$AJ" "renew via expires_days=3" 200 PUT /api/v1/perms "{\"path\":\"$SHARE\",\"principal_type\":\"user\",\"principal\":\"$USER\",\"tenant\":\"$T\",\"read\":true,\"expires_days\":3}"
+HAS=$(jq -e '.expires_at != null and .expired == false' /tmp/resp.json >/dev/null; echo $?)
+check "expires_days=3 stored as future expires_at" "$HAS"
+t "$UJ" "renewed share readable again" 200 GET "/api/v1/fs?path=$SHARE"
+t "$AJ" "create lapsed account" 201 POST /api/v1/users "{\"tenant\":\"$T\",\"username\":\"gone$SFX\",\"password\":\"pw\",\"expires_at\":\"2000-01-01T00:00:00Z\"}"
+t - "lapsed account login rejected" 401 POST /api/v1/auth/login "{\"tenant\":\"$T\",\"username\":\"gone$SFX\",\"password\":\"pw\"}"
+t "$AJ" "create 2s-lived account" 201 POST /api/v1/users "{\"tenant\":\"$T\",\"username\":\"brief$SFX\",\"password\":\"pw\",\"expires_at\":\"$(now2)\"}"
+t "$AJ" "grant for brief account" 200 PUT /api/v1/perms "{\"path\":\"$SHARE\",\"principal_type\":\"user\",\"principal\":\"brief$SFX\",\"tenant\":\"$T\",\"read\":true}"
+t "$BJ" "login brief account" 200 POST /api/v1/auth/login "{\"tenant\":\"$T\",\"username\":\"brief$SFX\",\"password\":\"pw\"}"
+t "$BJ" "brief account reads share" 200 GET "/api/v1/fs?path=$SHARE"
+sleep 3
+t "$BJ" "session dead after account lapse" 401 GET "/api/v1/fs?path=$SHARE"
+t - "brief cannot relogin" 401 POST /api/v1/auth/login "{\"tenant\":\"$T\",\"username\":\"brief$SFX\",\"password\":\"pw\"}"
 
 echo "== visibility filtering =="
 t "$AJ" "grant r on / to group" 200 PUT /api/v1/perms "{\"path\":\"/\",\"principal_type\":\"group\",\"principal\":\"$GROUP\",\"tenant\":\"$T\",\"read\":true}"

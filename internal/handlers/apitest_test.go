@@ -41,7 +41,7 @@ func newEnv(t *testing.T) *env {
 	if _, err := as.CreateTenant(ctx, "acme"); err != nil {
 		t.Fatalf("bootstrap tenant: %v", err)
 	}
-	if _, err := as.CreateUser(ctx, "acme", "admin", "pw", true, true); err != nil {
+	if _, err := as.CreateUser(ctx, "acme", "admin", "pw", true, true, nil); err != nil {
 		t.Fatalf("bootstrap admin: %v", err)
 	}
 	api := API{Auth: as, ACL: acl.NewStore(conn), FS: tree, SessionTTL: time.Hour, MaxFileMB: 1}
@@ -316,8 +316,61 @@ func TestTenantAdminScope(t *testing.T) {
 	must(t, ta, "POST", u+"/api/v1/tenants", `{"name":"intruder"}`, 403)
 }
 
-func TestAuthLifecycle(t *testing.T) {
+// Poor-man's-Dropbox semantics: grants and whole accounts can carry an
+// expiry; expiry is evaluated per request, so access dies mid-session
+// with no cron or extra infra.
+func TestExpiringAccess(t *testing.T) {
 	e := newEnv(t)
+	u := e.srv.URL
+	must(t, e.admin, "POST", u+"/api/v1/fs/mkdir", `{"path":"/share"}`, 201)
+	must(t, e.admin, "POST", u+"/api/v1/fs/write", `{"path":"/share/f.txt","content":"dropbox-ish"}`, 200)
+	must(t, e.admin, "POST", u+"/api/v1/users", `{"username":"cust","password":"pw"}`, 201)
+	past := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+
+	// grant that already expired: never visible, but still listed (flagged)
+	must(t, e.admin, "PUT", u+"/api/v1/perms", `{"path":"/share","principal_type":"user","principal":"cust","read":true,"expires_at":"`+past+`"}`, 200)
+	cust := login(t, e.srv, "acme", "cust", "pw")
+	must(t, cust, "GET", u+"/api/v1/fs?path=/share", "", 403)
+	g0 := must(t, cust, "GET", u+"/api/v1/perms?path=/share", "", 200)["grants"].([]any)[0].(map[string]any)
+	if g0["expired"] != true {
+		t.Fatalf("expired grant should be flagged: %v", g0)
+	}
+
+	// 2-second window: works now, gone after — live session included
+	soon := time.Now().UTC().Add(2 * time.Second).Format(time.RFC3339)
+	must(t, e.admin, "PUT", u+"/api/v1/perms", `{"path":"/share","principal_type":"user","principal":"cust","read":true,"expires_at":"`+soon+`"}`, 200)
+	must(t, cust, "GET", u+"/api/v1/fs?path=/share", "", 200)
+	time.Sleep(3 * time.Second)
+	must(t, cust, "GET", u+"/api/v1/fs?path=/share", "", 403)
+
+	// expired grants do not block inheritance from further up
+	must(t, e.admin, "PUT", u+"/api/v1/perms", `{"path":"/","principal_type":"user","principal":"cust","read":true}`, 200)
+	must(t, cust, "GET", u+"/api/v1/fs?path=/share", "", 200)
+	must(t, cust, "POST", u+"/api/v1/fs/write", `{"path":"/share/x","content":"no"}`, 403) // bits come from / (read only)
+
+	// expires_days lands an expires_at ~3 days out
+	created := must(t, e.admin, "PUT", u+"/api/v1/perms", `{"path":"/share","principal_type":"user","principal":"cust","read":true,"write":true,"expires_days":3}`, 200)
+	if created["expires_at"] == nil || created["expired"] == true {
+		t.Fatalf("3-day grant: %v", created)
+	}
+	must(t, cust, "POST", u+"/api/v1/fs/write", `{"path":"/share/ok","content":"yes"}`, 200)
+
+	// account expiry: an already-lapsed account cannot even log in
+	must(t, e.admin, "POST", u+"/api/v1/users", `{"username":"old","password":"pw","expires_at":"`+past+`"}`, 201)
+	must(t, &http.Client{}, "POST", u+"/api/v1/auth/login", `{"tenant":"acme","username":"old","password":"pw"}`, 401)
+
+	// short-lived customer account: live session is killed when it lapses
+	soon2 := time.Now().UTC().Add(2 * time.Second).Format(time.RFC3339)
+	must(t, e.admin, "POST", u+"/api/v1/users", `{"username":"temp","password":"pw","expires_at":"`+soon2+`"}`, 201)
+	must(t, e.admin, "PUT", u+"/api/v1/perms", `{"path":"/share","principal_type":"user","principal":"temp","read":true}`, 200)
+	tmp := login(t, e.srv, "acme", "temp", "pw")
+	must(t, tmp, "GET", u+"/api/v1/fs?path=/share", "", 200)
+	time.Sleep(3 * time.Second)
+	must(t, tmp, "GET", u+"/api/v1/fs?path=/share", "", 401) // session gone, not just perms
+	must(t, &http.Client{}, "POST", u+"/api/v1/auth/login", `{"tenant":"acme","username":"temp","password":"pw"}`, 401)
+}
+
+func TestAuthLifecycle(t *testing.T) {	e := newEnv(t)
 	u := e.srv.URL
 	jar, _ := cookiejar.New(nil)
 	c := &http.Client{Jar: jar}

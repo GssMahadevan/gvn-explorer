@@ -14,15 +14,17 @@ import (
 )
 
 type Grant struct {
-	ID              int64  `json:"id"`
-	Path            string `json:"path"`
-	PrincipalType   string `json:"principal_type"` // "user" | "group"
-	PrincipalID     int64  `json:"principal_id"`
-	PrincipalName   string `json:"principal_name,omitempty"`
-	PrincipalTenant string `json:"principal_tenant,omitempty"`
-	Read            bool   `json:"read"`
-	Write           bool   `json:"write"`
-	Delete          bool   `json:"delete"`
+	ID               int64      `json:"id"`
+	Path             string     `json:"path"`
+	PrincipalType    string     `json:"principal_type"` // "user" | "group"
+	PrincipalID      int64      `json:"principal_id"`
+	PrincipalName    string     `json:"principal_name,omitempty"`
+	PrincipalTenant  string     `json:"principal_tenant,omitempty"`
+	Read             bool       `json:"read"`
+	Write            bool       `json:"write"`
+	Delete           bool       `json:"delete"`
+	ExpiresAt        *time.Time `json:"expires_at,omitempty"` // nil = never
+	Expired          bool       `json:"expired"`              // expires_at in the past
 }
 
 // Bits is the effective permission set for one path.
@@ -78,20 +80,28 @@ type Store struct{ DB *sql.DB }
 
 func NewStore(db *sql.DB) *Store { return &Store{DB: db} }
 
-// Upsert replaces any existing grant for (path, principal) with the new bits.
-func (s *Store) Upsert(ctx context.Context, path, ptype string, pid int64, r, w, d bool) (Grant, error) {
+// Upsert replaces any existing grant for (path, principal) with the new bits
+// and expiry. expiresAt nil = grant never expires.
+func (s *Store) Upsert(ctx context.Context, path, ptype string, pid int64, r, w, d bool, expiresAt *time.Time) (Grant, error) {
 	ri, wi, di := b2i(r), b2i(w), b2i(d)
+	var exp any // NULL when nil
+	if expiresAt != nil {
+		exp = expiresAt.Unix()
+	}
 	res, err := s.DB.ExecContext(ctx, `
-		INSERT INTO perms (path, principal_type, principal_id, can_read, can_write, can_delete, created_at)
-		VALUES (?,?,?,?,?,?,?)
+		INSERT INTO perms (path, principal_type, principal_id, can_read, can_write, can_delete, created_at, expires_at)
+		VALUES (?,?,?,?,?,?,?,?)
 		ON CONFLICT (path, principal_type, principal_id)
-		DO UPDATE SET can_read=?, can_write=?, can_delete=?`,
-		path, ptype, pid, ri, wi, di, time.Now().UTC().Format(time.RFC3339Nano), ri, wi, di)
+		DO UPDATE SET can_read=?, can_write=?, can_delete=?, expires_at=?`,
+		path, ptype, pid, ri, wi, di, time.Now().UTC().Format(time.RFC3339Nano), exp,
+		ri, wi, di, exp)
 	if err != nil {
 		return Grant{}, err
 	}
 	id, _ := res.LastInsertId()
-	return Grant{ID: id, Path: path, PrincipalType: ptype, PrincipalID: pid, Read: r, Write: w, Delete: d}, nil
+	return Grant{ID: id, Path: path, PrincipalType: ptype, PrincipalID: pid,
+		Read: r, Write: w, Delete: d, ExpiresAt: expiresAt,
+		Expired: expiresAt != nil && expiresAt.Before(time.Now())}, nil
 }
 
 func (s *Store) Delete(ctx context.Context, id int64) error {
@@ -117,7 +127,7 @@ func (s *Store) ListAll(ctx context.Context) ([]Grant, error) {
 
 func (s *Store) queryGrants(ctx context.Context, where string, args []any) ([]Grant, error) {
 	q := `SELECT p.id, p.path, p.principal_type, p.principal_id,
-	         p.can_read, p.can_write, p.can_delete,
+	         p.can_read, p.can_write, p.can_delete, p.expires_at,
 	         COALESCE(u.username, g.name, '?'),
 	         COALESCE(tu.name, tg.name, '?')
 	      FROM perms p
@@ -132,16 +142,23 @@ func (s *Store) queryGrants(ctx context.Context, where string, args []any) ([]Gr
 	}
 	defer rows.Close()
 	out := []Grant{}
+	now := time.Now().Unix()
 	for rows.Next() {
 		var (
 			gr      Grant
 			r, w, d int
+			exp     sql.NullInt64
 		)
 		if err := rows.Scan(&gr.ID, &gr.Path, &gr.PrincipalType, &gr.PrincipalID,
-			&r, &w, &d, &gr.PrincipalName, &gr.PrincipalTenant); err != nil {
+			&r, &w, &d, &exp, &gr.PrincipalName, &gr.PrincipalTenant); err != nil {
 			return nil, err
 		}
 		gr.Read, gr.Write, gr.Delete = r != 0, w != 0, d != 0
+		if exp.Valid {
+			t := time.Unix(exp.Int64, 0).UTC()
+			gr.ExpiresAt = &t
+			gr.Expired = exp.Int64 <= now
+		}
 		out = append(out, gr)
 	}
 	return out, rows.Err()
@@ -165,6 +182,8 @@ func (s *Store) GrantByID(ctx context.Context, id int64) (Grant, error) {
 //  1. explicit grants for the user at this level  (wins over groups here)
 //  2. union of the user's group grants at this level
 //  3. continue up; no grants anywhere = deny everything.
+// Grants whose expires_at has passed are treated as if absent entirely
+// (they neither grant bits nor stop inheritance).
 //
 // Only platform super admins bypass. Tenant admins do NOT: the file tree is
 // shared across tenants, so their file access follows grants like anyone else.
@@ -204,8 +223,10 @@ func (s *Store) Effective(ctx context.Context, a *auth.Store, path string, u aut
 func (s *Store) collect(ctx context.Context, path, ptype string, ids []int64) (Bits, bool, error) {
 	ph := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
 	q := fmt.Sprintf(`SELECT can_read, can_write, can_delete FROM perms
-		WHERE path=? AND principal_type=? AND principal_id IN (%s)`, ph)
+		WHERE path=? AND principal_type=? AND principal_id IN (%s)
+		  AND (expires_at IS NULL OR expires_at > ?)`, ph)
 	args := append([]any{path, ptype}, toAny(ids)...)
+	args = append(args, time.Now().Unix())
 	rows, err := s.DB.QueryContext(ctx, q, args...)
 	if err != nil {
 		return Bits{}, false, err

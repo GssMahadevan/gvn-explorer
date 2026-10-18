@@ -18,6 +18,9 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtSize = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + ' MB' : n >= 1e3 ? (n / 1e3).toFixed(1) + ' kB' : n;
 const bits = (p) => (p.read ? 'r' : '-') + (p.write ? 'w' : '-') + (p.delete ? 'd' : '-');
+const expBadge = (x) => x.expired
+  ? ' <span class="exp dead">⏳ expired</span>'
+  : x.expires_at ? ` <span class="exp">⏳ till ${new Date(x.expires_at).toLocaleDateString()}</span>` : '';
 
 // ---- auth ----
 async function boot() {
@@ -176,7 +179,7 @@ async function loadPerms() {
       ? 'you are platform super admin — ACLs do not apply to you'
       : `effective for you: ${bits(eff)}${eff.source ? ' (inherited from ' + eff.source + ')' : ' (no access)'} — the perms tab lists only grants on this exact path`;
     $('pm-rows').innerHTML = (d.grants || []).map(g => `<tr data-id="${g.id}">
-      <td>${g.principal_type}: ${esc(g.principal_tenant)}/${esc(g.principal_name)}</td>
+      <td>${g.principal_type}: ${esc(g.principal_tenant)}/${esc(g.principal_name)}${expBadge(g)}</td>
       <td>${g.read ? 'r' : '-'}</td><td>${g.write ? 'w' : '-'}</td><td>${g.delete ? 'd' : '-'}</td>
       <td><button data-act="del" class="danger">revoke</button></td></tr>`).join('') || '<tr><td colspan=5 class="muted">no grants on this exact path (inheritance may still apply)</td></tr>';
   } catch (err) { toast(err.message, false); }
@@ -189,12 +192,14 @@ $('pm-rows').addEventListener('click', async (e) => {
 });
 $('pm-form').addEventListener('submit', async (e) => {
   e.preventDefault();
+  const body = {
+    path: cur, principal_type: $('pm-type').value, principal: $('pm-principal').value,
+    tenant: $('pm-tenant').value || me.tenant,
+    read: $('pm-r').checked, write: $('pm-w').checked, delete: $('pm-d').checked,
+  };
+  if ($('pm-exp').value) body.expires_days = parseFloat($('pm-exp').value);
   try {
-    await api('/api/v1/perms', { method: 'PUT', body: JSON.stringify({
-      path: cur, principal_type: $('pm-type').value, principal: $('pm-principal').value,
-      tenant: $('pm-tenant').value || me.tenant,
-      read: $('pm-r').checked, write: $('pm-w').checked, delete: $('pm-d').checked,
-    }) });
+    await api('/api/v1/perms', { method: 'PUT', body: JSON.stringify(body) });
     toast('grant saved'); loadPerms();
   } catch (err) { toast(err.message, false); }
 });
@@ -205,7 +210,7 @@ async function loadAdmin() {
   try {
     users = await api('/api/v1/users'); groups = await api('/api/v1/groups');
     $('u-rows').innerHTML = users.map(u => `<tr data-id="${u.id}">
-      <td>${esc(u.tenant)}/${esc(u.username)}</td>
+      <td>${esc(u.tenant)}/${esc(u.username)}${expBadge(u)}</td>
       <td>${u.is_super ? 'super' : u.is_admin ? 'yes' : ''}</td>
       <td class="muted">${new Date(u.created_at).toLocaleDateString()}</td>
       <td class="rowbtns"><button data-act="pass">password</button><button data-act="del" class="danger">delete</button></td></tr>`).join('');
@@ -266,7 +271,9 @@ $('g-rows').addEventListener('click', async (e) => {
 });
 $('u-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  try { await api('/api/v1/users', { method: 'POST', body: JSON.stringify({ tenant: $('u-tenant').value, username: $('u-name').value, password: $('u-pass').value, is_admin: $('u-admin').checked }) }); toast('user created'); loadAdmin(); }
+  const body = { tenant: $('u-tenant').value, username: $('u-name').value, password: $('u-pass').value, is_admin: $('u-admin').checked };
+  if ($('u-exp').value) body.expires_days = parseFloat($('u-exp').value);
+  try { await api('/api/v1/users', { method: 'POST', body: JSON.stringify(body) }); toast('user created'); loadAdmin(); }
   catch (err) { toast(err.message, false); }
 });
 $('g-form').addEventListener('submit', async (e) => {

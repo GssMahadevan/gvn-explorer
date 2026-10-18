@@ -44,6 +44,9 @@ th { color: var(--dim); font-weight: 600; font-size: .8rem; text-transform: uppe
 .openlink:hover { text-decoration: underline; }
 .rowbtns { white-space: nowrap; text-align: right; }
 .chip { display: inline-flex; align-items: center; gap: .2rem; background: #233042; color: #9ecbff; border-radius: 99px; padding: .1rem .5rem; font-size: .85rem; }
+/* expiry badges on grants and users (customer shares) */
+.exp { font-size: .8rem; color: #d9a441; white-space: nowrap; }
+.exp.dead { color: #e06b6b; }
 .chip button { background: none; border: none; color: inherit; padding: 0 .1rem; }
 .chip button:hover { color: var(--bad); }
 #editor { max-width: 1000px; margin: 1rem auto; padding: 1rem; }

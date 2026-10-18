@@ -81,6 +81,36 @@ removes `/secret` from readers' listings even when they hold read on `/`.
 Group membership is always resolved inside the group's own tenant — adding
 "alice" to `globex/staff` can never enroll `acme/alice`.
 
+## Expiring access (customer shares)
+
+Both grants and whole accounts can carry an expiry — the poor-man's-Dropbox
+flow: hand a customer read on `/deliverables` for 3 days, then everything
+they touch goes dark with **no cron or extra infra**, because every request
+re-evaluates expiry in SQL.
+
+- `PUT /api/v1/perms` accepts `"expires_days": 3` (from now, fractions ok) or
+  `"expires_at": "2026-10-22T00:00:00Z"` (exact cutoff, wins over days);
+  omit both = never. `GET /api/v1/perms` still lists lapsed grants with
+  `"expired": true` so admins can see and renew them (renew = re-PUT).
+- `POST /api/v1/users` accepts the same two fields: a customer account with a
+  lifespan. Once lapsed, login is rejected (indistinguishable from a wrong
+  password) and **live sessions die on the next request**.
+- An expired grant is treated as if absent entirely: it grants no bits and
+  does **not** stop inheritance, so a customer with read on `/` keeps seeing
+  the tree after a per-folder share lapses. For a hard cutoff, expire the
+  account itself.
+
+```sh
+# customer gets 3 days:
+curl -b jar -X POST localhost:8080/api/v1/users -H 'Content-Type: application/json' \
+  -d '{"tenant":"acme","username":"cust42","password":"s3cret","expires_days":3}'
+curl -b jar -X PUT localhost:8080/api/v1/perms -H 'Content-Type: application/json' \
+  -d '{"path":"/deliverables","principal_type":"user","principal":"cust42","tenant":"acme","read":true,"expires_days":3}'
+```
+
+Databases created before this feature migrate automatically (two additive
+`ALTER TABLE` statements run at startup).
+
 ## File API (session cookie required)
 
 | method | path                    | body / query                          | needs        |
@@ -101,10 +131,11 @@ Group membership is always resolved inside the group's own tenant — adding
   grant that targets them
 - `GET/PUT /api/v1/perms`, `DELETE /api/v1/perms/{id}` — view grants + your
   effective bits (any user); mutate with admin rights, tenant-scoped for
-  tenant admins
+  tenant admins; grants may carry `expires_days`/`expires_at`
 - `GET/POST /api/v1/users`, `DELETE /api/v1/users/{id}`, `POST /api/v1/users/{id}/password` —
   tenant admins see and manage only their tenant; the `tenant` field on
-  create is honored for super admins and pinned to own tenant otherwise
+  create is honored for super admins and pinned to own tenant otherwise;
+  users may carry `expires_days`/`expires_at` for lapsed customer accounts
 - `GET/POST /api/v1/groups`, `DELETE /api/v1/groups/{id}`
 - `POST /api/v1/groups/{id}/members {"username"}`, `DELETE /api/v1/groups/{id}/members/{userId}`
 

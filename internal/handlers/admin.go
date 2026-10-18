@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/user/llm-crud1/internal/acl"
 	"github.com/user/llm-crud1/internal/auth"
@@ -66,6 +68,36 @@ func (a *API) handleTenantsDelete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// ---- expiry ----
+
+// Expiry is embedded in grant and user create bodies.
+// "expires_days": 3  -> expires 3 days from now (fractions allowed)
+// "expires_at": "2026-10-22T00:00:00Z" -> exact cutoff, wins over days
+// Omit both for no expiry.
+type Expiry struct {
+	ExpiresDays *float64 `json:"expires_days"`
+	ExpiresAt   string   `json:"expires_at"`
+}
+
+func (e Expiry) resolve() (*time.Time, error) {
+	if e.ExpiresAt != "" {
+		t, err := time.Parse(time.RFC3339, e.ExpiresAt)
+		if err != nil {
+			return nil, fmt.Errorf("expires_at must be RFC3339, e.g. 2026-10-22T00:00:00Z")
+		}
+		u := t.UTC()
+		return &u, nil
+	}
+	if e.ExpiresDays == nil || *e.ExpiresDays == 0 {
+		return nil, nil
+	}
+	if *e.ExpiresDays < 0 {
+		return nil, fmt.Errorf("expires_days must be positive; use expires_at for a past cutoff")
+	}
+	u := time.Now().UTC().Add(time.Duration(*e.ExpiresDays * float64(24*time.Hour)))
+	return &u, nil
+}
+
 // ---- perms ----
 
 // handlePermsShow: GET /api/v1/perms?path=/dir
@@ -98,6 +130,7 @@ type grantBody struct {
 	Read          bool   `json:"read"`
 	Write         bool   `json:"write"`
 	Delete        bool   `json:"delete"`
+	Expiry
 }
 
 // handlePermsPut: PUT /api/v1/perms (admin) — upsert one grant.
@@ -113,6 +146,11 @@ func (a *API) handlePermsPut(w http.ResponseWriter, r *http.Request) {
 		tenant = u.Tenant
 	} else if !u.IsSuper && !strings.EqualFold(tenant, u.Tenant) {
 		writeError(w, http.StatusForbidden, "forbidden", "grants may only target your own tenant")
+		return
+	}
+	exp, err := b.Expiry.resolve()
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "validation", err.Error())
 		return
 	}
 	p, err := acl.Normalize(b.Path)
@@ -140,7 +178,7 @@ func (a *API) handlePermsPut(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "principal_type must be user or group")
 		return
 	}
-	gr, err := a.ACL.Upsert(r.Context(), p, b.PrincipalType, pid, b.Read, b.Write, b.Delete)
+	gr, err := a.ACL.Upsert(r.Context(), p, b.PrincipalType, pid, b.Read, b.Write, b.Delete, exp)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -182,6 +220,7 @@ type userBody struct {
 	Password string `json:"password"`
 	Tenant   string `json:"tenant"` // required for super admins; ignored for tenant admins
 	IsAdmin  bool   `json:"is_admin"`
+	Expiry   // expires_days / expires_at: customer accounts with a lifespan
 }
 
 // resolveCreateTenant decides which tenant a new user/group belongs to:
@@ -213,7 +252,12 @@ func (a *API) handleUsersCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := userFrom(r.Context())
-	nu, err := a.Auth.CreateUser(r.Context(), resolveCreateTenant(u, b.Tenant), b.Username, b.Password, b.IsAdmin, false)
+	exp, err := b.Expiry.resolve()
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "validation", err.Error())
+		return
+	}
+	nu, err := a.Auth.CreateUser(r.Context(), resolveCreateTenant(u, b.Tenant), b.Username, b.Password, b.IsAdmin, false, exp)
 	if err != nil {
 		writeError(w, http.StatusConflict, "exists", "username taken, unknown tenant, or invalid input")
 		return

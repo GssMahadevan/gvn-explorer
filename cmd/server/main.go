@@ -126,7 +126,7 @@ func bootstrapAdmin(s *auth.Store, spec string) error {
 	if _, err := s.CreateTenant(ctx, tenant); err != nil {
 		return fmt.Errorf("create tenant: %w", err)
 	}
-	if _, err := s.CreateUser(ctx, tenant, user, pass, true, true); err != nil {
+	if _, err := s.CreateUser(ctx, tenant, user, pass, true, true, nil); err != nil {
 		return err
 	}
 	slog.Warn("bootstrap super admin created — change the password in production",

@@ -25,13 +25,15 @@ type Tenant struct {
 }
 
 type User struct {
-	ID        int64     `json:"id"`
-	TenantID  int64     `json:"tenant_id"`
-	Tenant    string    `json:"tenant"`
-	Username  string    `json:"username"`
-	IsAdmin   bool      `json:"is_admin"` // tenant admin
-	IsSuper   bool      `json:"is_super"` // platform super admin
-	CreatedAt time.Time `json:"created_at"`
+	ID        int64      `json:"id"`
+	TenantID  int64      `json:"tenant_id"`
+	Tenant    string     `json:"tenant"`
+	Username  string     `json:"username"`
+	IsAdmin   bool       `json:"is_admin"` // tenant admin
+	IsSuper   bool       `json:"is_super"` // platform super admin
+	CreatedAt time.Time  `json:"created_at"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"` // nil = never
+	Expired   bool       `json:"expired"`              // ExpiresAt in the past
 }
 
 type Group struct {
@@ -120,12 +122,13 @@ func (s *Store) DeleteTenant(ctx context.Context, id int64) error {
 
 type rowScanner interface{ Scan(dest ...any) error }
 
-const userCols = `u.id, u.tenant_id, t.name, u.username, u.is_admin, u.is_super, u.created_at`
+const userCols = `u.id, u.tenant_id, t.name, u.username, u.is_admin, u.is_super, u.created_at, u.expires_at`
 const userFrom = `FROM users u JOIN tenants t ON t.id = u.tenant_id`
 
 // CreateUser adds a user inside tenant. admin marks a tenant admin; super
 // marks the platform super admin (bootstrap path only — the API never sets it).
-func (s *Store) CreateUser(ctx context.Context, tenant, username, password string, admin, super bool) (User, error) {
+// expiresAt nil = account never expires.
+func (s *Store) CreateUser(ctx context.Context, tenant, username, password string, admin, super bool, expiresAt *time.Time) (User, error) {
 	tid, err := s.tenantIDByName(ctx, tenant)
 	if err != nil {
 		return User{}, err
@@ -135,14 +138,19 @@ func (s *Store) CreateUser(ctx context.Context, tenant, username, password strin
 		return User{}, err
 	}
 	now := time.Now().UTC()
+	var exp any // NULL when nil
+	if expiresAt != nil {
+		exp = expiresAt.Unix()
+	}
 	res, err := s.DB.ExecContext(ctx,
-		"INSERT INTO users (tenant_id, username, pass_hash, is_admin, is_super, created_at) VALUES (?,?,?,?,?,?)",
-		tid, username, string(hash), b2i(admin), b2i(super), now.Format(tsFmt))
+		"INSERT INTO users (tenant_id, username, pass_hash, is_admin, is_super, created_at, expires_at) VALUES (?,?,?,?,?,?,?)",
+		tid, username, string(hash), b2i(admin), b2i(super), now.Format(tsFmt), exp)
 	if err != nil {
 		return User{}, err
 	}
 	id, _ := res.LastInsertId()
-	return User{ID: id, TenantID: tid, Tenant: tenant, Username: username, IsAdmin: admin, IsSuper: super, CreatedAt: now}, nil
+	return User{ID: id, TenantID: tid, Tenant: tenant, Username: username,
+		IsAdmin: admin, IsSuper: super, CreatedAt: now, ExpiresAt: expiresAt}, nil
 }
 
 func b2i(b bool) int {
@@ -153,25 +161,32 @@ func b2i(b bool) int {
 }
 
 // Verify checks tenant+username+password and returns the user,
-// or ErrNotFound on mismatch.
+// or ErrNotFound on mismatch. Expired accounts report ErrNotFound too, so
+// callers cannot enumerate which accounts exist but lapsed.
 func (s *Store) Verify(ctx context.Context, tenant, username, password string) (User, error) {
 	var (
 		u       User
 		hash    string
 		ad, sup int
 		caStr   string
+		exp     sql.NullInt64
 	)
 	err := s.DB.QueryRowContext(ctx,
-		"SELECT u.id, u.tenant_id, t.name, u.username, u.pass_hash, u.is_admin, u.is_super, u.created_at "+
+		"SELECT u.id, u.tenant_id, t.name, u.username, u.pass_hash, u.is_admin, u.is_super, u.created_at, u.expires_at "+
 			userFrom+" WHERE u.username = ? AND t.name = ?", username, tenant).
-		Scan(&u.ID, &u.TenantID, &u.Tenant, &u.Username, &hash, &ad, &sup, &caStr)
+		Scan(&u.ID, &u.TenantID, &u.Tenant, &u.Username, &hash, &ad, &sup, &caStr, &exp)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
 	if err != nil {
 		return User{}, err
 	}
-	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
+	if exp.Valid {
+		t := time.Unix(exp.Int64, 0).UTC()
+		u.ExpiresAt = &t
+		u.Expired = exp.Int64 <= time.Now().Unix()
+	}
+	if u.Expired || bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
 		return User{}, ErrNotFound
 	}
 	u.IsAdmin, u.IsSuper = ad != 0, sup != 0
@@ -205,12 +220,18 @@ func (s *Store) scanUserRow(sc rowScanner) (User, error) {
 		username string
 		ad, sup  int
 		caStr    string
+		exp      sql.NullInt64
 	)
-	if err := sc.Scan(&id, &tid, &tenant, &username, &ad, &sup, &caStr); err != nil {
+	if err := sc.Scan(&id, &tid, &tenant, &username, &ad, &sup, &caStr, &exp); err != nil {
 		return User{}, err
 	}
 	u := User{ID: id, TenantID: tid, Tenant: tenant, Username: username, IsAdmin: ad != 0, IsSuper: sup != 0}
 	u.CreatedAt, _ = time.Parse(tsFmt, caStr)
+	if exp.Valid {
+		t := time.Unix(exp.Int64, 0).UTC()
+		u.ExpiresAt = &t
+		u.Expired = exp.Int64 <= time.Now().Unix()
+	}
 	return u, nil
 }
 
@@ -441,7 +462,9 @@ func (s *Store) CreateSession(ctx context.Context, userID int64, ttl time.Durati
 	return id, err
 }
 
-// SessionUser resolves a session token to its user; expired/unknown -> ErrNotFound.
+// SessionUser resolves a session token to its user; expired or unknown
+// session -> ErrNotFound. An account-level expiry (customer accounts with a
+// lifespan) also kills live sessions, checked here on every request.
 func (s *Store) SessionUser(ctx context.Context, token string) (User, error) {
 	if token == "" {
 		return User{}, ErrNotFound
@@ -463,7 +486,15 @@ func (s *Store) SessionUser(ctx context.Context, token string) (User, error) {
 		s.DB.ExecContext(ctx, "DELETE FROM sessions WHERE id = ?", token)
 		return User{}, ErrNotFound
 	}
-	return s.UserByID(ctx, userID)
+	u, err := s.UserByID(ctx, userID)
+	if err != nil {
+		return User{}, err
+	}
+	if u.Expired {
+		s.DB.ExecContext(ctx, "DELETE FROM sessions WHERE id = ?", token)
+		return User{}, ErrNotFound
+	}
+	return u, nil
 }
 
 func (s *Store) DeleteSession(ctx context.Context, token string) error {
