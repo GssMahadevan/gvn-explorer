@@ -27,29 +27,168 @@
     <nav id="tabs">
       <button data-tab="files" class="tab active">files</button>
       <button data-tab="perms" class="tab">perms</button>
-      <button data-tab="admin" class="tab admin-only" hidden>users &amp; groups</button>
+      <button data-tab="users" class="tab admin-only" hidden>users</button>
+      <button data-tab="groups" class="tab admin-only" hidden>groups</button>
+      <button data-tab="tenants" class="tab super-only" hidden>tenants</button>
     </nav>
     <button id="logout">logout</button>
   </header>
 
-  <!-- files tab -->
-  <section id="tab-files">
+  <!-- files panel -->
+  <section id="tab-files" class="panel">
     <div class="bar">
       <div id="crumbs" class="crumbs"></div>
       <div class="tools">
+        <input id="q-files" class="q" placeholder="search name" title="case-insensitive substring match on entry names">
         <button id="new-dir">+ folder</button>
         <button id="new-file">+ file</button>
         <label class="upload">upload<input id="upload" type="file" hidden></label>
       </div>
     </div>
-    <table>
-      <thead><tr><th>name</th><th>size</th><th>modified</th><th>perms</th><th></th></tr></thead>
-      <tbody id="rows"></tbody>
-    </table>
-    <p id="empty" hidden>empty (or nothing readable here)</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr>
+          <th class="sortable" data-view="files" data-key="name">name <span class="sortmark"></span></th>
+          <th class="sortable num" data-view="files" data-key="size">size <span class="sortmark"></span></th>
+          <th class="sortable" data-view="files" data-key="mtime">modified <span class="sortmark"></span></th>
+          <th>perms</th><th></th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <p id="empty-files" class="muted" hidden></p>
+    </div>
+    <div class="pager" id="pg-files"></div>
   </section>
 
-  <!-- editor -->
+  <!-- perms panel -->
+  <section id="tab-perms" class="panel" hidden>
+    <div class="bar">
+      <span>permissions on <code id="pm-path"></code></span>
+      <span id="pm-effective" class="muted"></span>
+      <div class="tools">
+        <select id="scol-perms" class="scol" title="which columns q searches">
+          <option value="">all cols</option>
+          <option value="principal">principal</option>
+          <option value="tenant">tenant</option>
+        </select>
+        <input id="q-perms" class="q" placeholder="search grants">
+      </div>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr>
+          <th class="sortable" data-view="perms" data-key="principal">principal <span class="sortmark"></span></th>
+          <th>r</th><th>w</th><th>d</th><th></th>
+        </tr></thead>
+        <tbody id="pm-rows"></tbody>
+      </table>
+      <p id="empty-perms" class="muted" hidden></p>
+    </div>
+    <div class="pager" id="pg-perms"></div>
+    <form id="pm-form" class="grantform admin-only" hidden>
+      <select id="pm-type"><option value="user">user</option><option value="group">group</option></select>
+      <input id="pm-tenant" placeholder="tenant" title="principal's tenant; yours unless you are super admin">
+      <input id="pm-principal" placeholder="name" required>
+      <input id="pm-exp" placeholder="days" title="optional: grant auto-expires after N days (e.g. 3 for a customer share)" inputmode="decimal">
+      <label class="check">r<input id="pm-r" type="checkbox" checked></label>
+      <label class="check">w<input id="pm-w" type="checkbox"></label>
+      <label class="check">d<input id="pm-d" type="checkbox"></label>
+      <button type="submit">grant</button>
+    </form>
+    <p class="muted grantnote">grants apply to this path and inherit down; a grant row with all boxes off
+      excludes the subtree for that principal. only the platform super admin bypasses ACLs.</p>
+  </section>
+
+  <!-- users panel -->
+  <section id="tab-users" class="panel" hidden>
+    <div class="bar">
+      <span>users</span>
+      <div class="tools">
+        <select id="scol-users" class="scol" title="which columns q searches">
+          <option value="">all cols</option>
+          <option value="username">username</option>
+          <option value="tenant">tenant</option>
+        </select>
+        <input id="q-users" class="q" placeholder="search users">
+      </div>
+    </div>
+    <div class="tablewrap">
+      <table><thead><tr>
+        <th class="sortable" data-view="users" data-key="tenant">tenant <span class="sortmark"></span></th>
+        <th class="sortable" data-view="users" data-key="username">username <span class="sortmark"></span></th>
+        <th>admin</th>
+        <th class="sortable" data-view="users" data-key="created">created <span class="sortmark"></span></th>
+        <th></th>
+      </tr></thead>
+        <tbody id="u-rows"></tbody></table>
+      <p id="empty-users" class="muted" hidden></p>
+    </div>
+    <div class="pager" id="pg-users"></div>
+    <form id="u-form">
+      <input id="u-tenant" placeholder="tenant" class="super-only" hidden>
+      <input id="u-name" placeholder="username" required>
+      <input id="u-pass" placeholder="password (blank = device user)" type="password">
+      <input id="u-exp" placeholder="expires in days" title="optional: customer account that lapses after N days" inputmode="decimal">
+      <label class="check">admin<input id="u-admin" type="checkbox"></label>
+      <button type="submit">create user</button>
+    </form>
+  </section>
+
+  <!-- groups panel -->
+  <section id="tab-groups" class="panel" hidden>
+    <div class="bar">
+      <span>groups</span>
+      <div class="tools">
+        <select id="scol-groups" class="scol" title="which columns q searches">
+          <option value="">all cols</option>
+          <option value="name">name</option>
+          <option value="tenant">tenant</option>
+        </select>
+        <input id="q-groups" class="q" placeholder="search groups">
+      </div>
+    </div>
+    <div class="tablewrap">
+      <table><thead><tr>
+        <th class="sortable" data-view="groups" data-key="tenant">tenant <span class="sortmark"></span></th>
+        <th class="sortable" data-view="groups" data-key="name">group <span class="sortmark"></span></th>
+        <th>members</th><th></th>
+      </tr></thead>
+        <tbody id="g-rows"></tbody></table>
+      <p id="empty-groups" class="muted" hidden></p>
+    </div>
+    <div class="pager" id="pg-groups"></div>
+    <form id="g-form"><input id="g-tenant" placeholder="tenant" class="super-only" hidden>
+      <input id="g-name" placeholder="group name" required>
+      <button type="submit">create group</button></form>
+    <form id="gm-form"><select id="gm-group" title="group shown on this page"></select>
+      <input id="gm-user" placeholder="username" required>
+      <button type="submit">add member</button></form>
+  </section>
+
+  <!-- tenants panel -->
+  <section id="tab-tenants" class="panel" hidden>
+    <div class="bar">
+      <span>tenants</span>
+      <div class="tools">
+        <input id="q-tenants" class="q" placeholder="search tenants">
+      </div>
+    </div>
+    <div class="tablewrap">
+      <table><thead><tr>
+        <th class="sortable" data-view="tenants" data-key="name">name <span class="sortmark"></span></th>
+        <th class="sortable" data-view="tenants" data-key="created">created <span class="sortmark"></span></th>
+        <th></th>
+      </tr></thead>
+        <tbody id="t-rows"></tbody></table>
+      <p id="empty-tenants" class="muted" hidden></p>
+    </div>
+    <div class="pager" id="pg-tenants"></div>
+    <form id="t-form"><input id="t-name" placeholder="tenant name" required>
+      <button type="submit">create tenant</button></form>
+    <p class="muted">deleting a tenant also deletes its users, groups and every ACL grant that targets them.</p>
+  </section>
+
+  <!-- editor overlay -->
   <section id="editor" class="card" hidden>
     <div class="bar">
       <h2 id="ed-title"></h2>
@@ -61,66 +200,6 @@
     <p id="ed-binary" hidden>binary file — <a id="ed-dl" href="#">download</a></p>
     <textarea id="ed-text" rows="20" spellcheck="false"></textarea>
     <p id="ed-msg" class="error" hidden></p>
-  </section>
-
-  <!-- perms tab -->
-  <section id="tab-perms" hidden>
-    <div class="card">
-      <h2>permissions on <code id="pm-path"></code></h2>
-      <div id="pm-effective" class="muted"></div>
-      <table>
-        <thead><tr><th>principal</th><th>r</th><th>w</th><th>d</th><th></th></tr></thead>
-        <tbody id="pm-rows"></tbody>
-      </table>
-      <form id="pm-form" class="grantform admin-only" hidden>
-        <select id="pm-type"><option value="user">user</option><option value="group">group</option></select>
-        <input id="pm-tenant" placeholder="tenant" title="principal's tenant; yours unless you are super admin">
-        <input id="pm-principal" placeholder="name" required>
-        <input id="pm-exp" placeholder="days" title="optional: grant auto-expires after N days (e.g. 3 for a customer share)" inputmode="decimal">
-        <label class="check">r<input id="pm-r" type="checkbox" checked></label>
-        <label class="check">w<input id="pm-w" type="checkbox"></label>
-        <label class="check">d<input id="pm-d" type="checkbox"></label>
-        <button type="submit">grant</button>
-      </form>
-      <p class="muted">grants apply to this path and inherit down; a grant row with all boxes off
-        excludes the subtree for that principal. only the platform super admin bypasses ACLs.</p>
-    </div>
-  </section>
-
-  <!-- admin tab -->
-  <section id="tab-admin" hidden>
-    <div class="card super-only" hidden>
-      <h2>tenants</h2>
-      <table><thead><tr><th>name</th><th>created</th><th></th></tr></thead>
-        <tbody id="t-rows"></tbody></table>
-      <form id="t-form"><input id="t-name" placeholder="tenant name" required>
-        <button type="submit">create tenant</button></form>
-      <p class="muted">deleting a tenant also deletes its users, groups and every ACL grant that targets them.</p>
-    </div>
-    <div class="card">
-      <h2>users</h2>
-      <table><thead><tr><th>username</th><th>admin</th><th>created</th><th></th></tr></thead>
-        <tbody id="u-rows"></tbody></table>
-      <form id="u-form">
-        <input id="u-tenant" placeholder="tenant" class="super-only" hidden>
-        <input id="u-name" placeholder="username" required>
-        <input id="u-pass" placeholder="password (blank = device user)" type="password">
-        <input id="u-exp" placeholder="expires in days" title="optional: customer account that lapses after N days" inputmode="decimal">
-        <label class="check">admin<input id="u-admin" type="checkbox"></label>
-        <button type="submit">create user</button>
-      </form>
-    </div>
-    <div class="card">
-      <h2>groups</h2>
-      <table><thead><tr><th>group</th><th>members</th><th></th></tr></thead>
-        <tbody id="g-rows"></tbody></table>
-      <form id="g-form"><input id="g-tenant" placeholder="tenant" class="super-only" hidden>
-        <input id="g-name" placeholder="group name" required>
-        <button type="submit">create group</button></form>
-      <form id="gm-form"><select id="gm-group"></select>
-        <select id="gm-user"></select>
-        <button type="submit">add member</button></form>
-    </div>
   </section>
 </div>
 

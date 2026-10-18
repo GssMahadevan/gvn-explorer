@@ -215,7 +215,8 @@ Design rules:
 
 ```sh
 curl -b jar 'localhost:8080/api/v1/events?limit=50&action=perm_set'
-# filters: action, target_type, target (name), since (RFC3339)
+# filters: action, target_type, target (name), since (RFC3339),
+#          plus the standard list params (q, col, sort, dir, limit, offset)
 ```
 
 Admin rights; super admins see all tenants. Newest first. A failed audit
@@ -236,6 +237,43 @@ diagnostics). Pipe through `jq` to slice:
 ```sh
 ./bin/server 2>&1 | jq 'select(.level=="ERROR")'
 ```
+
+## Listing views: paging, search, sort
+
+Every list endpoint — `/api/v1/fs`, `/api/v1/perms`, `/api/v1/users`,
+`/api/v1/groups`, `/api/v1/tenants`, `/api/v1/events` — accepts the same
+optional query parameters, so the GUI drives every panel identically:
+
+| param    | meaning                                                            |
+|----------|--------------------------------------------------------------------|
+| `limit`  | rows per page (1..1000); omitted = all rows (script-friendly default) |
+| `offset` | rows to skip (≥ 0)                                                  |
+| `q`      | case-insensitive substring search (≤ 100 chars)                     |
+| `col`    | restrict `q` to one column (see below); empty = all searchable ones  |
+| `sort`   | sort key (see below)                                                |
+| `dir`    | `asc` or `desc`                                                     |
+
+Anything outside the whitelists gets a 400, so typos surface loudly instead
+of silently changing what a query means. **Every response carries an
+`X-Total-Count` header**: how many rows match the filters regardless of the
+page returned, which is all a caller needs to compute the last page.
+
+| endpoint  | searchable `col`s           | `sort` keys                         | default order         |
+|-----------|-----------------------------|-------------------------------------|-----------------------|
+| fs        | name                        | name, size, mtime                   | name asc, dirs first  |
+| perms     | principal, tenant           | principal, type, expires            | principal asc         |
+| users     | username, tenant            | username, tenant, created, active   | username asc          |
+| groups    | name, tenant                | name, tenant, active                | name asc              |
+| tenants   | name                        | name, created                       | name asc              |
+| events    | actor, action, target, path | ts, actor, action, target, path     | ts desc (newest first)|
+
+```sh
+curl -b jar 'localhost:8080/api/v1/users?q=ali&col=username&sort=created&dir=desc&limit=25&offset=25'
+```
+
+File listings live on disk, not in SQL, so fs search/sort/paging run
+in-process over the caller-visible entries — same contract either way;
+directories always sort first regardless of `dir`.
 
 ## File API (session cookie or `Authorization: Bearer <apikey>`)
 
@@ -290,5 +328,5 @@ internal/acl/      grant upsert/list + Effective() inheritance engine
 internal/audit/    append-only forensic event trail (authz/authn DML)
 internal/fsx/      sandboxed filesystem ops (list/read/write/mkdir/rename/delete)
 internal/handlers/ REST handlers + route table, JSON error envelope, rate limiters
-web/               vanilla-JS GUI (login w/ tenant, explorer, editor, perms, admin)
+web/               vanilla-JS GUI (panels per view w/ paging+search+sort, editor, perms, admin)
 ```

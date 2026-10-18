@@ -8,8 +8,10 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"time"
 
+	"github.com/user/llm-crud1/internal/query"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -70,10 +72,37 @@ func (s *Store) CreateTenant(ctx context.Context, name string) (Tenant, error) {
 	return Tenant{ID: id, Name: name, CreatedAt: now}, nil
 }
 
-func (s *Store) ListTenants(ctx context.Context) ([]Tenant, error) {
-	rows, err := s.DB.QueryContext(ctx, "SELECT id, name, created_at FROM tenants ORDER BY name")
+// count runs one COUNT(*) query, for the total behind paged listings.
+func (s *Store) count(ctx context.Context, q string, args ...any) (int, error) {
+	var n int
+	if err := s.DB.QueryRowContext(ctx, q, args...).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// ListTenants returns one page of tenants plus the total matching count.
+// Sort keys: name, created. Search columns: name.
+func (s *Store) ListTenants(ctx context.Context, o query.List) ([]Tenant, int, error) {
+	where := ""
+	var args []any
+	if o.Q != "" {
+		where = ` WHERE name LIKE ? ESCAPE '\'`
+		args = append(args, o.Like())
+	}
+	total, err := s.count(ctx, "SELECT COUNT(*) FROM tenants"+where, args...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	order := map[string]string{"name": "name", "created": "created_at"}[o.Sort]
+	q := "SELECT id, name, created_at FROM tenants" + where + " ORDER BY " + order + o.Order() + ", id"
+	if o.Limit > 0 {
+		q += " LIMIT ? OFFSET ?"
+		args = append(args, o.Limit, o.Offset)
+	}
+	rows, err := s.DB.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, 0, err
 	}
 	defer rows.Close()
 	out := []Tenant{}
@@ -83,12 +112,12 @@ func (s *Store) ListTenants(ctx context.Context) ([]Tenant, error) {
 			caStr string
 		)
 		if err := rows.Scan(&t.ID, &t.Name, &caStr); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		t.CreatedAt, _ = time.Parse(tsFmt, caStr)
 		out = append(out, t)
 	}
-	return out, rows.Err()
+	return out, total, rows.Err()
 }
 
 func (s *Store) tenantIDByName(ctx context.Context, name string) (int64, error) {
@@ -248,29 +277,58 @@ func (s *Store) scanUserRow(sc rowScanner) (User, error) {
 	return u, nil
 }
 
-// ListUsers lists users; tenantID 0 means all tenants (super admin view).
-func (s *Store) ListUsers(ctx context.Context, tenantID int64) ([]User, error) {
-	q := "SELECT " + userCols + " " + userFrom
+// ListUsers returns one page of users plus the total matching count;
+// tenantID 0 means all tenants (super admin view).
+// Sort keys: username, tenant, created, active. Search columns: username, tenant.
+func (s *Store) ListUsers(ctx context.Context, tenantID int64, o query.List) ([]User, int, error) {
+	var conds []string
 	var args []any
 	if tenantID != 0 {
-		q += " WHERE u.tenant_id = ?"
+		conds = append(conds, "u.tenant_id = ?")
 		args = append(args, tenantID)
 	}
-	q += " ORDER BY t.name, u.username"
+	if o.Q != "" {
+		like := o.Like()
+		switch o.Col {
+		case "username":
+			conds = append(conds, `u.username LIKE ? ESCAPE '\'`)
+			args = append(args, like)
+		case "tenant":
+			conds = append(conds, `t.name LIKE ? ESCAPE '\'`)
+			args = append(args, like)
+		default: // "" = every searchable column
+			conds = append(conds, `(u.username LIKE ? ESCAPE '\' OR t.name LIKE ? ESCAPE '\')`)
+			args = append(args, like, like)
+		}
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
+	}
+	total, err := s.count(ctx, "SELECT COUNT(*) FROM users u JOIN tenants t ON t.id = u.tenant_id"+where, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	order := map[string]string{"username": "u.username", "tenant": "t.name", "created": "u.created_at", "active": "u.active"}[o.Sort]
+	q := "SELECT " + userCols + " " + userFrom + where + " ORDER BY " + order + o.Order() + ", u.id"
+	if o.Limit > 0 {
+		q += " LIMIT ? OFFSET ?"
+		args = append(args, o.Limit, o.Offset)
+	}
 	rows, err := s.DB.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	out := []User{}
 	for rows.Next() {
 		u, err := s.scanUserRow(rows)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		out = append(out, u)
 	}
-	return out, rows.Err()
+	return out, total, rows.Err()
 }
 
 func (s *Store) DeleteUser(ctx context.Context, id int64) error {
@@ -350,18 +408,47 @@ func (s *Store) CreateGroup(ctx context.Context, tenant, name string) (Group, er
 	return Group{ID: id, TenantID: tid, Tenant: tenant, Name: name, Active: true}, nil
 }
 
-// ListGroups lists groups with members; tenantID 0 means all tenants.
-func (s *Store) ListGroups(ctx context.Context, tenantID int64) ([]Group, error) {
-	q := "SELECT " + groupCols + " " + groupFrom
+// ListGroups returns one page of groups (with their members) plus the total
+// matching count; tenantID 0 means all tenants.
+// Sort keys: name, tenant, active. Search columns: name, tenant.
+func (s *Store) ListGroups(ctx context.Context, tenantID int64, o query.List) ([]Group, int, error) {
+	var conds []string
 	var args []any
 	if tenantID != 0 {
-		q += " WHERE g.tenant_id = ?"
+		conds = append(conds, "g.tenant_id = ?")
 		args = append(args, tenantID)
 	}
-	q += " ORDER BY t.name, g.name"
+	if o.Q != "" {
+		like := o.Like()
+		switch o.Col {
+		case "name":
+			conds = append(conds, `g.name LIKE ? ESCAPE '\'`)
+			args = append(args, like)
+		case "tenant":
+			conds = append(conds, `t.name LIKE ? ESCAPE '\'`)
+			args = append(args, like)
+		default: // "" = every searchable column
+			conds = append(conds, `(g.name LIKE ? ESCAPE '\' OR t.name LIKE ? ESCAPE '\')`)
+			args = append(args, like, like)
+		}
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
+	}
+	total, err := s.count(ctx, "SELECT COUNT(*) FROM groups g JOIN tenants t ON t.id = g.tenant_id"+where, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	order := map[string]string{"name": "g.name", "tenant": "t.name", "active": "g.active"}[o.Sort]
+	q := "SELECT " + groupCols + " " + groupFrom + where + " ORDER BY " + order + o.Order() + ", g.id"
+	if o.Limit > 0 {
+		q += " LIMIT ? OFFSET ?"
+		args = append(args, o.Limit, o.Offset)
+	}
 	rows, err := s.DB.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	out := []Group{}
@@ -369,34 +456,41 @@ func (s *Store) ListGroups(ctx context.Context, tenantID int64) ([]Group, error)
 	for rows.Next() {
 		g, err := scanGroup(rows)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		index[g.ID] = len(out)
 		out = append(out, g)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if len(index) == 0 {
-		return out, nil
+		return out, total, nil
 	}
+	// members for exactly this page of groups
+	ids := make([]any, 0, len(index))
+	for id := range index {
+		ids = append(ids, id)
+	}
+	ph := strings.TrimSuffix(strings.Repeat("?,", len(index)), ",")
 	mrows, err := s.DB.QueryContext(ctx, `SELECT gm.group_id, u.id, u.username
-		FROM group_members gm JOIN users u ON u.id = gm.user_id ORDER BY gm.group_id, u.username`)
+		FROM group_members gm JOIN users u ON u.id = gm.user_id
+		WHERE gm.group_id IN (`+ph+`) ORDER BY gm.group_id, u.username`, ids...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer mrows.Close()
 	for mrows.Next() {
 		var gid, uid int64
 		var name string
 		if err := mrows.Scan(&gid, &uid, &name); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if i, ok := index[gid]; ok {
 			out[i].Members = append(out[i].Members, Member{ID: uid, Username: name})
 		}
 	}
-	return out, mrows.Err()
+	return out, total, mrows.Err()
 }
 
 func (s *Store) GroupByID(ctx context.Context, id int64) (Group, error) {

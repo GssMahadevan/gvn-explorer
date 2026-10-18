@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/user/llm-crud1/internal/auth"
+	"github.com/user/llm-crud1/internal/query"
 )
 
 type Grant struct {
@@ -117,34 +118,22 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
-// ListByPath returns the explicit grants attached to a single path.
-func (s *Store) ListByPath(ctx context.Context, path string) ([]Grant, error) {
-	return s.queryGrants(ctx, "WHERE p.path = ?", []any{path})
-}
+// grantFrom is shared by the grant listing and its COUNT companion.
+const grantFrom = `FROM perms p
+	      LEFT JOIN users u ON p.principal_type='user'  AND u.id = p.principal_id
+	      LEFT JOIN groups g ON p.principal_type='group' AND g.id = p.principal_id
+	      LEFT JOIN tenants tu ON tu.id = u.tenant_id
+	      LEFT JOIN tenants tg ON tg.id = g.tenant_id`
 
-// ListAll returns every grant (admin UI overview).
-func (s *Store) ListAll(ctx context.Context) ([]Grant, error) {
-	return s.queryGrants(ctx, "", nil)
-}
-
-func (s *Store) queryGrants(ctx context.Context, where string, args []any) ([]Grant, error) {
-	q := `SELECT p.id, p.path, p.principal_type, p.principal_id,
+const grantSelect = `SELECT p.id, p.path, p.principal_type, p.principal_id,
 	         p.can_read, p.can_write, p.can_delete, p.expires_at,
 	         COALESCE(u.username, g.name, '?'),
 	         COALESCE(tu.name, tg.name, '?'),
 	         CASE WHEN p.principal_type='user' THEN COALESCE(u.active,0) ELSE COALESCE(g.active,0) END,
 	         COALESCE(u.tenant_id, g.tenant_id, 0)
-	      FROM perms p
-	      LEFT JOIN users u ON p.principal_type='user'  AND u.id = p.principal_id
-	      LEFT JOIN groups g ON p.principal_type='group' AND g.id = p.principal_id
-	      LEFT JOIN tenants tu ON tu.id = u.tenant_id
-	      LEFT JOIN tenants tg ON tg.id = g.tenant_id ` + where + `
-	      ORDER BY p.path, p.principal_type, p.principal_id`
-	rows, err := s.DB.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+	      `
+
+func scanGrants(rows *sql.Rows) ([]Grant, error) {
 	out := []Grant{}
 	now := time.Now().Unix()
 	for rows.Next() {
@@ -170,10 +159,58 @@ func (s *Store) queryGrants(ctx context.Context, where string, args []any) ([]Gr
 	return out, rows.Err()
 }
 
+// ListByPath returns one page of the explicit grants attached to a single
+// path plus the total grant count on that path.
+// Sort keys: principal, type, expires. Search columns: principal, tenant.
+func (s *Store) ListByPath(ctx context.Context, path string, o query.List) ([]Grant, int, error) {
+	conds := []string{"p.path = ?"}
+	args := []any{path}
+	if o.Q != "" {
+		like := o.Like()
+		switch o.Col {
+		case "principal":
+			conds = append(conds, `(COALESCE(u.username, g.name) LIKE ? ESCAPE '\')`)
+			args = append(args, like)
+		case "tenant":
+			conds = append(conds, `(COALESCE(tu.name, tg.name) LIKE ? ESCAPE '\')`)
+			args = append(args, like)
+		default: // "" = every searchable column
+			conds = append(conds, `(COALESCE(u.username, g.name) LIKE ? ESCAPE '\' OR COALESCE(tu.name, tg.name) LIKE ? ESCAPE '\')`)
+			args = append(args, like, like)
+		}
+	}
+	where := " WHERE " + strings.Join(conds, " AND ")
+	var total int
+	if err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*) "+grantFrom+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	order := map[string]string{"principal": "COALESCE(u.username, g.name)", "type": "p.principal_type", "expires": "p.expires_at"}[o.Sort]
+	q := grantSelect + grantFrom + where + " ORDER BY " + order + o.Order() + ", p.id"
+	if o.Limit > 0 {
+		q += " LIMIT ? OFFSET ?"
+		args = append(args, o.Limit, o.Offset)
+	}
+	rows, err := s.DB.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out, err := scanGrants(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return out, total, nil
+}
+
 // GrantByID fetches one grant with its principal's tenant resolved, for
 // tenant-scoped authorization of mutations.
 func (s *Store) GrantByID(ctx context.Context, id int64) (Grant, error) {
-	list, err := s.queryGrants(ctx, "WHERE p.id = ?", []any{id})
+	rows, err := s.DB.QueryContext(ctx, grantSelect+grantFrom+" WHERE p.id = ?", id)
+	if err != nil {
+		return Grant{}, err
+	}
+	defer rows.Close()
+	list, err := scanGrants(rows)
 	if err != nil {
 		return Grant{}, err
 	}

@@ -5,13 +5,17 @@
 * { box-sizing: border-box; }
 /* the hidden attribute must beat any display rule below (e.g. #login's grid) */
 [hidden] { display: none !important; }
+html, body { height: 100%; }
 body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
-header { display: flex; align-items: center; gap: 1rem; padding: .7rem 1.2rem; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+/* one panel per view: #app is a column, the active panel fills the height */
+#app { display: flex; flex-direction: column; height: 100vh; }
+header { flex: none; display: flex; align-items: center; gap: 1rem; padding: .7rem 1.2rem; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
 #who { color: var(--accent); }
 nav { display: flex; gap: .4rem; margin-left: 1rem; }
 #logout { margin-left: auto; }
 main, section { padding: 0; }
-#tab-files, #tab-perms, #tab-admin { max-width: 1000px; margin: 1rem auto; padding: 0 1rem; }
+.panel { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: .8rem 1rem 0; }
+.panel .bar, .panel form, .panel .pager, .panel .grantnote { flex: none; }
 #login { display: grid; place-items: center; min-height: 70vh; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.2rem; margin-bottom: 1rem; }
 #login-form { display: grid; gap: .7rem; width: 320px; }
@@ -23,18 +27,30 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 button { background: #2f363d; color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: .3rem .7rem; cursor: pointer; font: inherit; }
 button:hover { border-color: var(--accent); }
 button.danger:hover { border-color: var(--bad); color: var(--bad); }
+button:disabled { opacity: .35; cursor: default; }
 .tab.active { border-color: var(--accent); color: var(--accent); }
 .bar { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: .6rem; }
 .tools { margin-left: auto; display: flex; gap: .5rem; align-items: center; }
 .upload button, .upload input { display: none; }
 .upload { background: #2f363d; border: 1px solid var(--line); border-radius: 6px; padding: .3rem .7rem; cursor: pointer; color: var(--fg); }
 .upload:hover { border-color: var(--accent); }
+/* search: text box + which columns q matches */
+.q { width: 13rem; }
+.scol { width: 8.5rem; }
 .crumbs { display: flex; align-items: center; gap: .2rem; flex-wrap: wrap; }
 .crumb { background: none; border: none; color: var(--accent); padding: 0; }
+.crumb.here { color: var(--fg); font-weight: 600; }
 .sep { color: var(--dim); }
-table { width: 100%; border-collapse: collapse; }
+/* scrollable table area with sticky header, sorts and pages server-side */
+.tablewrap { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.tablewrap table { width: 100%; border-collapse: collapse; }
+.tablewrap p { padding: .6rem .8rem; margin: 0; }
 th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
+thead th { position: sticky; top: 0; z-index: 1; background: var(--panel); }
 th { color: var(--dim); font-weight: 600; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
+th.sortable { cursor: pointer; }
+th.sortable:hover { color: var(--fg); }
+.sortmark { color: var(--accent); font-size: .75rem; }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
 .mono { font-family: ui-monospace, monospace; font-size: .85rem; }
 .muted { color: var(--dim); font-size: .85rem; }
@@ -49,11 +65,15 @@ th { color: var(--dim); font-weight: 600; font-size: .8rem; text-transform: uppe
 .exp.dead { color: #e06b6b; }
 .chip button { background: none; border: none; color: inherit; padding: 0 .1rem; }
 .chip button:hover { color: var(--bad); }
-#editor { max-width: 1000px; margin: 1rem auto; padding: 1rem; }
+/* pager: first/prev/next/last + rows-per-page dropdown */
+.pager { display: flex; align-items: center; gap: .45rem; padding: .6rem 0; color: var(--dim); font-size: .9rem; }
+.pager button { padding: .25rem .6rem; }
+.pager .pginfo { margin: 0 .3rem; }
+.pager .pgsize { margin-left: auto; display: inline-flex; align-items: center; gap: .35rem; }
+#editor { position: fixed; top: 6vh; left: 50%; transform: translateX(-50%); width: min(1000px, 94vw); max-height: 88vh; overflow: auto; z-index: 20; margin: 0; }
 #ed-text { width: 100%; font-family: ui-monospace, monospace; font-size: .9rem; resize: vertical; }
 .error { color: var(--bad); margin: .4rem 0 0; }
 form { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-top: .6rem; }
 .grantform select, .grantform input { width: 12rem; }
-#toast { position: fixed; bottom: 1.2rem; right: 1.2rem; padding: .6rem 1rem; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); max-width: 70vw; }
+#toast { position: fixed; bottom: 1.2rem; right: 1.2rem; padding: .6rem 1rem; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); max-width: 70vw; z-index: 30; }
 #toast.ok { border-color: var(--ok); } #toast.bad { border-color: var(--bad); }
-#empty { color: var(--dim); }

@@ -11,6 +11,7 @@ import (
 	"github.com/user/llm-crud1/internal/acl"
 	"github.com/user/llm-crud1/internal/audit"
 	"github.com/user/llm-crud1/internal/auth"
+	"github.com/user/llm-crud1/internal/query"
 )
 
 // scopeTenantID returns 0 (see all tenants) for super admins, and the
@@ -28,12 +29,27 @@ type nameBody struct {
 	Name string `json:"name"`
 }
 
+// List endpoints share one contract: limit/offset paging plus q/col search
+// and sort/dir ordering (validated against these whitelists; the stores
+// implement the same keys). X-Total-Count reports the filtered total.
+
+var tenantsListSpec = ListSpec{
+	Sorts:   map[string]bool{"name": true, "created": true},
+	Cols:    []string{"name"},
+	DefSort: "name",
+}
+
 func (a *API) handleTenantsList(w http.ResponseWriter, r *http.Request) {
-	ts, err := a.Auth.ListTenants(r.Context())
+	o, ok := parseList(w, r, tenantsListSpec)
+	if !ok {
+		return
+	}
+	ts, total, err := a.Auth.ListTenants(r.Context(), o)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	setTotal(w, total)
 	writeJSON(w, http.StatusOK, ts)
 }
 
@@ -66,7 +82,7 @@ func (a *API) handleTenantsDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	// snapshot the name before the cascade, for the forensic record
 	name := ""
-	if ts, err := a.Auth.ListTenants(r.Context()); err == nil {
+	if ts, _, err := a.Auth.ListTenants(r.Context(), query.List{Sort: "name"}); err == nil {
 		for _, t := range ts {
 			if t.ID == id {
 				name = t.Name
@@ -115,15 +131,26 @@ func (e Expiry) resolve() (*time.Time, error) {
 
 // ---- perms ----
 
+var permsListSpec = ListSpec{
+	Sorts:   map[string]bool{"principal": true, "type": true, "expires": true},
+	Cols:    []string{"principal", "tenant"},
+	DefSort: "principal",
+}
+
 // handlePermsShow: GET /api/v1/perms?path=/dir
-// Explicit grants on that path + the caller's effective bits.
+// Explicit grants on that path (paged/searchable/sortable) + the caller's
+// effective bits.
 func (a *API) handlePermsShow(w http.ResponseWriter, r *http.Request) {
 	p, err := logicalPath(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad_path", err.Error())
 		return
 	}
-	grants, err := a.ACL.ListByPath(r.Context(), p)
+	o, ok := parseList(w, r, permsListSpec)
+	if !ok {
+		return
+	}
+	grants, total, err := a.ACL.ListByPath(r.Context(), p, o)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -134,6 +161,7 @@ func (a *API) handlePermsShow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	setTotal(w, total)
 	writeJSON(w, http.StatusOK, map[string]any{"path": p, "grants": grants, "effective": eff})
 }
 
@@ -259,12 +287,23 @@ func resolveCreateTenant(u auth.User, requested string) string {
 	return requested
 }
 
+var usersListSpec = ListSpec{
+	Sorts:   map[string]bool{"username": true, "tenant": true, "created": true, "active": true},
+	Cols:    []string{"username", "tenant"},
+	DefSort: "username",
+}
+
 func (a *API) handleUsersList(w http.ResponseWriter, r *http.Request) {
-	users, err := a.Auth.ListUsers(r.Context(), scopeTenantID(userFrom(r.Context())))
+	o, ok := parseList(w, r, usersListSpec)
+	if !ok {
+		return
+	}
+	users, total, err := a.Auth.ListUsers(r.Context(), scopeTenantID(userFrom(r.Context())), o)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	setTotal(w, total)
 	writeJSON(w, http.StatusOK, users)
 }
 
@@ -531,12 +570,23 @@ type groupBody struct {
 	Tenant string `json:"tenant"` // required for super admins; ignored for tenant admins
 }
 
+var groupsListSpec = ListSpec{
+	Sorts:   map[string]bool{"name": true, "tenant": true, "active": true},
+	Cols:    []string{"name", "tenant"},
+	DefSort: "name",
+}
+
 func (a *API) handleGroupsList(w http.ResponseWriter, r *http.Request) {
-	groups, err := a.Auth.ListGroups(r.Context(), scopeTenantID(userFrom(r.Context())))
+	o, ok := parseList(w, r, groupsListSpec)
+	if !ok {
+		return
+	}
+	groups, total, err := a.Auth.ListGroups(r.Context(), scopeTenantID(userFrom(r.Context())), o)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	setTotal(w, total)
 	writeJSON(w, http.StatusOK, groups)
 }
 

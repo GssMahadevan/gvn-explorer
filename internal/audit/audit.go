@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -53,18 +54,25 @@ func (s *Store) Record(ctx context.Context, ev Event) error {
 	return err
 }
 
-// Filter narrows List; zero values mean "any".
+// Filter narrows List; zero values mean "any". Structured filters
+// (Action/TargetType/Target/Since) are ANDed with the free-text Q search.
 type Filter struct {
 	Limit      int
+	Offset     int
 	Action     string
 	TargetType string
 	Target     string // exact target_name match
 	Since      int64  // unix seconds lower bound
+	Q          string // case-insensitive substring
+	Col        string // restrict Q: actor | action | target | path; "" = all
+	Sort       string // ts | actor | action | target | path (default ts)
+	Dir        string // asc | desc (default desc: newest first)
 }
 
-// List returns newest-first events. tenantID 0 means every tenant (super
+// List returns one page of events plus the total matching count.
+// Default order is newest-first; tenantID 0 means every tenant (super
 // admin view); otherwise results are restricted to that tenant's scope.
-func (s *Store) List(ctx context.Context, tenantID int64, f Filter) ([]Event, error) {
+func (s *Store) List(ctx context.Context, tenantID int64, f Filter) ([]Event, int, error) {
 	if f.Limit <= 0 {
 		f.Limit = 100
 	}
@@ -93,22 +101,49 @@ func (s *Store) List(ctx context.Context, tenantID int64, f Filter) ([]Event, er
 		conds = append(conds, "ts >= ?")
 		args = append(args, f.Since)
 	}
-	q := "SELECT id, ts, actor_id, actor, tenant_id, action, target_type, target_id, target_name, path, details, ip FROM events"
-	if len(conds) > 0 {
-		q += " WHERE "
-		for i, c := range conds {
-			if i > 0 {
-				q += " AND "
-			}
-			q += c
+	if f.Q != "" {
+		like := "%" + strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(f.Q) + "%"
+		switch f.Col {
+		case "actor":
+			conds = append(conds, `actor LIKE ? ESCAPE '\'`)
+			args = append(args, like)
+		case "action":
+			conds = append(conds, `action LIKE ? ESCAPE '\'`)
+			args = append(args, like)
+		case "target":
+			conds = append(conds, `target_name LIKE ? ESCAPE '\'`)
+			args = append(args, like)
+		case "path":
+			conds = append(conds, `path LIKE ? ESCAPE '\'`)
+			args = append(args, like)
+		default: // "" = every searchable column
+			conds = append(conds, `(actor LIKE ? ESCAPE '\' OR action LIKE ? ESCAPE '\' OR target_name LIKE ? ESCAPE '\' OR path LIKE ? ESCAPE '\')`)
+			args = append(args, like, like, like, like)
 		}
 	}
-	q += " ORDER BY ts DESC, id DESC LIMIT ?"
-	args = append(args, f.Limit)
+	where := ""
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
+	}
+	var total int
+	if err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM events"+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	order := map[string]string{"ts": "ts", "actor": "actor", "action": "action", "target": "target_name", "path": "path"}[f.Sort]
+	if order == "" {
+		order = "ts"
+	}
+	dir := " asc"
+	if f.Dir == "desc" {
+		dir = " desc"
+	}
+	q := "SELECT id, ts, actor_id, actor, tenant_id, action, target_type, target_id, target_name, path, details, ip FROM events" +
+		where + " ORDER BY " + order + dir + ", id DESC LIMIT ? OFFSET ?"
+	args = append(args, f.Limit, f.Offset)
 
 	rows, err := s.DB.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	out := []Event{}
@@ -120,7 +155,7 @@ func (s *Store) List(ctx context.Context, tenantID int64, f Filter) ([]Event, er
 		)
 		if err := rows.Scan(&ev.ID, &ev.TS, &actorID, &ev.Actor, &ev.TenantID,
 			&ev.Action, &ev.TargetType, &ev.TargetID, &ev.TargetName, &ev.Path, &details, &ev.IP); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if actorID.Valid {
 			v := actorID.Int64
@@ -132,5 +167,5 @@ func (s *Store) List(ctx context.Context, tenantID int64, f Filter) ([]Event, er
 		ev.Time = time.Unix(ev.TS, 0).UTC()
 		out = append(out, ev)
 	}
-	return out, rows.Err()
+	return out, total, rows.Err()
 }

@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/user/llm-crud1/internal/acl"
+	"github.com/user/llm-crud1/internal/fsx"
 )
 
 func (a *API) maxBytes() int64 {
@@ -21,11 +23,30 @@ func (a *API) maxBytes() int64 {
 	return mb << 20
 }
 
-// handleList: GET /api/v1/fs?path=/dir
+// fsListSpec: the files panel's search/sort whitelist. The tree lives on
+// disk rather than in SQL, so the handler filters, sorts and slices the
+// directory listing in-process.
+var fsListSpec = ListSpec{
+	Sorts:   map[string]bool{"name": true, "size": true, "mtime": true},
+	Cols:    []string{"name"},
+	DefSort: "name",
+}
+
+// entryView is one listed entry paired with the caller's bits on it.
+type entryView struct {
+	Entry fsx.Entry `json:"entry"`
+	Perms acl.Bits  `json:"perms"`
+}
+
+// handleList: GET /api/v1/fs?path=/dir&q=&col=&sort=&dir=&limit=&offset=
 func (a *API) handleList(w http.ResponseWriter, r *http.Request) {
 	p, err := logicalPath(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad_path", err.Error())
+		return
+	}
+	o, ok := parseList(w, r, fsListSpec)
+	if !ok {
 		return
 	}
 	if !a.check(w, r, p, true, false, false) {
@@ -41,7 +62,7 @@ func (a *API) handleList(w http.ResponseWriter, r *http.Request) {
 	}
 	// Hide entries the caller cannot read.
 	u := userFrom(r.Context())
-	visible := make([]any, 0, len(entries))
+	visible := make([]entryView, 0, len(entries))
 	for _, e := range entries {
 		bits, err := a.ACL.Effective(r.Context(), a.Auth, e.Path, u)
 		if err != nil {
@@ -50,11 +71,57 @@ func (a *API) handleList(w http.ResponseWriter, r *http.Request) {
 		if !bits.Read {
 			continue
 		}
-		visible = append(visible, struct {
-			Entry any      `json:"entry"`
-			Perms acl.Bits `json:"perms"`
-		}{Entry: e, Perms: bits})
+		visible = append(visible, entryView{Entry: e, Perms: bits})
 	}
+	// Search on entry name.
+	if o.Q != "" {
+		ql := strings.ToLower(o.Q)
+		keep := visible[:0]
+		for _, v := range visible {
+			if strings.Contains(strings.ToLower(v.Entry.Name), ql) {
+				keep = append(keep, v)
+			}
+		}
+		visible = keep
+	}
+	// Directories always first; then the chosen column, name as tiebreak.
+	desc := o.Dir == "desc"
+	sort.SliceStable(visible, func(i, j int) bool {
+		x, y := visible[i], visible[j]
+		if x.Entry.IsDir != y.Entry.IsDir {
+			return x.Entry.IsDir
+		}
+		switch o.Sort {
+		case "size":
+			if x.Entry.Size != y.Entry.Size {
+				return (x.Entry.Size < y.Entry.Size) != desc
+			}
+		case "mtime":
+			if !x.Entry.ModTime.Equal(y.Entry.ModTime) {
+				return x.Entry.ModTime.Before(y.Entry.ModTime) != desc
+			}
+		default:
+			nx, ny := strings.ToLower(x.Entry.Name), strings.ToLower(y.Entry.Name)
+			if nx != ny {
+				return (nx < ny) != desc
+			}
+		}
+		return strings.ToLower(x.Entry.Name) < strings.ToLower(y.Entry.Name)
+	})
+	// Slice the requested page; X-Total-Count is the whole filtered set.
+	total := len(visible)
+	if o.Limit > 0 {
+		off := o.Offset
+		if off > total {
+			off = total
+		}
+		end := total
+		if off+o.Limit < end {
+			end = off + o.Limit
+		}
+		visible = visible[off:end]
+	}
+	setTotal(w, total)
 	self, _ := a.ACL.Effective(r.Context(), a.Auth, p, u)
 	writeJSON(w, http.StatusOK, map[string]any{"path": p, "perms": self, "entries": visible})
 }

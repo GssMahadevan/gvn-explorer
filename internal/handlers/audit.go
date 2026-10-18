@@ -7,7 +7,6 @@ package handlers
 import (
 	"log/slog"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/user/llm-crud1/internal/audit"
@@ -39,28 +38,36 @@ func (a *API) audit(r *http.Request, ev audit.Event) {
 	}
 }
 
+var eventsListSpec = ListSpec{
+	Sorts:   map[string]bool{"ts": true, "actor": true, "action": true, "target": true, "path": true},
+	Cols:    []string{"actor", "action", "target", "path"},
+	DefSort: "ts",
+	DefDir:  "desc",
+}
+
 // handleEventsList: GET /api/v1/events (admin).
-// Query: limit, action, target_type, target, since (RFC3339).
+// Query: limit, offset, q, col, sort, dir (standard list params), plus the
+// structured filters action, target_type, target, since (RFC3339).
 // Super admins see everything; tenant admins only events scoped to their
 // tenant — including actions a super admin performed on their users/grants.
 func (a *API) handleEventsList(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	limit := 100
-	if v := q.Get("limit"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n <= 0 {
-			writeError(w, http.StatusBadRequest, "bad_request", "limit must be a positive integer")
-			return
-		}
-		limit = n
+	o, ok := parseList(w, r, eventsListSpec)
+	if !ok {
+		return
 	}
+	qs := r.URL.Query()
 	f := audit.Filter{
-		Limit:      limit,
-		Action:     q.Get("action"),
-		TargetType: q.Get("target_type"),
-		Target:     q.Get("target"),
+		Limit:      o.Limit,
+		Offset:     o.Offset,
+		Q:          o.Q,
+		Col:        o.Col,
+		Sort:       o.Sort,
+		Dir:        o.Dir,
+		Action:     qs.Get("action"),
+		TargetType: qs.Get("target_type"),
+		Target:     qs.Get("target"),
 	}
-	if v := q.Get("since"); v != "" {
+	if v := qs.Get("since"); v != "" {
 		t, err := time.Parse(time.RFC3339, v)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "since must be RFC3339")
@@ -68,10 +75,11 @@ func (a *API) handleEventsList(w http.ResponseWriter, r *http.Request) {
 		}
 		f.Since = t.Unix()
 	}
-	events, err := a.Events.List(r.Context(), scopeTenantID(userFrom(r.Context())), f)
+	events, total, err := a.Events.List(r.Context(), scopeTenantID(userFrom(r.Context())), f)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	setTotal(w, total)
 	writeJSON(w, http.StatusOK, events)
 }

@@ -794,3 +794,181 @@ func TestAuditTrail(t *testing.T) {
 	peonc := login(t, e.srv, "acme", "peon", "pw")
 	must(t, peonc, "GET", u+"/api/v1/events", "", 403)
 }
+
+// Every list endpoint shares one contract: limit/offset paging with an
+// X-Total-Count header, q/col column search and sort/dir ordering.
+func TestListPagingSearchSort(t *testing.T) {
+	e := newEnv(t)
+	u := e.srv.URL
+
+	for i := 1; i <= 12; i++ {
+		must(t, e.admin, "POST", u+"/api/v1/users", fmt.Sprintf(`{"username":"u%02d","password":"pw"}`, i), 201)
+	}
+
+	// reqGet returns status, raw body and the X-Total-Count header.
+	reqGet := func(url string) (int, []byte, int) {
+		t.Helper()
+		resp, err := e.admin.Get(url)
+		if err != nil {
+			t.Fatalf("get %s: %v", url, err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		total, _ := strconv.Atoi(resp.Header.Get("X-Total-Count"))
+		return resp.StatusCode, raw, total
+	}
+	arrList := func(url string) ([]any, int) {
+		t.Helper()
+		code, raw, total := reqGet(url)
+		if code != 200 {
+			t.Fatalf("GET %s: status %d (%s)", url, code, raw)
+		}
+		var arr []any
+		if err := json.Unmarshal(raw, &arr); err != nil {
+			t.Fatalf("GET %s: %v", url, err)
+		}
+		return arr, total
+	}
+	objList := func(url string) (map[string]any, int) {
+		t.Helper()
+		code, raw, total := reqGet(url)
+		if code != 200 {
+			t.Fatalf("GET %s: status %d (%s)", url, code, raw)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("GET %s: %v", url, err)
+		}
+		return body, total
+	}
+
+	// ---- users ----
+	users := func(qs string) ([]any, int) { return arrList(u + "/api/v1/users?" + qs) }
+	if arr, total := users("limit=5"); len(arr) != 5 || total != 13 {
+		t.Fatalf("users limit=5: %d rows, total %d; want 5/13", len(arr), total)
+	}
+	if arr, total := users("limit=5&offset=10"); len(arr) != 3 || total != 13 {
+		t.Fatalf("users offset tail: %d rows, total %d; want 3/13", len(arr), total)
+	}
+	if arr, total := users(""); len(arr) != 13 || total != 13 {
+		t.Fatalf("users unparameterised must stay full list: %d/%d; want 13/13", len(arr), total)
+	}
+	if p1, _ := users("limit=4"); p1[0].(map[string]any)["username"] != "admin" {
+		t.Fatalf("users default order: first %v, want admin", p1[0])
+	}
+	if _, total := users("q=u1"); total != 3 {
+		t.Fatalf("users q=u1 total %d, want 3 (u10..u12)", total)
+	}
+	if _, total := users("q=acme&col=username"); total != 0 {
+		t.Fatalf("users q=acme col=username total %d, want 0", total)
+	}
+	if _, total := users("q=acme&col=tenant"); total != 13 {
+		t.Fatalf("users q=acme col=tenant total %d, want 13", total)
+	}
+	if arr, _ := users("sort=username&dir=desc&limit=1"); arr[0].(map[string]any)["username"] != "u12" {
+		t.Fatalf("users desc head: %v, want u12", arr[0])
+	}
+	for _, qs := range []string{"sort=pass", "col=id", "dir=up", "limit=0", "limit=1001", "offset=-1", "q=" + strings.Repeat("x", 101)} {
+		if code, _, _ := reqGet(u + "/api/v1/users?" + qs); code != 400 {
+			t.Fatalf("users?%s: status %d, want 400", qs, code)
+		}
+	}
+
+	// ---- fs listing ----
+	must(t, e.admin, "POST", u+"/api/v1/fs/mkdir", `{"path":"/pag"}`, 201)
+	must(t, e.admin, "POST", u+"/api/v1/fs/mkdir", `{"path":"/pag/sub"}`, 201)
+	for name, size := range map[string]int{"a1": 3, "b2": 5, "c3": 7} {
+		must(t, e.admin, "POST", u+"/api/v1/fs/write",
+			fmt.Sprintf(`{"path":"/pag/%s.txt","content":"%s"}`, name, strings.Repeat("x", size)), 200)
+	}
+	fslist := func(qs string) (map[string]any, int) {
+		return objList(u + "/api/v1/fs?path=/pag&" + qs)
+	}
+	if body, total := fslist(""); total != 4 || len(body["entries"].([]any)) != 4 {
+		t.Fatalf("fs list: %d entries total %d; want 4/4", len(body["entries"].([]any)), total)
+	}
+	if body, _ := fslist("limit=1"); body["entries"].([]any)[0].(map[string]any)["entry"].(map[string]any)["name"] != "sub" {
+		t.Fatalf("fs dirs must sort first: %v", body["entries"].([]any)[0])
+	}
+	if body, total := fslist("q=.txt"); total != 3 || len(body["entries"].([]any)) != 3 {
+		t.Fatalf("fs q=.txt: %d/%d, want 3/3", len(body["entries"].([]any)), total)
+	}
+	if body, _ := fslist("sort=size&dir=desc"); body["entries"].([]any)[1].(map[string]any)["entry"].(map[string]any)["name"] != "c3.txt" {
+		t.Fatalf("fs size desc after dirs must start with c3.txt: %v", body["entries"].([]any)[1])
+	}
+	if body, total := fslist("limit=2&offset=3"); len(body["entries"].([]any)) != 1 || total != 4 {
+		t.Fatalf("fs offset tail: %d rows total %d; want 1/4", len(body["entries"].([]any)), total)
+	}
+
+	// ---- perms (grants on one path) ----
+	for i := 1; i <= 4; i++ {
+		must(t, e.admin, "PUT", u+"/api/v1/perms",
+			fmt.Sprintf(`{"path":"/pag","principal_type":"user","principal":"u%02d","read":true}`, i), 200)
+	}
+	must(t, e.admin, "POST", u+"/api/v1/groups", `{"name":"readers"}`, 201)
+	must(t, e.admin, "PUT", u+"/api/v1/perms", `{"path":"/pag","principal_type":"group","principal":"readers","read":true}`, 200)
+	pshow := func(qs string) (map[string]any, int) {
+		return objList(u + "/api/v1/perms?path=/pag&" + qs)
+	}
+	if body, total := pshow("limit=2"); total != 5 || len(body["grants"].([]any)) != 2 {
+		t.Fatalf("perms limit=2: %d rows total %d; want 2/5", len(body["grants"].([]any)), total)
+	}
+	if _, total := pshow("q=reader"); total != 1 {
+		t.Fatalf("perms q=reader total %d, want 1", total)
+	}
+	if _, total := pshow("q=u0&col=principal"); total != 4 {
+		t.Fatalf("perms q=u0 col=principal total %d, want 4", total)
+	}
+	if _, total := pshow("q=acme&col=tenant"); total != 5 {
+		t.Fatalf("perms q=acme col=tenant total %d, want 5", total)
+	}
+
+	// ---- groups & tenants ----
+	must(t, e.admin, "POST", u+"/api/v1/groups", `{"name":"ops"}`, 201)
+	if arr, total := arrList(u + "/api/v1/groups?limit=1"); len(arr) != 1 || total != 2 {
+		t.Fatalf("groups limit=1: %d rows total %d; want 1/2", len(arr), total)
+	}
+	if _, total := arrList(u + "/api/v1/groups?q=ops"); total != 1 {
+		t.Fatalf("groups q=ops total %d, want 1", total)
+	}
+	if _, total := arrList(u + "/api/v1/tenants?q=zzz"); total != 0 {
+		t.Fatalf("tenants q=zzz total %d, want 0", total)
+	}
+	must(t, e.admin, "POST", u+"/api/v1/tenants", `{"name":"beta"}`, 201)
+	if _, total := arrList(u + "/api/v1/tenants"); total != 2 {
+		t.Fatalf("tenants total %d, want 2", total)
+	}
+
+	// ---- events ----
+	evs := func(qs string) ([]any, int) { return arrList(u + "/api/v1/events?" + qs) }
+	if arr, total := evs("limit=5"); len(arr) != 5 || total <= 5 {
+		t.Fatalf("events limit=5: %d rows total %d; want 5/>5", len(arr), total)
+	}
+	arr, total := evs("q=user_create")
+	if total == 0 {
+		t.Fatalf("events q=user_create total %d, want >0", total)
+	}
+	for _, ev := range arr2slice(arr) {
+		if ev["action"] != "user_create" {
+			t.Fatalf("events q=user_create leak: %v", ev)
+		}
+	}
+	if arr, _ := evs("sort=ts&dir=asc&limit=5"); jsonInt(arr[0].(map[string]any)["ts"]) > jsonInt(arr[4].(map[string]any)["ts"]) {
+		t.Fatal("events asc order broken")
+	}
+	if arr, _ := evs("limit=5"); jsonInt(arr[0].(map[string]any)["ts"]) < jsonInt(arr[4].(map[string]any)["ts"]) {
+		t.Fatal("events must stay newest-first by default")
+	}
+	if _, total := evs("action=user_create&q=u0&col=target"); total < 1 {
+		t.Fatalf("events structured filter + q total %d, want >=1", total)
+	}
+}
+
+// arr2slice decodes a []any of objects into []map[string]any.
+func arr2slice(arr []any) []map[string]any {
+	out := make([]map[string]any, 0, len(arr))
+	for _, v := range arr {
+		out = append(out, v.(map[string]any))
+	}
+	return out
+}

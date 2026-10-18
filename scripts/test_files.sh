@@ -277,6 +277,104 @@ check "ta sees super admin actions on own tenant" "$SEESUPER"
 RIDHDR=$(curl -s -D - -o /dev/null "$BASE_URL/healthz" | grep -ci '^x-request-id: [0-9a-f]\{16\}' || true)
 check "X-Request-Id issued on every response" "$([ "$RIDHDR" -ge 1 ]; echo $?)"
 
+echo "== pagination, search, sort =="
+tot() { # tot <name> <want_total> <path> — GET, then verify 200 + X-Total-Count header
+  local name=$1 want=$2 path=$3 code got
+  code=$(curl -s -o /tmp/resp.json -D /tmp/hdr.txt -b "$AJ" -w '%{http_code}' "$BASE_URL$path")
+  got=$(tr -d '\r' < /tmp/hdr.txt | awk -F': ' 'tolower($1)=="x-total-count" {print $2}')
+  if [ "$code" = 200 ] && [ "$got" = "$want" ]; then
+    PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %-46s X-Total-Count %s\n' "$name" "$got"
+  else
+    FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %-46s (status %s, total %s, want %s)\n' "$name" "$code" "$got" "$want"
+  fi
+}
+T2="pg$SFX"
+t "$AJ" "create tenant $T2" 201 POST /api/v1/tenants "{\"name\":\"$T2\"}"
+for n in 1 2 3; do
+  t "$AJ" "create pgu$n" 201 POST /api/v1/users "{\"tenant\":\"$T2\",\"username\":\"pgu$n\",\"password\":\"pw\"}"
+done
+PD="/pgdir-$SFX"
+t "$AJ" "mkdir $PD" 201 POST /api/v1/fs/mkdir "{\"path\":\"$PD\"}"
+t "$AJ" "mkdir $PD/sub1" 201 POST /api/v1/fs/mkdir "{\"path\":\"$PD/sub1\"}"
+t "$AJ" "write pa.txt" 200 POST /api/v1/fs/write "{\"path\":\"$PD/pa.txt\",\"content\":\"aa\"}"
+t "$AJ" "write pb.txt" 200 POST /api/v1/fs/write "{\"path\":\"$PD/pb.txt\",\"content\":\"aaaa\"}"
+t "$AJ" "write pc.txt" 200 POST /api/v1/fs/write "{\"path\":\"$PD/pc.txt\",\"content\":\"aaaaaa\"}"
+
+# paging: total stays constant, pages are disjoint and ordered
+tot "users total by tenant q" 3 "/api/v1/users?q=$T2"
+t "$AJ" "users limit=2" 200 GET "/api/v1/users?q=$T2&limit=2"
+N=$(jq 'length' /tmp/resp.json)
+check "users page1 has 2 rows" "$([ "$N" = 2 ]; echo $?)" "got $N"
+tot "users total under paging" 3 "/api/v1/users?q=$T2&limit=2&offset=0"
+P1=$(curl -s -b "$AJ" "$BASE_URL/api/v1/users?q=$T2&limit=2&offset=0" | jq -c '[.[].username]')
+P2=$(curl -s -b "$AJ" "$BASE_URL/api/v1/users?q=$T2&limit=2&offset=2" | jq -c '[.[].username]')
+OV=$(jq -n --argjson a "$P1" --argjson b "$P2" '[$a[] | . as $x | select($b | index($x))] | length')
+check "users pages disjoint" "$([ "$OV" = 0 ]; echo $?)" "$P1 vs $P2"
+check "last row is pgu3 (asc)" "$(jq -e --arg u pgu3 '.[-1] == $u' <<<"$P2" >/dev/null; echo $?)" "got: $P2"
+
+# search restricted to selected columns
+tot "q on all cols matches tenant" 3 "/api/v1/users?q=$T2"
+tot "col=username: no match" 0 "/api/v1/users?q=$T2&col=username"
+tot "col=tenant: all match" 3 "/api/v1/users?q=$T2&col=tenant"
+
+# sorting
+t "$AJ" "users sort desc" 200 GET "/api/v1/users?q=$T2&sort=username&dir=desc"
+HEAD=$(jq -r '.[0].username' /tmp/resp.json)
+check "desc head pgu3" "$([ "$HEAD" = pgu3 ]; echo $?)" "got $HEAD"
+
+# bad list params are refused
+t "$AJ" "users bad sort" 400 GET "/api/v1/users?sort=password"
+t "$AJ" "users bad col" 400 GET "/api/v1/users?col=id"
+t "$AJ" "users bad dir" 400 GET "/api/v1/users?dir=sideways"
+t "$AJ" "users limit zero" 400 GET "/api/v1/users?limit=0"
+t "$AJ" "users offset negative" 400 GET "/api/v1/users?offset=-1"
+
+# fs listing: name search, sort (dirs always first), paging
+tot "fs total entries" 4 "/api/v1/fs?path=$PD"
+t "$AJ" "fs dirs first" 200 GET "/api/v1/fs?path=$PD"
+FN=$(jq -r '.entries[0].entry.name' /tmp/resp.json)
+check "sub1 listed first" "$([ "$FN" = sub1 ]; echo $?)" "got $FN"
+tot "fs name search q=pa" 1 "/api/v1/fs?path=$PD&q=pa"
+t "$AJ" "fs sort size desc" 200 GET "/api/v1/fs?path=$PD&sort=size&dir=desc"
+SN=$(jq -r '.entries[1].entry.name' /tmp/resp.json)
+check "biggest file after dir" "$([ "$SN" = pc.txt ]; echo $?)" "got $SN"
+t "$AJ" "fs page 2" 200 GET "/api/v1/fs?path=$PD&limit=2&offset=2"
+N=$(jq '.entries | length' /tmp/resp.json)
+check "fs page2 has 2 rows" "$([ "$N" = 2 ]; echo $?)" "got $N"
+
+# grants on one path
+for n in 1 2 3; do
+  t "$AJ" "grant pgu$n on $PD" 200 PUT /api/v1/perms "{\"path\":\"$PD\",\"principal_type\":\"user\",\"principal\":\"pgu$n\",\"tenant\":\"$T2\",\"read\":true}"
+done
+tot "perms total grants" 3 "/api/v1/perms?path=$PD"
+t "$AJ" "perms limit=2" 200 GET "/api/v1/perms?path=$PD&limit=2"
+N=$(jq '.grants | length' /tmp/resp.json)
+check "perms page has 2 rows" "$([ "$N" = 2 ]; echo $?)" "got $N"
+tot "perms search principal" 1 "/api/v1/perms?path=$PD&q=pgu2"
+tot "perms search tenant" 3 "/api/v1/perms?path=$PD&q=$T2&col=tenant"
+t "$AJ" "perms sort desc" 200 GET "/api/v1/perms?path=$PD&sort=principal&dir=desc"
+HEAD=$(jq -r '.grants[0].principal_name' /tmp/resp.json)
+check "perms desc head pgu3" "$([ "$HEAD" = pgu3 ]; echo $?)" "got $HEAD"
+
+# groups and tenants
+t "$AJ" "create group pgg" 201 POST /api/v1/groups "{\"tenant\":\"$T2\",\"name\":\"pgg$SFX\"}"
+tot "groups search name" 1 "/api/v1/groups?q=pgg$SFX"
+tot "tenants search name" 1 "/api/v1/tenants?q=$T2"
+
+# events paging + search (structured filters still apply)
+t "$AJ" "events limit=5" 200 GET "/api/v1/events?limit=5"
+N=$(jq 'length' /tmp/resp.json)
+check "events page of 5" "$([ "$N" = 5 ]; echo $?)" "got $N"
+curl -s -o /tmp/resp.json -D /tmp/hdr.txt -b "$AJ" "$BASE_URL/api/v1/events?limit=5&offset=5" >/dev/null
+EVT=$(tr -d '\r' < /tmp/hdr.txt | awk -F': ' 'tolower($1)=="x-total-count" {print $2}')
+N=$(jq 'length' /tmp/resp.json)
+check "events offset page + total" "$([ "$N" = 5 ] && [ "$EVT" -gt 10 ]; echo $?)" "rows $N total $EVT"
+t "$AJ" "events q search" 200 GET "/api/v1/events?q=user_create&limit=50"
+ALLQ=$(jq -e 'all(.[]; .action == "user_create")' /tmp/resp.json >/dev/null; echo $?)
+check "events q filters to matches" "$ALLQ"
+t "$AJ" "fs bad sort" 400 GET "/api/v1/fs?path=$PD&sort=perms"
+t "$AJ" "perms bad dir" 400 GET "/api/v1/perms?path=$PD&dir=sideways"
+
 echo "== session lifecycle =="
 t "$UJ" "logout" 204 POST /api/v1/auth/logout
 t "$UJ" "fs after logout" 401 GET /api/v1/fs?path=/
