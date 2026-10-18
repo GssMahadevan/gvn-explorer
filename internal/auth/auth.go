@@ -1,4 +1,5 @@
-// Package auth: users, groups, memberships, bcrypt passwords, cookie sessions.
+// Package auth: tenants, tenant-scoped users and groups, memberships,
+// bcrypt passwords, cookie sessions.
 package auth
 
 import (
@@ -12,19 +13,33 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-var ErrNotFound = errors.New("not found")
+var (
+	ErrNotFound       = errors.New("not found")
+	ErrTenantMismatch = errors.New("user and group must belong to the same tenant")
+)
+
+type Tenant struct {
+	ID        int64     `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+}
 
 type User struct {
 	ID        int64     `json:"id"`
+	TenantID  int64     `json:"tenant_id"`
+	Tenant    string    `json:"tenant"`
 	Username  string    `json:"username"`
-	IsAdmin   bool      `json:"is_admin"`
+	IsAdmin   bool      `json:"is_admin"` // tenant admin
+	IsSuper   bool      `json:"is_super"` // platform super admin
 	CreatedAt time.Time `json:"created_at"`
 }
 
 type Group struct {
-	ID      int64    `json:"id"`
-	Name    string   `json:"name"`
-	Members []Member `json:"members,omitempty"`
+	ID       int64    `json:"id"`
+	TenantID int64    `json:"tenant_id"`
+	Tenant   string   `json:"tenant"`
+	Name     string   `json:"name"`
+	Members  []Member `json:"members,omitempty"`
 }
 
 type Member struct {
@@ -38,37 +53,118 @@ func NewStore(db *sql.DB) *Store { return &Store{DB: db} }
 
 const tsFmt = time.RFC3339Nano
 
-// CreateUser adds the user and returns it. admin grants full bypass rights.
-func (s *Store) CreateUser(ctx context.Context, username, password string, admin bool) (User, error) {
+// ---- tenants ----
+
+func (s *Store) CreateTenant(ctx context.Context, name string) (Tenant, error) {
+	now := time.Now().UTC()
+	res, err := s.DB.ExecContext(ctx, "INSERT INTO tenants (name, created_at) VALUES (?,?)",
+		name, now.Format(tsFmt))
+	if err != nil {
+		return Tenant{}, err
+	}
+	id, _ := res.LastInsertId()
+	return Tenant{ID: id, Name: name, CreatedAt: now}, nil
+}
+
+func (s *Store) ListTenants(ctx context.Context) ([]Tenant, error) {
+	rows, err := s.DB.QueryContext(ctx, "SELECT id, name, created_at FROM tenants ORDER BY name")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Tenant{}
+	for rows.Next() {
+		var (
+			t     Tenant
+			caStr string
+		)
+		if err := rows.Scan(&t.ID, &t.Name, &caStr); err != nil {
+			return nil, err
+		}
+		t.CreatedAt, _ = time.Parse(tsFmt, caStr)
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) tenantIDByName(ctx context.Context, name string) (int64, error) {
+	var id int64
+	err := s.DB.QueryRowContext(ctx, "SELECT id FROM tenants WHERE name = ?", name).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	return id, err
+}
+
+// DeleteTenant drops the tenant and, with it, its users/groups/memberships
+// (FK cascade) plus every ACL grant that targeted one of its principals.
+func (s *Store) DeleteTenant(ctx context.Context, id int64) error {
+	_, err := s.DB.ExecContext(ctx, `
+		DELETE FROM perms WHERE
+			(principal_type='user'  AND principal_id IN (SELECT id FROM users  WHERE tenant_id=?)) OR
+			(principal_type='group' AND principal_id IN (SELECT id FROM groups WHERE tenant_id=?))`, id, id)
+	if err != nil {
+		return err
+	}
+	res, err := s.DB.ExecContext(ctx, "DELETE FROM tenants WHERE id = ?", id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ---- users ----
+
+type rowScanner interface{ Scan(dest ...any) error }
+
+const userCols = `u.id, u.tenant_id, t.name, u.username, u.is_admin, u.is_super, u.created_at`
+const userFrom = `FROM users u JOIN tenants t ON t.id = u.tenant_id`
+
+// CreateUser adds a user inside tenant. admin marks a tenant admin; super
+// marks the platform super admin (bootstrap path only — the API never sets it).
+func (s *Store) CreateUser(ctx context.Context, tenant, username, password string, admin, super bool) (User, error) {
+	tid, err := s.tenantIDByName(ctx, tenant)
+	if err != nil {
+		return User{}, err
+	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return User{}, err
 	}
-	var adminInt int
-	if admin {
-		adminInt = 1
-	}
+	now := time.Now().UTC()
 	res, err := s.DB.ExecContext(ctx,
-		"INSERT INTO users (username, pass_hash, is_admin, created_at) VALUES (?,?,?,?)",
-		username, string(hash), adminInt, time.Now().UTC().Format(tsFmt))
+		"INSERT INTO users (tenant_id, username, pass_hash, is_admin, is_super, created_at) VALUES (?,?,?,?,?,?)",
+		tid, username, string(hash), b2i(admin), b2i(super), now.Format(tsFmt))
 	if err != nil {
 		return User{}, err
 	}
 	id, _ := res.LastInsertId()
-	return User{ID: id, Username: username, IsAdmin: admin}, nil
+	return User{ID: id, TenantID: tid, Tenant: tenant, Username: username, IsAdmin: admin, IsSuper: super, CreatedAt: now}, nil
 }
 
-// Verify checks credentials and returns the user, or ErrNotFound on mismatch.
-func (s *Store) Verify(ctx context.Context, username, password string) (User, error) {
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// Verify checks tenant+username+password and returns the user,
+// or ErrNotFound on mismatch.
+func (s *Store) Verify(ctx context.Context, tenant, username, password string) (User, error) {
 	var (
-		u     User
-		hash  string
-		ad    int
-		caStr string
+		u       User
+		hash    string
+		ad, sup int
+		caStr   string
 	)
 	err := s.DB.QueryRowContext(ctx,
-		"SELECT id, username, pass_hash, is_admin, created_at FROM users WHERE username = ?", username).
-		Scan(&u.ID, &u.Username, &hash, &ad, &caStr)
+		"SELECT u.id, u.tenant_id, t.name, u.username, u.pass_hash, u.is_admin, u.is_super, u.created_at "+
+			userFrom+" WHERE u.username = ? AND t.name = ?", username, tenant).
+		Scan(&u.ID, &u.TenantID, &u.Tenant, &u.Username, &hash, &ad, &sup, &caStr)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
@@ -78,62 +174,66 @@ func (s *Store) Verify(ctx context.Context, username, password string) (User, er
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
 		return User{}, ErrNotFound
 	}
-	u.IsAdmin = ad != 0
+	u.IsAdmin, u.IsSuper = ad != 0, sup != 0
 	u.CreatedAt, _ = time.Parse(tsFmt, caStr)
 	return u, nil
 }
 
 func (s *Store) UserByID(ctx context.Context, id int64) (User, error) {
-	var (
-		u     User
-		ad    int
-		caStr string
-	)
-	err := s.DB.QueryRowContext(ctx,
-		"SELECT id, username, is_admin, created_at FROM users WHERE id = ?", id).
-		Scan(&u.ID, &u.Username, &ad, &caStr)
+	row := s.DB.QueryRowContext(ctx, "SELECT "+userCols+" "+userFrom+" WHERE u.id = ?", id)
+	u, err := s.scanUserRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
-	u.IsAdmin = ad != 0
-	u.CreatedAt, _ = time.Parse(tsFmt, caStr)
 	return u, err
 }
 
-func (s *Store) UserByName(ctx context.Context, username string) (User, error) {
-	var (
-		id    int64
-		ad    int
-		caStr string
-	)
-	err := s.DB.QueryRowContext(ctx,
-		"SELECT id, is_admin, created_at FROM users WHERE username = ?", username).Scan(&id, &ad, &caStr)
+func (s *Store) UserByName(ctx context.Context, tenant, username string) (User, error) {
+	row := s.DB.QueryRowContext(ctx,
+		"SELECT "+userCols+" "+userFrom+" WHERE u.username = ? AND t.name = ?", username, tenant)
+	u, err := s.scanUserRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
-	u := User{ID: id, Username: username, IsAdmin: ad != 0}
-	u.CreatedAt, _ = time.Parse(tsFmt, caStr)
 	return u, err
 }
 
-func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
-	rows, err := s.DB.QueryContext(ctx, "SELECT id, username, is_admin, created_at FROM users ORDER BY username")
+func (s *Store) scanUserRow(sc rowScanner) (User, error) {
+	var (
+		id, tid  int64
+		tenant   string
+		username string
+		ad, sup  int
+		caStr    string
+	)
+	if err := sc.Scan(&id, &tid, &tenant, &username, &ad, &sup, &caStr); err != nil {
+		return User{}, err
+	}
+	u := User{ID: id, TenantID: tid, Tenant: tenant, Username: username, IsAdmin: ad != 0, IsSuper: sup != 0}
+	u.CreatedAt, _ = time.Parse(tsFmt, caStr)
+	return u, nil
+}
+
+// ListUsers lists users; tenantID 0 means all tenants (super admin view).
+func (s *Store) ListUsers(ctx context.Context, tenantID int64) ([]User, error) {
+	q := "SELECT " + userCols + " " + userFrom
+	var args []any
+	if tenantID != 0 {
+		q += " WHERE u.tenant_id = ?"
+		args = append(args, tenantID)
+	}
+	q += " ORDER BY t.name, u.username"
+	rows, err := s.DB.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := []User{}
 	for rows.Next() {
-		var (
-			u     User
-			ad    int
-			caStr string
-		)
-		if err := rows.Scan(&u.ID, &u.Username, &ad, &caStr); err != nil {
+		u, err := s.scanUserRow(rows)
+		if err != nil {
 			return nil, err
 		}
-		u.IsAdmin = ad != 0
-		u.CreatedAt, _ = time.Parse(tsFmt, caStr)
 		out = append(out, u)
 	}
 	return out, rows.Err()
@@ -167,17 +267,41 @@ func (s *Store) SetPassword(ctx context.Context, id int64, password string) erro
 
 // ---- groups ----
 
-func (s *Store) CreateGroup(ctx context.Context, name string) (Group, error) {
-	res, err := s.DB.ExecContext(ctx, "INSERT INTO groups (name) VALUES (?)", name)
+const groupCols = `g.id, g.tenant_id, t.name, g.name`
+const groupFrom = `FROM groups g JOIN tenants t ON t.id = g.tenant_id`
+
+func scanGroup(sc rowScanner) (Group, error) {
+	var g Group
+	if err := sc.Scan(&g.ID, &g.TenantID, &g.Tenant, &g.Name); err != nil {
+		return Group{}, err
+	}
+	return g, nil
+}
+
+// CreateGroup adds a group named name inside tenant.
+func (s *Store) CreateGroup(ctx context.Context, tenant, name string) (Group, error) {
+	tid, err := s.tenantIDByName(ctx, tenant)
+	if err != nil {
+		return Group{}, err
+	}
+	res, err := s.DB.ExecContext(ctx, "INSERT INTO groups (tenant_id, name) VALUES (?,?)", tid, name)
 	if err != nil {
 		return Group{}, err
 	}
 	id, _ := res.LastInsertId()
-	return Group{ID: id, Name: name}, nil
+	return Group{ID: id, TenantID: tid, Tenant: tenant, Name: name}, nil
 }
 
-func (s *Store) ListGroups(ctx context.Context) ([]Group, error) {
-	rows, err := s.DB.QueryContext(ctx, "SELECT id, name FROM groups ORDER BY name")
+// ListGroups lists groups with members; tenantID 0 means all tenants.
+func (s *Store) ListGroups(ctx context.Context, tenantID int64) ([]Group, error) {
+	q := "SELECT " + groupCols + " " + groupFrom
+	var args []any
+	if tenantID != 0 {
+		q += " WHERE g.tenant_id = ?"
+		args = append(args, tenantID)
+	}
+	q += " ORDER BY t.name, g.name"
+	rows, err := s.DB.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -185,8 +309,8 @@ func (s *Store) ListGroups(ctx context.Context) ([]Group, error) {
 	out := []Group{}
 	index := map[int64]int{}
 	for rows.Next() {
-		var g Group
-		if err := rows.Scan(&g.ID, &g.Name); err != nil {
+		g, err := scanGroup(rows)
+		if err != nil {
 			return nil, err
 		}
 		index[g.ID] = len(out)
@@ -194,6 +318,9 @@ func (s *Store) ListGroups(ctx context.Context) ([]Group, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	if len(index) == 0 {
+		return out, nil
 	}
 	mrows, err := s.DB.QueryContext(ctx, `SELECT gm.group_id, u.id, u.username
 		FROM group_members gm JOIN users u ON u.id = gm.user_id ORDER BY gm.group_id, u.username`)
@@ -214,9 +341,17 @@ func (s *Store) ListGroups(ctx context.Context) ([]Group, error) {
 	return out, mrows.Err()
 }
 
-func (s *Store) GroupByName(ctx context.Context, name string) (Group, error) {
-	var g Group
-	err := s.DB.QueryRowContext(ctx, "SELECT id, name FROM groups WHERE name = ?", name).Scan(&g.ID, &g.Name)
+func (s *Store) GroupByID(ctx context.Context, id int64) (Group, error) {
+	g, err := scanGroup(s.DB.QueryRowContext(ctx, "SELECT "+groupCols+" "+groupFrom+" WHERE g.id = ?", id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Group{}, ErrNotFound
+	}
+	return g, err
+}
+
+func (s *Store) GroupByName(ctx context.Context, tenant, name string) (Group, error) {
+	g, err := scanGroup(s.DB.QueryRowContext(ctx,
+		"SELECT "+groupCols+" "+groupFrom+" WHERE g.name = ? AND t.name = ?", name, tenant))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Group{}, ErrNotFound
 	}
@@ -234,8 +369,22 @@ func (s *Store) DeleteGroup(ctx context.Context, id int64) error {
 	return nil
 }
 
+// AddMember enrolls a user in a group; both must belong to the same tenant.
 func (s *Store) AddMember(ctx context.Context, groupID, userID int64) error {
-	_, err := s.DB.ExecContext(ctx, "INSERT INTO group_members (group_id, user_id) VALUES (?,?)", groupID, userID)
+	var gt, ut sql.NullInt64
+	err := s.DB.QueryRowContext(ctx,
+		"SELECT (SELECT tenant_id FROM groups WHERE id=?), (SELECT tenant_id FROM users WHERE id=?)",
+		groupID, userID).Scan(&gt, &ut)
+	if err != nil {
+		return err
+	}
+	if !gt.Valid || !ut.Valid {
+		return ErrNotFound
+	}
+	if gt.Int64 != ut.Int64 {
+		return ErrTenantMismatch
+	}
+	_, err = s.DB.ExecContext(ctx, "INSERT INTO group_members (group_id, user_id) VALUES (?,?)", groupID, userID)
 	return err
 }
 
@@ -251,6 +400,7 @@ func (s *Store) RemoveMember(ctx context.Context, groupID, userID int64) error {
 }
 
 // GroupIDsFor lists the groups a user belongs to (for ACL resolution).
+// Membership is same-tenant by construction (see AddMember).
 func (s *Store) GroupIDsFor(ctx context.Context, userID int64) ([]int64, error) {
 	rows, err := s.DB.QueryContext(ctx, "SELECT group_id FROM group_members WHERE user_id = ?", userID)
 	if err != nil {

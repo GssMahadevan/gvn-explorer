@@ -14,14 +14,15 @@ import (
 )
 
 type Grant struct {
-	ID            int64  `json:"id"`
-	Path          string `json:"path"`
-	PrincipalType string `json:"principal_type"` // "user" | "group"
-	PrincipalID   int64  `json:"principal_id"`
-	PrincipalName string `json:"principal_name,omitempty"`
-	Read          bool   `json:"read"`
-	Write         bool   `json:"write"`
-	Delete        bool   `json:"delete"`
+	ID              int64  `json:"id"`
+	Path            string `json:"path"`
+	PrincipalType   string `json:"principal_type"` // "user" | "group"
+	PrincipalID     int64  `json:"principal_id"`
+	PrincipalName   string `json:"principal_name,omitempty"`
+	PrincipalTenant string `json:"principal_tenant,omitempty"`
+	Read            bool   `json:"read"`
+	Write           bool   `json:"write"`
+	Delete          bool   `json:"delete"`
 }
 
 // Bits is the effective permission set for one path.
@@ -117,10 +118,13 @@ func (s *Store) ListAll(ctx context.Context) ([]Grant, error) {
 func (s *Store) queryGrants(ctx context.Context, where string, args []any) ([]Grant, error) {
 	q := `SELECT p.id, p.path, p.principal_type, p.principal_id,
 	         p.can_read, p.can_write, p.can_delete,
-	         COALESCE(u.username, g.name, '?')
+	         COALESCE(u.username, g.name, '?'),
+	         COALESCE(tu.name, tg.name, '?')
 	      FROM perms p
 	      LEFT JOIN users u ON p.principal_type='user'  AND u.id = p.principal_id
-	      LEFT JOIN groups g ON p.principal_type='group' AND g.id = p.principal_id ` + where + `
+	      LEFT JOIN groups g ON p.principal_type='group' AND g.id = p.principal_id
+	      LEFT JOIN tenants tu ON tu.id = u.tenant_id
+	      LEFT JOIN tenants tg ON tg.id = g.tenant_id ` + where + `
 	      ORDER BY p.path, p.principal_type, p.principal_id`
 	rows, err := s.DB.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -133,7 +137,8 @@ func (s *Store) queryGrants(ctx context.Context, where string, args []any) ([]Gr
 			gr      Grant
 			r, w, d int
 		)
-		if err := rows.Scan(&gr.ID, &gr.Path, &gr.PrincipalType, &gr.PrincipalID, &r, &w, &d, &gr.PrincipalName); err != nil {
+		if err := rows.Scan(&gr.ID, &gr.Path, &gr.PrincipalType, &gr.PrincipalID,
+			&r, &w, &d, &gr.PrincipalName, &gr.PrincipalTenant); err != nil {
 			return nil, err
 		}
 		gr.Read, gr.Write, gr.Delete = r != 0, w != 0, d != 0
@@ -142,15 +147,29 @@ func (s *Store) queryGrants(ctx context.Context, where string, args []any) ([]Gr
 	return out, rows.Err()
 }
 
+// GrantByID fetches one grant with its principal's tenant resolved, for
+// tenant-scoped authorization of mutations.
+func (s *Store) GrantByID(ctx context.Context, id int64) (Grant, error) {
+	list, err := s.queryGrants(ctx, "WHERE p.id = ?", []any{id})
+	if err != nil {
+		return Grant{}, err
+	}
+	if len(list) == 0 {
+		return Grant{}, errors.New("grant not found")
+	}
+	return list[0], nil
+}
+
 // Effective computes the permission bits for user on path.
 // Resolution order, walking ancestors deepest-first:
 //  1. explicit grants for the user at this level  (wins over groups here)
 //  2. union of the user's group grants at this level
 //  3. continue up; no grants anywhere = deny everything.
 //
-// Admins bypass and get all bits.
+// Only platform super admins bypass. Tenant admins do NOT: the file tree is
+// shared across tenants, so their file access follows grants like anyone else.
 func (s *Store) Effective(ctx context.Context, a *auth.Store, path string, u auth.User) (Bits, error) {
-	if u.IsAdmin {
+	if u.IsSuper {
 		return Bits{Read: true, Write: true, Delete: true}, nil
 	}
 	groupIDs, err := a.GroupIDsFor(ctx, u.ID)

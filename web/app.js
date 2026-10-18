@@ -27,7 +27,7 @@ async function boot() {
 $('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   try {
-    me = await api('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ username: $('l-user').value, password: $('l-pass').value }) });
+    me = await api('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ tenant: $('l-tenant').value, username: $('l-user').value, password: $('l-pass').value }) });
     $('login').hidden = true; showApp();
   } catch (err) { $('login-error').textContent = err.message; $('login-error').hidden = false; }
 });
@@ -38,8 +38,12 @@ $('logout').addEventListener('click', async () => {
 
 function showApp() {
   $('app').hidden = false;
-  $('who').textContent = me.username + (me.is_admin ? ' (admin)' : '');
-  document.querySelectorAll('.admin-only').forEach(el => { el.hidden = !me.is_admin; });
+  const role = me.is_super ? 'super' : me.is_admin ? 'admin' : '';
+  $('who').textContent = `${me.tenant}/${me.username}` + (role ? ` (${role})` : '');
+  const isMgr = me.is_admin || me.is_super;
+  document.querySelectorAll('.admin-only').forEach(el => { el.hidden = !isMgr; });
+  document.querySelectorAll('.super-only').forEach(el => { el.hidden = !me.is_super; });
+  if (me.tenant) $('pm-tenant').placeholder = me.tenant;
   loadDir(cur);
 }
 
@@ -168,11 +172,11 @@ async function loadPerms() {
   try {
     const d = await api('/api/v1/perms?path=' + encodeURIComponent(cur));
     const eff = d.effective;
-    $('pm-effective').textContent = me.is_admin
-      ? 'you are admin — ACLs do not apply to you'
+    $('pm-effective').textContent = me.is_super
+      ? 'you are platform super admin — ACLs do not apply to you'
       : `effective for you: ${bits(eff)}${eff.source ? ' (inherited from ' + eff.source + ')' : ' (no access)'} — the perms tab lists only grants on this exact path`;
     $('pm-rows').innerHTML = (d.grants || []).map(g => `<tr data-id="${g.id}">
-      <td>${g.principal_type}: ${esc(g.principal_name)}</td>
+      <td>${g.principal_type}: ${esc(g.principal_tenant)}/${esc(g.principal_name)}</td>
       <td>${g.read ? 'r' : '-'}</td><td>${g.write ? 'w' : '-'}</td><td>${g.delete ? 'd' : '-'}</td>
       <td><button data-act="del" class="danger">revoke</button></td></tr>`).join('') || '<tr><td colspan=5 class="muted">no grants on this exact path (inheritance may still apply)</td></tr>';
   } catch (err) { toast(err.message, false); }
@@ -188,6 +192,7 @@ $('pm-form').addEventListener('submit', async (e) => {
   try {
     await api('/api/v1/perms', { method: 'PUT', body: JSON.stringify({
       path: cur, principal_type: $('pm-type').value, principal: $('pm-principal').value,
+      tenant: $('pm-tenant').value || me.tenant,
       read: $('pm-r').checked, write: $('pm-w').checked, delete: $('pm-d').checked,
     }) });
     toast('grant saved'); loadPerms();
@@ -200,17 +205,36 @@ async function loadAdmin() {
   try {
     users = await api('/api/v1/users'); groups = await api('/api/v1/groups');
     $('u-rows').innerHTML = users.map(u => `<tr data-id="${u.id}">
-      <td>${esc(u.username)}</td><td>${u.is_admin ? 'yes' : ''}</td>
+      <td>${esc(u.tenant)}/${esc(u.username)}</td>
+      <td>${u.is_super ? 'super' : u.is_admin ? 'yes' : ''}</td>
       <td class="muted">${new Date(u.created_at).toLocaleDateString()}</td>
       <td class="rowbtns"><button data-act="pass">password</button><button data-act="del" class="danger">delete</button></td></tr>`).join('');
     $('g-rows').innerHTML = groups.map(g => `<tr data-id="${g.id}">
-      <td>${esc(g.name)}</td>
+      <td>${esc(g.tenant)}/${esc(g.name)}</td>
       <td>${(g.members || []).map(m => `<span class="chip">${esc(m.username)}<button data-act="rm" data-uid="${m.id}" title="remove">✕</button></span>`).join(' ') || '<span class="muted">none</span>'}</td>
       <td><button data-act="del" class="danger">delete</button></td></tr>`).join('');
-    $('gm-group').innerHTML = groups.map(g => `<option value="${g.id}">${esc(g.name)}</option>`).join('');
-    $('gm-user').innerHTML = users.map(u => `<option value="${u.id}">${esc(u.username)}</option>`).join('');
+    $('gm-group').innerHTML = groups.map(g => `<option value="${g.id}">${esc(g.tenant)}/${esc(g.name)}</option>`).join('');
+    $('gm-user').innerHTML = users.map(u => `<option value="${u.id}">${esc(u.tenant)}/${esc(u.username)}</option>`).join('');
+    if (me.is_super) {
+      const tenants = await api('/api/v1/tenants');
+      $('t-rows').innerHTML = tenants.map(t => `<tr data-id="${t.id}">
+        <td>${esc(t.name)}</td>
+        <td class="muted">${new Date(t.created_at).toLocaleDateString()}</td>
+        <td><button data-act="del" class="danger">delete</button></td></tr>`).join('');
+    }
   } catch (err) { toast(err.message, false); }
 }
+$('t-rows').addEventListener('click', async (e) => {
+  if (e.target.dataset?.act !== 'del') return;
+  if (!confirm('delete tenant — removes its users, groups AND all their ACL grants?')) return;
+  try { await api('/api/v1/tenants/' + e.target.closest('tr').dataset.id, { method: 'DELETE' }); toast('tenant deleted'); loadAdmin(); }
+  catch (err) { toast(err.message, false); }
+});
+$('t-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try { await api('/api/v1/tenants', { method: 'POST', body: JSON.stringify({ name: $('t-name').value }) }); toast('tenant created'); loadAdmin(); }
+  catch (err) { toast(err.message, false); }
+});
 $('u-rows').addEventListener('click', async (e) => {
   const act = e.target.dataset?.act; if (!act) return;
   const id = e.target.closest('tr').dataset.id;
@@ -242,12 +266,12 @@ $('g-rows').addEventListener('click', async (e) => {
 });
 $('u-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  try { await api('/api/v1/users', { method: 'POST', body: JSON.stringify({ username: $('u-name').value, password: $('u-pass').value, is_admin: $('u-admin').checked }) }); toast('user created'); loadAdmin(); }
+  try { await api('/api/v1/users', { method: 'POST', body: JSON.stringify({ tenant: $('u-tenant').value, username: $('u-name').value, password: $('u-pass').value, is_admin: $('u-admin').checked }) }); toast('user created'); loadAdmin(); }
   catch (err) { toast(err.message, false); }
 });
 $('g-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  try { await api('/api/v1/groups', { method: 'POST', body: JSON.stringify({ name: $('g-name').value }) }); toast('group created'); loadAdmin(); }
+  try { await api('/api/v1/groups', { method: 'POST', body: JSON.stringify({ tenant: $('g-tenant').value, name: $('g-name').value }) }); toast('group created'); loadAdmin(); }
   catch (err) { toast(err.message, false); }
 });
 $('gm-form').addEventListener('submit', async (e) => {

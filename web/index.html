@@ -12,6 +12,7 @@
 <section id="login" hidden>
   <form id="login-form" class="card">
     <h2>sign in</h2>
+    <label>tenant<input id="l-tenant" required autocomplete="organization"></label>
     <label>username<input id="l-user" required autocomplete="username"></label>
     <label>password<input id="l-pass" type="password" required autocomplete="current-password"></label>
     <button type="submit">login</button>
@@ -73,6 +74,7 @@
       </table>
       <form id="pm-form" class="grantform admin-only" hidden>
         <select id="pm-type"><option value="user">user</option><option value="group">group</option></select>
+        <input id="pm-tenant" placeholder="tenant" title="principal's tenant; yours unless you are super admin">
         <input id="pm-principal" placeholder="name" required>
         <label class="check">r<input id="pm-r" type="checkbox" checked></label>
         <label class="check">w<input id="pm-w" type="checkbox"></label>
@@ -80,17 +82,26 @@
         <button type="submit">grant</button>
       </form>
       <p class="muted">grants apply to this path and inherit down; a grant row with all boxes off
-        excludes the subtree for that principal. admins bypass.</p>
+        excludes the subtree for that principal. only the platform super admin bypasses ACLs.</p>
     </div>
   </section>
 
   <!-- admin tab -->
   <section id="tab-admin" hidden>
+    <div class="card super-only" hidden>
+      <h2>tenants</h2>
+      <table><thead><tr><th>name</th><th>created</th><th></th></tr></thead>
+        <tbody id="t-rows"></tbody></table>
+      <form id="t-form"><input id="t-name" placeholder="tenant name" required>
+        <button type="submit">create tenant</button></form>
+      <p class="muted">deleting a tenant also deletes its users, groups and every ACL grant that targets them.</p>
+    </div>
     <div class="card">
       <h2>users</h2>
       <table><thead><tr><th>username</th><th>admin</th><th>created</th><th></th></tr></thead>
         <tbody id="u-rows"></tbody></table>
       <form id="u-form">
+        <input id="u-tenant" placeholder="tenant" class="super-only" hidden>
         <input id="u-name" placeholder="username" required>
         <input id="u-pass" placeholder="password" required type="password">
         <label class="check">admin<input id="u-admin" type="checkbox"></label>
@@ -101,7 +112,8 @@
       <h2>groups</h2>
       <table><thead><tr><th>group</th><th>members</th><th></th></tr></thead>
         <tbody id="g-rows"></tbody></table>
-      <form id="g-form"><input id="g-name" placeholder="group name" required>
+      <form id="g-form"><input id="g-tenant" placeholder="tenant" class="super-only" hidden>
+        <input id="g-name" placeholder="group name" required>
         <button type="submit">create group</button></form>
       <form id="gm-form"><select id="gm-group"></select>
         <select id="gm-user"></select>

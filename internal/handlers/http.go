@@ -116,10 +116,22 @@ func (a *API) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 func (a *API) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
-		if userFrom(r.Context()).IsAdmin {
+		u := userFrom(r.Context())
+		if u.IsAdmin || u.IsSuper {
 			next(w, r)
 		} else {
 			writeError(w, http.StatusForbidden, "admin_required", "admin privileges required")
+		}
+	})
+}
+
+// requireSuper gates platform-wide administration (tenant CRUD).
+func (a *API) requireSuper(next http.HandlerFunc) http.HandlerFunc {
+	return a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		if userFrom(r.Context()).IsSuper {
+			next(w, r)
+		} else {
+			writeError(w, http.StatusForbidden, "super_required", "platform super admin required")
 		}
 	})
 }

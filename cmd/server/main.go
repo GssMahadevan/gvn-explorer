@@ -34,7 +34,7 @@ func main() {
 	addr := flag.String("addr", envOr("ADDR", ":8080"), "listen address")
 	root := flag.String("root", envOr("ROOT", "data"), "root directory exposed to the file explorer")
 	dbPath := flag.String("db", envOr("DB_PATH", "perms.db"), "SQLite database for users/groups/ACLs/sessions")
-	adminFlag := flag.String("admin", envOr("ADMIN", "admin:admin"), "bootstrap admin as user:pass (used only when no users exist)")
+	adminFlag := flag.String("admin", envOr("ADMIN", "system:admin:admin"), "bootstrap super admin as tenant:user:pass (used only when no users exist)")
 	webDir := flag.String("web", envOr("WEB_DIR", "web"), "static GUI directory (empty to disable)")
 	maxMB := flag.Int("max-mb", 10, "max file size for read/write/edit in MB")
 	flag.Parse()
@@ -107,7 +107,8 @@ func main() {
 	}
 }
 
-// bootstrapAdmin creates the admin user if the users table is empty.
+// bootstrapAdmin creates the first tenant and its super admin when the users
+// table is empty. spec format: tenant:user:pass
 func bootstrapAdmin(s *auth.Store, spec string) error {
 	var count int
 	if err := s.DB.QueryRow("SELECT COUNT(*) FROM users").Scan(&count); err != nil {
@@ -116,13 +117,19 @@ func bootstrapAdmin(s *auth.Store, spec string) error {
 	if count > 0 {
 		return nil
 	}
-	user, pass, ok := strings.Cut(spec, ":")
-	if !ok || user == "" || pass == "" {
-		return fmt.Errorf("ADMIN/bootstrap must look like user:pass, got %q", spec)
+	tenant, rest, ok1 := strings.Cut(spec, ":")
+	user, pass, ok2 := strings.Cut(rest, ":")
+	if !ok1 || !ok2 || tenant == "" || user == "" || pass == "" {
+		return fmt.Errorf("ADMIN/bootstrap must look like tenant:user:pass, got %q", spec)
 	}
-	if _, err := s.CreateUser(context.Background(), user, pass, true); err != nil {
+	ctx := context.Background()
+	if _, err := s.CreateTenant(ctx, tenant); err != nil {
+		return fmt.Errorf("create tenant: %w", err)
+	}
+	if _, err := s.CreateUser(ctx, tenant, user, pass, true, true); err != nil {
 		return err
 	}
-	slog.Warn("bootstrap admin created — change the password in production", "username", user)
+	slog.Warn("bootstrap super admin created — change the password in production",
+		"tenant", tenant, "username", user)
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 )
 
 type loginRequest struct {
+	Tenant   string `json:"tenant"`
 	Username string `json:"username"`
 	Password string `json:"password"`
 }
@@ -18,7 +19,11 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !a.decodeBody(w, r, &req) {
 		return
 	}
-	u, err := a.Auth.Verify(r.Context(), req.Username, req.Password)
+	if req.Tenant == "" {
+		writeError(w, http.StatusUnprocessableEntity, "validation", "tenant is required")
+		return
+	}
+	u, err := a.Auth.Verify(r.Context(), req.Tenant, req.Username, req.Password)
 	if errors.Is(err, auth.ErrNotFound) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid username or password")
 		return

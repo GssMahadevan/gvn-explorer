@@ -32,12 +32,17 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/fs/upload", a.requireAuth(a.handleUpload))
 	mux.HandleFunc("DELETE /api/v1/fs", a.requireAuth(a.handleDelete))
 
-	// perms (show: any logged-in user; mutate: admin)
+	// tenants (platform super admin only)
+	mux.HandleFunc("GET /api/v1/tenants", a.requireSuper(a.handleTenantsList))
+	mux.HandleFunc("POST /api/v1/tenants", a.requireSuper(a.handleTenantsCreate))
+	mux.HandleFunc("DELETE /api/v1/tenants/{id}", a.requireSuper(a.handleTenantsDelete))
+
+	// perms (show: any logged-in user; mutate: admin, tenant-scoped)
 	mux.HandleFunc("GET /api/v1/perms", a.requireAuth(a.handlePermsShow))
 	mux.HandleFunc("PUT /api/v1/perms", a.requireAdmin(a.handlePermsPut))
 	mux.HandleFunc("DELETE /api/v1/perms/{id}", a.requireAdmin(a.handlePermsDelete))
 
-	// users & groups (admin)
+	// users & groups (admin; tenant admins see and manage only their tenant)
 	mux.HandleFunc("GET /api/v1/users", a.requireAdmin(a.handleUsersList))
 	mux.HandleFunc("POST /api/v1/users", a.requireAdmin(a.handleUsersCreate))
 	mux.HandleFunc("DELETE /api/v1/users/{id}", a.requireAdmin(a.handleUsersDelete))

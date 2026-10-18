@@ -10,17 +10,31 @@ import (
 )
 
 const schema = `
-CREATE TABLE IF NOT EXISTS users (
+CREATE TABLE IF NOT EXISTS tenants (
 	id         INTEGER PRIMARY KEY AUTOINCREMENT,
-	username   TEXT NOT NULL UNIQUE COLLATE NOCASE,
-	pass_hash  TEXT NOT NULL,
-	is_admin   INTEGER NOT NULL DEFAULT 0,
+	name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
 	created_at TEXT NOT NULL
 );
 
+-- usernames and group names are unique per tenant, not globally.
+-- is_admin: tenant admin (manages own tenant's users/groups/grants, no file bypass)
+-- is_super: platform super admin (tenant CRUD, cross-tenant management, ACL bypass)
+CREATE TABLE IF NOT EXISTS users (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	tenant_id  INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+	username   TEXT NOT NULL COLLATE NOCASE,
+	pass_hash  TEXT NOT NULL,
+	is_admin   INTEGER NOT NULL DEFAULT 0,
+	is_super   INTEGER NOT NULL DEFAULT 0,
+	created_at TEXT NOT NULL,
+	UNIQUE (tenant_id, username)
+);
+
 CREATE TABLE IF NOT EXISTS groups (
-	id   INTEGER PRIMARY KEY AUTOINCREMENT,
-	name TEXT NOT NULL UNIQUE COLLATE NOCASE
+	id        INTEGER PRIMARY KEY AUTOINCREMENT,
+	tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+	name      TEXT NOT NULL COLLATE NOCASE,
+	UNIQUE (tenant_id, name)
 );
 
 CREATE TABLE IF NOT EXISTS group_members (
@@ -30,6 +44,8 @@ CREATE TABLE IF NOT EXISTS group_members (
 );
 
 -- Per-path ACL grants. path is the root-relative logical path ("/" = root).
+-- principal_id is the rowid of a users/groups row, which carries the tenant,
+-- so the same name in two tenants is two distinct grant subjects.
 CREATE TABLE IF NOT EXISTS perms (
 	id             INTEGER PRIMARY KEY AUTOINCREMENT,
 	path           TEXT NOT NULL,
@@ -51,6 +67,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 `
 
 // Open opens (creating if needed) the database at path and applies the schema.
+// Note: this schema is not compatible with pre-tenant databases; delete the
+// old .db file and let Open recreate it.
 func Open(path string) (*sql.DB, error) {
 	conn, err := sql.Open("sqlite", path)
 	if err != nil {
