@@ -22,8 +22,14 @@ type User struct {
 }
 
 type Group struct {
-	ID   int64  `json:"id"`
-	Name string `json:"name"`
+	ID      int64    `json:"id"`
+	Name    string   `json:"name"`
+	Members []Member `json:"members,omitempty"`
+}
+
+type Member struct {
+	ID       int64  `json:"id"`
+	Username string `json:"username"`
 }
 
 type Store struct{ DB *sql.DB }
@@ -177,14 +183,35 @@ func (s *Store) ListGroups(ctx context.Context) ([]Group, error) {
 	}
 	defer rows.Close()
 	out := []Group{}
+	index := map[int64]int{}
 	for rows.Next() {
 		var g Group
 		if err := rows.Scan(&g.ID, &g.Name); err != nil {
 			return nil, err
 		}
+		index[g.ID] = len(out)
 		out = append(out, g)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	mrows, err := s.DB.QueryContext(ctx, `SELECT gm.group_id, u.id, u.username
+		FROM group_members gm JOIN users u ON u.id = gm.user_id ORDER BY gm.group_id, u.username`)
+	if err != nil {
+		return nil, err
+	}
+	defer mrows.Close()
+	for mrows.Next() {
+		var gid, uid int64
+		var name string
+		if err := mrows.Scan(&gid, &uid, &name); err != nil {
+			return nil, err
+		}
+		if i, ok := index[gid]; ok {
+			out[i].Members = append(out[i].Members, Member{ID: uid, Username: name})
+		}
+	}
+	return out, mrows.Err()
 }
 
 func (s *Store) GroupByName(ctx context.Context, name string) (Group, error) {

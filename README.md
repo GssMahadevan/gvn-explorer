@@ -30,6 +30,12 @@ symlink traversal can escape it.
 cookie (`sid`, 24h, stored in SQLite). `POST /api/v1/auth/logout`,
 `GET /api/v1/auth/me`. Passwords are bcrypt hashes. `is_admin` bypasses ACLs.
 
+CSRF hardening: state-changing requests must be same-origin (Origin header
+checked) and must not use form-style content types — send
+`-H 'Content-Type: application/json'` with every request that has a body
+(`curl -d` alone defaults to form-urlencoded and is refused with 403 csrf).
+Cookies are `SameSite=Lax`.
+
 ## Permission model
 
 Grants are rows `(path, principal_type user|group, principal, r/w/d bits)`.

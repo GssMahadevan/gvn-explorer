@@ -202,7 +202,8 @@ async function loadAdmin() {
       <td class="muted">${new Date(u.created_at).toLocaleDateString()}</td>
       <td class="rowbtns"><button data-act="pass">password</button><button data-act="del" class="danger">delete</button></td></tr>`).join('');
     $('g-rows').innerHTML = groups.map(g => `<tr data-id="${g.id}">
-      <td>${esc(g.name)}</td><td>${(g.members || []).map(m => esc(m)).join(', ')}</td>
+      <td>${esc(g.name)}</td>
+      <td>${(g.members || []).map(m => `<span class="chip">${esc(m.username)}<button data-act="rm" data-uid="${m.id}" title="remove">✕</button></span>`).join(' ') || '<span class="muted">none</span>'}</td>
       <td><button data-act="del" class="danger">delete</button></td></tr>`).join('');
     $('gm-group').innerHTML = groups.map(g => `<option value="${g.id}">${esc(g.name)}</option>`).join('');
     $('gm-user').innerHTML = users.map(u => `<option value="${u.id}">${esc(u.username)}</option>`).join('');

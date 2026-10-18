@@ -64,5 +64,8 @@ func Open(path string) (*sql.DB, error) {
 		conn.Close()
 		return nil, err
 	}
+	// Single connection: correct for ":memory:" (per-connection DBs otherwise)
+	// and avoids SQLITE_BUSY contention for file databases at this scale.
+	conn.SetMaxOpenConns(1)
 	return conn, nil
 }
