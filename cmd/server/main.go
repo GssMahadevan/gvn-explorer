@@ -4,19 +4,24 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/user/llm-crud1/internal/acl"
+	"github.com/user/llm-crud1/internal/auth"
+	"github.com/user/llm-crud1/internal/db"
+	"github.com/user/llm-crud1/internal/fsx"
 	"github.com/user/llm-crud1/internal/handlers"
-	"github.com/user/llm-crud1/internal/store"
 )
 
 // envOr returns the environment value for key when set (an explicitly empty
-// value counts as set, e.g. WEB_DIR= disables the GUI), else def.
+// value counts as set), else def.
 func envOr(key, def string) string {
 	if v, ok := os.LookupEnv(key); ok {
 		return v
@@ -25,32 +30,46 @@ func envOr(key, def string) string {
 }
 
 func main() {
-	// Flags win over env vars (ADDR, DB_PATH, WEB_DIR).
+	// Flags win over env vars (ADDR, ROOT, DB_PATH, ADMIN, WEB_DIR).
 	addr := flag.String("addr", envOr("ADDR", ":8080"), "listen address")
-	dbPath := flag.String("db", envOr("DB_PATH", "llm.db"), "SQLite database path (use :memory: to disable persistence)")
+	root := flag.String("root", envOr("ROOT", "data"), "root directory exposed to the file explorer")
+	dbPath := flag.String("db", envOr("DB_PATH", "perms.db"), "SQLite database for users/groups/ACLs/sessions")
+	adminFlag := flag.String("admin", envOr("ADMIN", "admin:admin"), "bootstrap admin as user:pass (used only when no users exist)")
 	webDir := flag.String("web", envOr("WEB_DIR", "web"), "static GUI directory (empty to disable)")
+	maxMB := flag.Int("max-mb", 10, "max file size for read/write/edit in MB")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	slog.SetDefault(log)
 
-	var st store.Store
-	if *dbPath == ":memory:" {
-		st = store.NewMemoryStore()
-		log.Info("store", "type", "memory")
-	} else {
-		sqlite, err := store.NewSQLiteStore(*dbPath)
-		if err != nil {
-			log.Error("open database", "path", *dbPath, "err", err)
-			os.Exit(1)
-		}
-		defer sqlite.Close()
-		st = sqlite
-		log.Info("store", "type", "sqlite", "path", *dbPath)
+	conn, err := db.Open(*dbPath)
+	if err != nil {
+		log.Error("open database", "path", *dbPath, "err", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	tree, err := fsx.New(*root)
+	if err != nil {
+		log.Error("open root dir", "path", *root, "err", err)
+		os.Exit(1)
+	}
+	log.Info("file root", "path", tree.Root())
+
+	authStore := auth.NewStore(conn)
+	if err := bootstrapAdmin(authStore, *adminFlag); err != nil {
+		log.Error("bootstrap admin", "err", err)
+		os.Exit(1)
 	}
 
+	api := handlers.API{
+		Auth:       authStore,
+		ACL:        acl.NewStore(conn),
+		FS:         tree,
+		SessionTTL: 24 * time.Hour,
+		MaxFileMB:  *maxMB,
+	}
 	mux := http.NewServeMux()
-	api := handlers.API{Store: st, Log: log}
 	api.Register(mux)
 
 	if *webDir != "" {
@@ -86,4 +105,24 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Error("shutdown", "err", err)
 	}
+}
+
+// bootstrapAdmin creates the admin user if the users table is empty.
+func bootstrapAdmin(s *auth.Store, spec string) error {
+	var count int
+	if err := s.DB.QueryRow("SELECT COUNT(*) FROM users").Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	user, pass, ok := strings.Cut(spec, ":")
+	if !ok || user == "" || pass == "" {
+		return fmt.Errorf("ADMIN/bootstrap must look like user:pass, got %q", spec)
+	}
+	if _, err := s.CreateUser(context.Background(), user, pass, true); err != nil {
+		return err
+	}
+	slog.Warn("bootstrap admin created — change the password in production", "username", user)
+	return nil
 }

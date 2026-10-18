@@ -1,66 +1,78 @@
-# llm-crud1
+# file-explorer (llm-crud1)
 
-REST API for managing LLM entries. Go backend only for now; a web GUI will
-follow once the API is stable.
+Web file explorer with a Go backend. Files live on the real filesystem under
+one **root path**; SQLite stores the platform-independent permission model
+(users, groups, per-path ACL grants, sessions) — never the file contents.
 
 ## Run
 
 ```sh
 GO111MODULE=on go build -o bin/server ./cmd/server
-./bin/server -addr :8080          # flags: -db llm.db (or :memory:), -web web (or "")
+./bin/server -addr :8080 -root ./data -db perms.db -admin admin:admin
 ```
 
-Env vars `ADDR`, `DB_PATH`, `WEB_DIR` set the same defaults; flags win.
-An explicitly empty `WEB_DIR=` disables the GUI (then `GET /` is 404).
+Flags (env fallbacks in caps; flags win):
 
-Web GUI: http://localhost:8080 — list/search/filter, create, edit, delete,
-enable toggle; served from `web/` by the same binary (vanilla JS, no build step).
+| flag    | env       | meaning                                            |
+|---------|-----------|----------------------------------------------------|
+| -root   | ROOT      | directory exposed to the explorer (created if absent) |
+| -db     | DB_PATH   | SQLite file for users/groups/ACLs/sessions         |
+| -admin  | ADMIN     | bootstrap `user:pass`, applied only when no users exist |
+| -web    | WEB_DIR   | static GUI dir (empty string disables)             |
+| -max-mb | —         | read/write/upload size cap (default 10)            |
 
-Note: your shell has `GO111MODULE=off` set globally, so prefix `go` commands
-with `GO111MODULE=on` (or unset it).
+All paths are logical and rooted at `-root`: no `..`, absolute paths, or
+symlink traversal can escape it.
 
-## API
+## Auth
 
-| Method | Path                | Notes                                  |
-|--------|---------------------|----------------------------------------|
-| GET    | /healthz            | liveness + entry count                 |
-| GET    | /api/v1/llms        | filters: `?provider=`, `?enabled=`, `?q=` |
-| POST   | /api/v1/llms        | create; 409 on duplicate name          |
-| GET    | /api/v1/llms/{id}   |                                        |
-| PUT    | /api/v1/llms/{id}   | full replace                           |
-| PATCH  | /api/v1/llms/{id}   | partial update (only provided fields)  |
-| DELETE | /api/v1/llms/{id}   | 204 on success                         |
+`POST /api/v1/auth/login {"username","password"}` sets an HttpOnly session
+cookie (`sid`, 24h, stored in SQLite). `POST /api/v1/auth/logout`,
+`GET /api/v1/auth/me`. Passwords are bcrypt hashes. `is_admin` bypasses ACLs.
 
-Entry fields: `name`*, `provider`*, `model_id`*, `endpoint`,
-`context_length`, `enabled`, `tags` (*required). Unknown JSON fields are
-rejected with 400. Errors use `{"error":{"code","message"}}`.
+## Permission model
+
+Grants are rows `(path, principal_type user|group, principal, r/w/d bits)`.
+Effective perms for a path = **nearest ancestor** with an explicit grant:
+user grants win over group grants at the same level; multiple group grants
+union; no grant anywhere = deny. Example:
 
 ```sh
-curl -s localhost:8080/api/v1/llms | jq
-curl -s -X POST localhost:8080/api/v1/llms \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"gpt-4o","provider":"openai","model_id":"gpt-4o","context_length":128000,"enabled":true}' | jq
+curl -b jar -X PUT localhost:8080/api/v1/perms \
+  -d '{"path":"/docs","principal_type":"group","principal":"readers","read":true}'
 ```
 
-## Tests
+gives readers read on `/docs` and everything below, unless overridden deeper.
+`GET /api/v1/fs` hides entries the caller cannot read.
 
-```sh
-GO111MODULE=on go test ./...                       # store suite: memory + sqlite
-./bin/server -addr :8090 -db /tmp/t.db &
-BASE_URL=http://localhost:8090 ./scripts/test_api.sh
-```
+## File API (session cookie required)
 
-32 curl-based assertions covering CRUD, validation (422), duplicates (409),
-bad JSON (400), filtering, timestamps, 404/405 paths. Go tests run the same
-CRUD/filter suite against both Store implementations.
+| method | path                    | body / query                          | needs        |
+|--------|-------------------------|---------------------------------------|--------------|
+| GET    | /api/v1/fs?path=        | —                                     | r on path    |
+| GET    | /api/v1/fs/content?path=| JSON text view                        | r            |
+| GET    | /api/v1/fs/raw?path=    | download bytes                        | r            |
+| POST   | /api/v1/fs/mkdir        | `{"path"}`                            | w on path    |
+| POST   | /api/v1/fs/write        | `{"path","content"}`                  | w on path    |
+| POST   | /api/v1/fs/rename       | `{"from","to"}`                       | d on from, w on to |
+| POST   | /api/v1/fs/upload       | multipart `path=<dir>, file=<f>`      | w on target  |
+| DELETE | /api/v1/fs?path=        | file, or empty dir                    | d on path    |
+
+## Admin API (admin session)
+
+- `GET/PUT /api/v1/perms`, `DELETE /api/v1/perms/{id}` — view/upsert/delete grants
+- `GET/POST /api/v1/users`, `DELETE /api/v1/users/{id}`, `POST /api/v1/users/{id}/password`
+- `GET/POST /api/v1/groups`, `DELETE /api/v1/groups/{id}`
+- `POST /api/v1/groups/{id}/members {"username"}`, `DELETE /api/v1/groups/{id}/members/{userId}`
 
 ## Layout
 
 ```
 cmd/server/        main + middleware (logging, panic recovery)
-internal/models/   LLM entity, validation, PATCH merge
-internal/store/    Store interface + in-memory & SQLite impls
-internal/handlers/ REST handlers, JSON error envelope
-web/               single-page GUI (index.html, app.js, style.css)
-scripts/test_api.sh curl smoke tests
+internal/db/       SQLite open + schema (users/groups/members/perms/sessions)
+internal/auth/     users, groups, bcrypt, sessions
+internal/acl/      grant upsert/list + Effective() inheritance engine
+internal/fsx/      sandboxed filesystem ops (list/read/write/mkdir/rename/delete)
+internal/handlers/ REST handlers + route table, JSON error envelope
+web/               GUI (being rebuilt for this domain)
 ```
