@@ -168,7 +168,9 @@ async function loadPerms() {
   try {
     const d = await api('/api/v1/perms?path=' + encodeURIComponent(cur));
     const eff = d.effective;
-    $('pm-effective').textContent = `effective for you: ${bits(eff)}${eff.source ? ' (from ' + eff.source + ')' : eff.read === undefined ? '' : ' (none)'}`;
+    $('pm-effective').textContent = me.is_admin
+      ? 'you are admin — ACLs do not apply to you'
+      : `effective for you: ${bits(eff)}${eff.source ? ' (inherited from ' + eff.source + ')' : ' (no access)'} — the perms tab lists only grants on this exact path`;
     $('pm-rows').innerHTML = (d.grants || []).map(g => `<tr data-id="${g.id}">
       <td>${g.principal_type}: ${esc(g.principal_name)}</td>
       <td>${g.read ? 'r' : '-'}</td><td>${g.write ? 'w' : '-'}</td><td>${g.delete ? 'd' : '-'}</td>
@@ -224,10 +226,19 @@ $('u-rows').addEventListener('click', async (e) => {
   } catch (err) { toast(err.message, false); }
 });
 $('g-rows').addEventListener('click', async (e) => {
-  if (e.target.dataset?.act !== 'del') return;
-  if (!confirm('delete group?')) return;
-  try { await api('/api/v1/groups/' + e.target.closest('tr').dataset.id, { method: 'DELETE' }); loadAdmin(); }
-  catch (err) { toast(err.message, false); }
+  const act = e.target.dataset?.act; if (!act) return;
+  const gid = e.target.closest('tr').dataset.id;
+  try {
+    if (act === 'rm') {
+      await api(`/api/v1/groups/${gid}/members/${e.target.dataset.uid}`, { method: 'DELETE' });
+      toast('member removed');
+    } else if (act === 'del') {
+      if (!confirm('delete group?')) return;
+      await api('/api/v1/groups/' + gid, { method: 'DELETE' });
+      toast('group deleted');
+    }
+    loadAdmin();
+  } catch (err) { toast(err.message, false); }
 });
 $('u-form').addEventListener('submit', async (e) => {
   e.preventDefault();
