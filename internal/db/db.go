@@ -85,6 +85,26 @@ CREATE TABLE IF NOT EXISTS auth_factors (
 );
 CREATE INDEX IF NOT EXISTS idx_factors_lookup ON auth_factors (method, secret);
 
+-- Append-only forensic trail for every authz/authn DML. Deliberately has no
+-- FKs: events must outlive the deletion of their actors and targets.
+-- tenant_id scopes visibility for tenant admins (0 = platform-level or an
+-- unauthenticated attempt against an unknown tenant).
+CREATE TABLE IF NOT EXISTS events (
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	ts          INTEGER NOT NULL,
+	actor_id    INTEGER,
+	actor       TEXT NOT NULL DEFAULT '',
+	tenant_id   INTEGER NOT NULL DEFAULT 0,
+	action      TEXT NOT NULL,
+	target_type TEXT NOT NULL DEFAULT '',
+	target_id   INTEGER NOT NULL DEFAULT 0,
+	target_name TEXT NOT NULL DEFAULT '',
+	path        TEXT NOT NULL DEFAULT '',
+	details     TEXT NOT NULL DEFAULT '',
+	ip          TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_events_tenant_ts ON events (tenant_id, ts);
+
 CREATE TABLE IF NOT EXISTS sessions (
 	id         TEXT PRIMARY KEY,
 	user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -109,10 +129,12 @@ func Open(path string) (*sql.DB, error) {
 		conn.Close()
 		return nil, err
 	}
-	// Additive migrations for databases created before expiring access.
+	// Additive migrations for databases created before earlier features.
 	for _, stmt := range []string{
 		"ALTER TABLE users ADD COLUMN expires_at INTEGER",
 		"ALTER TABLE perms ADD COLUMN expires_at INTEGER",
+		"ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
+		"ALTER TABLE groups ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
 	} {
 		if _, err := conn.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			conn.Close()

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/user/llm-crud1/internal/audit"
 	"github.com/user/llm-crud1/internal/auth"
 )
 
@@ -25,6 +26,14 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	u, err := a.Auth.Verify(r.Context(), req.Tenant, req.Username, req.Password)
 	if errors.Is(err, auth.ErrNotFound) {
+		// forensic record of failed attempts (wrong password, unknown user,
+		// expired or suspended account): the would-be identity plus source
+		// IP. Scoped to the targeted tenant so its admin can see brute
+		// forces against their own users.
+		tid, _ := a.Auth.TenantID(r.Context(), req.Tenant) // 0 for unknown tenant
+		a.audit(r, audit.Event{Action: "login_failed",
+			Actor: req.Tenant + "/" + req.Username, TenantID: tid,
+			TargetType: "user", TargetName: req.Username})
 		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid username or password")
 		return
 	}
@@ -50,6 +59,9 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Expires:  time.Now().Add(ttl),
 		MaxAge:   int(ttl.Seconds()),
 	})
+	a.audit(r, audit.Event{Action: "login", Actor: u.Tenant + "/" + u.Username,
+		TenantID: u.TenantID, TargetType: "user", TargetID: u.ID, TargetName: u.Username,
+		Details: map[string]any{"is_admin": u.IsAdmin, "is_super": u.IsSuper}})
 	writeJSON(w, http.StatusOK, u)
 }
 

@@ -215,6 +215,68 @@ GC=$(jq -r '[.grants[] | select(.principal_tenant=="'$TMP'")] | length' /tmp/res
 check "grants for $TMP removed" "$([ "$GC" = 0 ]; echo $?)" "got $GC"
 t "$UJ" "list $D still fine" 200 GET "/api/v1/fs?path=$D"
 
+echo "== suspend / reinstate (active kill switch) =="
+USEQ=$(curl -sb "$AJ" "$BASE_URL/api/v1/users" | jq -r --arg t "$T" --arg u "$USER" '.[] | select(.tenant==$t and .username==$u) | .id')
+t "$AJ" "suspend $USER" 200 POST "/api/v1/users/$USEQ/active" '{"active":false}'
+t "$UJ" "suspended: live session dies" 401 GET /api/v1/auth/me
+t "$UJ" "suspended: fs refused too" 401 GET "/api/v1/fs?path=$D"
+t - "suspended: login refused (like wrong pw)" 401 POST /api/v1/auth/login "{\"tenant\":\"$T\",\"username\":\"$USER\",\"password\":\"pw-$SFX\"}"
+t "$AJ" "grant survives suspension" 200 GET "/api/v1/perms?path=$D/incoming"
+INERT=$(jq -e --arg u "$USER" 'all(.grants[] | select(.principal_type=="user" and .principal_name==$u); .principal_active == false)' /tmp/resp.json >/dev/null; echo $?)
+check "grant flags inactive principal" "$INERT"
+MEID=$(curl -sb "$AJ" -X POST "$BASE_URL/api/v1/auth/login" -H 'Content-Type: application/json' -d "{\"tenant\":\"$ADMIN_TENANT\",\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}" | jq -r '.id')
+t "$AJ" "cannot suspend own account" 422 POST "/api/v1/users/$MEID/active" '{"active":false}'
+t "$TAJ" "suspend foreign tenant denied" 403 POST "/api/v1/users/$MEID/active" '{"active":false}'
+t "$AJ" "reinstate $USER" 200 POST "/api/v1/users/$USEQ/active" '{"active":true}'
+t "$UJ" "re-login after reinstate" 200 POST /api/v1/auth/login "{\"tenant\":\"$T\",\"username\":\"$USER\",\"password\":\"pw-$SFX\"}"
+t "$UJ" "access restored" 200 GET "/api/v1/fs?path=$D"
+t "$AJ" "provision device key v2" 201 POST "/api/v1/users/$DEVID/factors" '{"method":"apikey","label":"v2"}'
+V2KEY=$(jq -r '.key' /tmp/resp.json)
+tb "$V2KEY" "device works before suspend" 200 GET "/api/v1/fs?path=$SHARE"
+t "$AJ" "suspend device" 200 POST "/api/v1/users/$DEVID/active" '{"active":false}'
+tb "$V2KEY" "device key dies with account" 401 GET "/api/v1/fs?path=$SHARE"
+t "$AJ" "reinstate device" 200 POST "/api/v1/users/$DEVID/active" '{"active":true}'
+tb "$V2KEY" "device lives again" 200 GET "/api/v1/fs?path=$SHARE"
+t "$AJ" "suspend group $GROUP" 200 POST "/api/v1/groups/$GID/active" '{"active":false}'
+t "$UJ" "group grant inert while suspended" 403 GET "/api/v1/fs?path=$D"
+t "$UJ" "direct grant untouched by group suspend" 200 POST /api/v1/fs/write "{\"path\":\"$D/incoming/alive-$SFX.txt\",\"content\":\"x\"}"
+t "$AJ" "reinstate group" 200 POST "/api/v1/groups/$GID/active" '{"active":true}'
+t "$UJ" "group grant back" 200 GET "/api/v1/fs?path=$D"
+TAID=$(curl -sb "$AJ" "$BASE_URL/api/v1/users" | jq -r --arg t "$T" --arg u "ta$SFX" '.[] | select(.tenant==$t and .username==$u) | .id')
+t "$AJ" "suspend tenant admin" 200 POST "/api/v1/users/$TAID/active" '{"active":false}'
+t "$TAJ" "suspended admin: admin API dead" 401 GET /api/v1/users
+t "$AJ" "reinstate tenant admin" 200 POST "/api/v1/users/$TAID/active" '{"active":true}'
+t "$TAJ" "re-login after reinstate" 200 POST /api/v1/auth/login "{\"tenant\":\"$T\",\"username\":\"ta$SFX\",\"password\":\"pw-$SFX\"}"
+
+echo "== forensic event trail =="
+t "$AJ" "grant list for revoke" 200 GET "/api/v1/perms?path=/hide-$SFX"
+GPID=$(jq -r '.grants[0].id' /tmp/resp.json)
+t "$AJ" "revoke grant (DML to record)" 204 DELETE "/api/v1/perms/$GPID"
+t "$AJ" "events listed" 200 GET "/api/v1/events?limit=500"
+for a in tenant_create tenant_delete user_create group_create member_add perm_set perm_delete factor_create factor_delete user_active login_failed; do
+  CNT=$(jq --arg a "$a" 'map(select(.action==$a)) | length' /tmp/resp.json)
+  check "event $a recorded" "$([ "${CNT:-0}" -gt 0 ]; echo $?)" "cnt=$CNT"
+done
+WHA=$(jq -e 'all(.[]; (.actor // "") != "" and (.ip // "") != "")' /tmp/resp.json >/dev/null; echo $?)
+check "every event names actor + source ip" "$WHA"
+ORDER=$(jq -e '.[0].ts >= .[-1].ts' /tmp/resp.json >/dev/null; echo $?)
+check "events newest-first" "$ORDER"
+check "plaintext keys never in audit" "$(! grep -qF -- "$V2KEY" /tmp/resp.json && ! grep -qF -- "$KEY" /tmp/resp.json; echo $?)"
+t "$AJ" "filter by action" 200 GET "/api/v1/events?action=user_active"
+FILT=$(jq -e 'all(.[]; .action == "user_active")' /tmp/resp.json >/dev/null; echo $?)
+check "action filter respected" "$FILT"
+t "$AJ" "bad limit rejected" 400 GET "/api/v1/events?limit=abc"
+t "$AJ" "bad since rejected" 400 GET "/api/v1/events?since=nope"
+t "$UJ" "events are admin-only" 403 GET /api/v1/events
+TTID=$(curl -sb "$AJ" "$BASE_URL/api/v1/tenants" | jq -r --arg t "$T" '.[] | select(.name==$t) | .id')
+t "$TAJ" "events as tenant admin" 200 GET "/api/v1/events?limit=500"
+SCOPED=$(jq -e --argjson t "$TTID" 'all(.[]; .tenant_id == $t)' /tmp/resp.json >/dev/null; echo $?)
+check "ta events scoped to $T only" "$SCOPED"
+SEESUPER=$(jq -e 'any(.[]; .action == "user_create" and (.actor | startswith("'$ADMIN_TENANT'/")))' /tmp/resp.json >/dev/null; echo $?)
+check "ta sees super admin actions on own tenant" "$SEESUPER"
+RIDHDR=$(curl -s -D - -o /dev/null "$BASE_URL/healthz" | grep -ci '^x-request-id: [0-9a-f]\{16\}' || true)
+check "X-Request-Id issued on every response" "$([ "$RIDHDR" -ge 1 ]; echo $?)"
+
 echo "== session lifecycle =="
 t "$UJ" "logout" 204 POST /api/v1/auth/logout
 t "$UJ" "fs after logout" 401 GET /api/v1/fs?path=/

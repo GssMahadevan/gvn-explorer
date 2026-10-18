@@ -50,6 +50,9 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/users", a.requireAdmin(a.handleUsersCreate))
 	mux.HandleFunc("DELETE /api/v1/users/{id}", a.requireAdmin(a.handleUsersDelete))
 	mux.HandleFunc("POST /api/v1/users/{id}/password", a.requireAdmin(a.handleUsersPassword))
+	// suspension kill switch: inactive users cannot log in, their sessions
+	// die and their bearer keys stop working — but rows and history remain
+	mux.HandleFunc("POST /api/v1/users/{id}/active", a.requireAdmin(a.handleUsersActive))
 	// auth factors (API keys today; ed25519 / oauth2 reserved): provisioning
 	// for device users, revocation kills access on the very next request
 	mux.HandleFunc("GET /api/v1/users/{id}/factors", a.requireAdmin(a.handleFactorsList))
@@ -60,4 +63,9 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/groups/{id}", a.requireAdmin(a.handleGroupsDelete))
 	mux.HandleFunc("POST /api/v1/groups/{id}/members", a.requireAdmin(a.handleGroupAddMember))
 	mux.HandleFunc("DELETE /api/v1/groups/{id}/members/{userId}", a.requireAdmin(a.handleGroupRemoveMember))
+	// suspending a group makes every grant through it inert
+	mux.HandleFunc("POST /api/v1/groups/{id}/active", a.requireAdmin(a.handleGroupsActive))
+
+	// forensic trail: newest-first, scoped to the caller's tenant
+	mux.HandleFunc("GET /api/v1/events", a.requireAdmin(a.handleEventsList))
 }

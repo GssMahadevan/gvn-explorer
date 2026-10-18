@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/user/llm-crud1/internal/acl"
+	"github.com/user/llm-crud1/internal/audit"
 	"github.com/user/llm-crud1/internal/auth"
 	"github.com/user/llm-crud1/internal/db"
 	"github.com/user/llm-crud1/internal/fsx"
@@ -49,7 +50,8 @@ func newEnvLimits(t *testing.T, rps float64, rburst int, authRPS float64, authBu
 	if _, err := as.CreateUser(ctx, "acme", "admin", "pw", true, true, nil); err != nil {
 		t.Fatalf("bootstrap admin: %v", err)
 	}
-	api := API{Auth: as, ACL: acl.NewStore(conn), FS: tree, SessionTTL: time.Hour, MaxFileMB: 1,
+	api := API{Auth: as, ACL: acl.NewStore(conn), Events: audit.NewStore(conn),
+		FS: tree, SessionTTL: time.Hour, MaxFileMB: 1,
 		RPS: rps, RBurst: rburst, AuthRPS: authRPS, AuthBurst: authBurst}
 	mux := http.NewServeMux()
 	api.Register(mux)
@@ -592,4 +594,203 @@ func TestTenantDeleteCascade(t *testing.T) {
 	if n := len(mustList(t, e.admin, "GET", u+"/api/v1/users", 200)); n != 1 {
 		t.Fatalf("users after cascade: %d want 1 (acme/admin)", n)
 	}
+}
+
+// Suspension (active=false) is a kill switch, not a deletion: the user or
+// group row, its grants, factors and history survive, but every action in
+// the system is blocked — login, live sessions, bearer keys and, for groups,
+// the grants flowing through them.
+func TestSuspendUsersAndGroups(t *testing.T) {
+	e := newEnv(t)
+	u := e.srv.URL
+	must(t, e.admin, "POST", u+"/api/v1/fs/mkdir", `{"path":"/pub"}`, 201)
+	must(t, e.admin, "POST", u+"/api/v1/fs/mkdir", `{"path":"/grp"}`, 201)
+
+	// interactive user
+	nu := must(t, e.admin, "POST", u+"/api/v1/users", `{"username":"alice","password":"pw"}`, 201)
+	uid := jsonInt(nu["id"])
+	if nu["active"] != true {
+		t.Fatalf("created user should report active: %v", nu)
+	}
+	must(t, e.admin, "PUT", u+"/api/v1/perms", `{"path":"/pub","principal_type":"user","principal":"alice","read":true}`, 200)
+	alice := login(t, e.srv, "acme", "alice", "pw")
+	must(t, alice, "GET", u+"/api/v1/fs?path=/pub", "", 200)
+
+	must(t, e.admin, "POST", fmt.Sprintf("%s/api/v1/users/%d/active", u, uid), `{"active":false}`, 200)
+	must(t, alice, "GET", u+"/api/v1/auth/me", "", 401) // live session dies on the next request
+	must(t, alice, "GET", u+"/api/v1/fs?path=/pub", "", 401)
+	must(t, e.admin, "POST", u+"/api/v1/auth/login", `{"tenant":"acme","username":"alice","password":"pw"}`, 401) // indistinguishable from a wrong password
+
+	// the grant survives but is flagged inert, so reinstatement restores it
+	gr := must(t, e.admin, "GET", u+"/api/v1/perms?path=/pub", "", 200)["grants"].([]any)
+	if g0 := gr[0].(map[string]any); g0["principal_active"] != false {
+		t.Fatalf("grant should flag suspended principal: %v", g0)
+	}
+
+	must(t, e.admin, "POST", fmt.Sprintf("%s/api/v1/users/%d/active", u, uid), `{"active":true}`, 200)
+	alice2 := login(t, e.srv, "acme", "alice", "pw")
+	must(t, alice2, "GET", u+"/api/v1/fs?path=/pub", "", 200)
+
+	// footgun guard: nobody suspends their own account
+	adm := must(t, e.admin, "GET", u+"/api/v1/auth/me", "", 200)
+	must(t, e.admin, "POST", fmt.Sprintf("%s/api/v1/users/%d/active", u, jsonInt(adm["id"])), `{"active":false}`, 422)
+
+	// device user over bearer key
+	dev := must(t, e.admin, "POST", u+"/api/v1/users", `{"username":"node9","password":""}`, 201)
+	did := jsonInt(dev["id"])
+	f := must(t, e.admin, "POST", fmt.Sprintf("%s/api/v1/users/%d/factors", u, did), `{"method":"apikey","label":"k"}`, 201)
+	key := f["key"].(string)
+	must(t, e.admin, "POST", u+"/api/v1/fs/write", `{"path":"/fw.bin","content":"zz"}`, 200)
+	must(t, e.admin, "PUT", u+"/api/v1/perms", `{"path":"/fw.bin","principal_type":"user","principal":"node9","read":true}`, 200)
+	bearer := func(k, url string) int {
+		req, _ := http.NewRequest("GET", url, nil)
+		req.Header.Set("Authorization", "Bearer "+k)
+		resp, err := (&http.Client{}).Do(req)
+		if err != nil {
+			t.Fatalf("bearer: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+	if c := bearer(key, u+"/api/v1/fs/raw?path=/fw.bin"); c != 200 {
+		t.Fatalf("device download before suspend: %d", c)
+	}
+	must(t, e.admin, "POST", fmt.Sprintf("%s/api/v1/users/%d/active", u, did), `{"active":false}`, 200)
+	if c := bearer(key, u+"/api/v1/fs/raw?path=/fw.bin"); c != 401 {
+		t.Fatalf("bearer must die with the account: %d", c)
+	}
+	must(t, e.admin, "POST", fmt.Sprintf("%s/api/v1/users/%d/active", u, did), `{"active":true}`, 200)
+	if c := bearer(key, u+"/api/v1/fs/raw?path=/fw.bin"); c != 200 {
+		t.Fatalf("reinstated device: %d", c)
+	}
+
+	// group suspension: grants through the group go inert, direct grants do not
+	g := must(t, e.admin, "POST", u+"/api/v1/groups", `{"name":"staff"}`, 201)
+	gid := jsonInt(g["id"])
+	must(t, e.admin, "POST", fmt.Sprintf("%s/api/v1/groups/%d/members", u, gid), `{"username":"alice"}`, 204)
+	must(t, e.admin, "PUT", u+"/api/v1/perms", `{"path":"/grp","principal_type":"group","principal":"staff","read":true}`, 200)
+	must(t, alice2, "GET", u+"/api/v1/fs?path=/grp", "", 200)
+	must(t, e.admin, "POST", fmt.Sprintf("%s/api/v1/groups/%d/active", u, gid), `{"active":false}`, 200)
+	must(t, alice2, "GET", u+"/api/v1/fs?path=/grp", "", 403) // session alive, group grant inert
+	must(t, alice2, "GET", u+"/api/v1/fs?path=/pub", "", 200) // direct grant untouched
+	must(t, e.admin, "POST", fmt.Sprintf("%s/api/v1/groups/%d/active", u, gid), `{"active":true}`, 200)
+	must(t, alice2, "GET", u+"/api/v1/fs?path=/grp", "", 200)
+
+	// a suspended tenant admin cannot administer anything anymore
+	must(t, e.admin, "POST", u+"/api/v1/tenants", `{"name":"globex"}`, 201)
+	ta := must(t, e.admin, "POST", u+"/api/v1/users", `{"tenant":"globex","username":"tacarey","password":"pw","is_admin":true}`, 201)
+	taj := login(t, e.srv, "globex", "tacarey", "pw")
+	must(t, taj, "GET", u+"/api/v1/users", "", 200)
+	must(t, e.admin, "POST", fmt.Sprintf("%s/api/v1/users/%d/active", u, jsonInt(ta["id"])), `{"active":false}`, 200)
+	must(t, taj, "GET", u+"/api/v1/users", "", 401)
+
+	// tenant scoping: an admin cannot suspend across tenants
+	must(t, e.admin, "POST", fmt.Sprintf("%s/api/v1/users/%d/active", u, jsonInt(ta["id"])), `{"active":true}`, 200)
+	taj2 := login(t, e.srv, "globex", "tacarey", "pw")
+	must(t, taj2, "POST", fmt.Sprintf("%s/api/v1/users/%d/active", u, uid), `{"active":false}`, 403)
+	must(t, taj2, "POST", fmt.Sprintf("%s/api/v1/groups/%d/active", u, gid), `{"active":false}`, 403)
+}
+
+// Every authz/authn DML lands in the append-only events table with actor,
+// source IP and target; admins read it back scoped to their tenant.
+func TestAuditTrail(t *testing.T) {
+	e := newEnv(t)
+	u := e.srv.URL
+	must(t, e.admin, "POST", u+"/api/v1/fs/mkdir", `{"path":"/docs"}`, 201)
+	tt := must(t, e.admin, "POST", u+"/api/v1/tenants", `{"name":"watch"}`, 201)
+	tid := jsonInt(tt["id"])
+	ta := must(t, e.admin, "POST", u+"/api/v1/users", `{"tenant":"watch","username":"wat","password":"pw","is_admin":true}`, 201)
+	taID := jsonInt(ta["id"])
+	must(t, e.admin, "PUT", u+"/api/v1/perms", `{"path":"/docs","principal_type":"user","principal":"wat","tenant":"watch","read":true,"expires_days":7}`, 200)
+	gid := jsonInt(must(t, e.admin, "GET", u+"/api/v1/perms?path=/docs", "", 200)["grants"].([]any)[0].(map[string]any)["id"])
+	must(t, e.admin, "DELETE", fmt.Sprintf("%s/api/v1/perms/%d", u, gid), "", 204)
+	g2 := must(t, e.admin, "POST", u+"/api/v1/groups", `{"tenant":"watch","name":"crew"}`, 201)
+	g2ID := jsonInt(g2["id"])
+	must(t, e.admin, "POST", fmt.Sprintf("%s/api/v1/groups/%d/members", u, g2ID), `{"username":"wat"}`, 204)
+	must(t, e.admin, "DELETE", fmt.Sprintf("%s/api/v1/groups/%d/members/%d", u, g2ID, taID), "", 204)
+	must(t, e.admin, "POST", fmt.Sprintf("%s/api/v1/users/%d/active", u, taID), `{"active":false}`, 200)
+	must(t, e.admin, "POST", fmt.Sprintf("%s/api/v1/users/%d/active", u, taID), `{"active":true}`, 200)
+	must(t, e.admin, "POST", fmt.Sprintf("%s/api/v1/users/%d/password", u, taID), `{"password":"pw2"}`, 204)
+	f := must(t, e.admin, "POST", fmt.Sprintf("%s/api/v1/users/%d/factors", u, taID), `{"method":"apikey","label":"devk"}`, 201)
+	fkey := f["key"].(string)
+	fid := jsonInt(f["factor"].(map[string]any)["id"])
+	must(t, e.admin, "DELETE", fmt.Sprintf("%s/api/v1/users/%d/factors/%d", u, taID, fid), "", 204)
+	doomed := must(t, e.admin, "POST", u+"/api/v1/tenants", `{"name":"gone"}`, 201)
+	must(t, e.admin, "DELETE", fmt.Sprintf("%s/api/v1/tenants/%d", u, jsonInt(doomed["id"])), "", 204) // snapshot before cascade
+	must(t, e.admin, "POST", u+"/api/v1/auth/login", `{"tenant":"watch","username":"wat","password":"BAD"}`, 401)
+
+	events := mustList(t, e.admin, "GET", u+"/api/v1/events?limit=500", 200)
+	seen := map[string]int{}
+	for _, ev := range events {
+		seen[ev.(map[string]any)["action"].(string)]++
+	}
+	for _, action := range []string{"tenant_create", "user_create", "perm_set", "perm_delete",
+		"group_create", "member_add", "member_remove", "user_active", "user_password",
+		"factor_create", "factor_delete", "login_failed", "tenant_delete"} {
+		if seen[action] == 0 {
+			t.Fatalf("event %q missing from %d events", action, len(events))
+		}
+	}
+	if seen["user_active"] < 2 {
+		t.Fatalf("both suspensions should be recorded: %v", seen)
+	}
+	first := events[0].(map[string]any) // newest first: the failed login
+	if first["action"] != "login_failed" || first["target_name"] != "wat" || first["actor"] != "watch/wat" {
+		t.Fatalf("newest event wrong: %v", first)
+	}
+
+	// the plaintext API key must never reach the audit trail
+	_, _, raw := reqJSON(t, e.admin, "GET", u+"/api/v1/events?limit=500", "")
+	if strings.Contains(string(raw), fkey) {
+		t.Fatal("audit trail leaked the API key")
+	}
+	for _, ev := range events {
+		m := ev.(map[string]any)
+		if m["action"] == "factor_create" {
+			d := m["details"].(map[string]any)
+			if d["method"] != "apikey" || d["label"] != "devk" {
+				t.Fatalf("factor_create details: %v", d)
+			}
+		}
+	}
+	if lf, ok := func() (map[string]any, bool) {
+		for _, ev := range events {
+			m := ev.(map[string]any)
+			if m["action"] == "login_failed" {
+				return m, true
+			}
+		}
+		return nil, false
+	}(); ok {
+		if lf["actor"] != "watch/wat" || lf["ip"] == "" || lf["ip"] == nil {
+			t.Fatalf("login_failed record: %v", lf)
+		}
+	} else {
+		t.Fatal("login_failed missing")
+	}
+
+	// scoping + filters + permissions
+	wat := login(t, e.srv, "watch", "wat", "pw2")
+	own := mustList(t, wat, "GET", u+"/api/v1/events?limit=500", 200)
+	if len(own) == 0 {
+		t.Fatal("tenant admin should see their tenant's events")
+	}
+	for _, ev := range own {
+		m := ev.(map[string]any)
+		if jsonInt(m["tenant_id"]) != tid {
+			t.Fatalf("cross-tenant leak: %v", m)
+		}
+	}
+	only := mustList(t, e.admin, "GET", u+"/api/v1/events?action=perm_set", 200)
+	for _, ev := range only {
+		if ev.(map[string]any)["action"] != "perm_set" {
+			t.Fatalf("action filter: %v", ev)
+		}
+	}
+	must(t, e.admin, "GET", u+"/api/v1/events?limit=abc", "", 400)
+	must(t, e.admin, "GET", u+"/api/v1/events?since=zzz", "", 400)
+	peon := must(t, e.admin, "POST", u+"/api/v1/users", `{"username":"peon","password":"pw"}`, 201)
+	_ = peon
+	peonc := login(t, e.srv, "acme", "peon", "pw")
+	must(t, peonc, "GET", u+"/api/v1/events", "", 403)
 }

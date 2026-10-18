@@ -31,6 +31,7 @@ type User struct {
 	Username  string     `json:"username"`
 	IsAdmin   bool       `json:"is_admin"` // tenant admin
 	IsSuper   bool       `json:"is_super"` // platform super admin
+	Active    bool       `json:"active"`   // false = suspended: no action allowed, but history kept
 	CreatedAt time.Time  `json:"created_at"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"` // nil = never
 	Expired   bool       `json:"expired"`              // ExpiresAt in the past
@@ -41,6 +42,7 @@ type Group struct {
 	TenantID int64    `json:"tenant_id"`
 	Tenant   string   `json:"tenant"`
 	Name     string   `json:"name"`
+	Active   bool     `json:"active"` // false = grants through it are ignored
 	Members  []Member `json:"members,omitempty"`
 }
 
@@ -122,7 +124,7 @@ func (s *Store) DeleteTenant(ctx context.Context, id int64) error {
 
 type rowScanner interface{ Scan(dest ...any) error }
 
-const userCols = `u.id, u.tenant_id, t.name, u.username, u.is_admin, u.is_super, u.created_at, u.expires_at`
+const userCols = `u.id, u.tenant_id, t.name, u.username, u.is_admin, u.is_super, u.active, u.created_at, u.expires_at`
 const userFrom = `FROM users u JOIN tenants t ON t.id = u.tenant_id`
 
 // CreateUser adds a user inside tenant. admin marks a tenant admin; super
@@ -157,7 +159,7 @@ func (s *Store) CreateUser(ctx context.Context, tenant, username, password strin
 	}
 	id, _ := res.LastInsertId()
 	return User{ID: id, TenantID: tid, Tenant: tenant, Username: username,
-		IsAdmin: admin, IsSuper: super, CreatedAt: now, ExpiresAt: expiresAt}, nil
+		IsAdmin: admin, IsSuper: super, Active: true, CreatedAt: now, ExpiresAt: expiresAt}, nil
 }
 
 func b2i(b bool) int {
@@ -168,20 +170,22 @@ func b2i(b bool) int {
 }
 
 // Verify checks tenant+username+password and returns the user,
-// or ErrNotFound on mismatch. Expired accounts report ErrNotFound too, so
-// callers cannot enumerate which accounts exist but lapsed.
+// or ErrNotFound on mismatch. Expired and deactivated accounts report
+// ErrNotFound too, so callers cannot enumerate which accounts exist but
+// are lapsed or suspended.
 func (s *Store) Verify(ctx context.Context, tenant, username, password string) (User, error) {
 	var (
 		u       User
 		hash    string
 		ad, sup int
+		act     int
 		caStr   string
 		exp     sql.NullInt64
 	)
 	err := s.DB.QueryRowContext(ctx,
-		"SELECT u.id, u.tenant_id, t.name, u.username, u.pass_hash, u.is_admin, u.is_super, u.created_at, u.expires_at "+
+		"SELECT u.id, u.tenant_id, t.name, u.username, u.pass_hash, u.is_admin, u.is_super, u.active, u.created_at, u.expires_at "+
 			userFrom+" WHERE u.username = ? AND t.name = ?", username, tenant).
-		Scan(&u.ID, &u.TenantID, &u.Tenant, &u.Username, &hash, &ad, &sup, &caStr, &exp)
+		Scan(&u.ID, &u.TenantID, &u.Tenant, &u.Username, &hash, &ad, &sup, &act, &caStr, &exp)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
@@ -193,10 +197,10 @@ func (s *Store) Verify(ctx context.Context, tenant, username, password string) (
 		u.ExpiresAt = &t
 		u.Expired = exp.Int64 <= time.Now().Unix()
 	}
-	if u.Expired || bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
+	if u.Expired || act == 0 || bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
 		return User{}, ErrNotFound
 	}
-	u.IsAdmin, u.IsSuper = ad != 0, sup != 0
+	u.IsAdmin, u.IsSuper, u.Active = ad != 0, sup != 0, act != 0
 	u.CreatedAt, _ = time.Parse(tsFmt, caStr)
 	return u, nil
 }
@@ -226,13 +230,15 @@ func (s *Store) scanUserRow(sc rowScanner) (User, error) {
 		tenant   string
 		username string
 		ad, sup  int
+		act      int
 		caStr    string
 		exp      sql.NullInt64
 	)
-	if err := sc.Scan(&id, &tid, &tenant, &username, &ad, &sup, &caStr, &exp); err != nil {
+	if err := sc.Scan(&id, &tid, &tenant, &username, &ad, &sup, &act, &caStr, &exp); err != nil {
 		return User{}, err
 	}
-	u := User{ID: id, TenantID: tid, Tenant: tenant, Username: username, IsAdmin: ad != 0, IsSuper: sup != 0}
+	u := User{ID: id, TenantID: tid, Tenant: tenant, Username: username,
+		IsAdmin: ad != 0, IsSuper: sup != 0, Active: act != 0}
 	u.CreatedAt, _ = time.Parse(tsFmt, caStr)
 	if exp.Valid {
 		t := time.Unix(exp.Int64, 0).UTC()
@@ -293,16 +299,40 @@ func (s *Store) SetPassword(ctx context.Context, id int64, password string) erro
 	return nil
 }
 
+// SetUserActive suspends (false) or reinstates (true) a user. Inactive is a
+// kill switch, not a deletion: the row, its grants, factors and history stay,
+// but login, live sessions and bearer keys stop working on the next request.
+func (s *Store) SetUserActive(ctx context.Context, id int64, active bool) error {
+	res, err := s.DB.ExecContext(ctx, "UPDATE users SET active = ? WHERE id = ?", b2i(active), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// TenantID resolves a tenant name to its id (ErrNotFound when unknown);
+// exported for audit scoping of unauthenticated attempts.
+func (s *Store) TenantID(ctx context.Context, name string) (int64, error) {
+	return s.tenantIDByName(ctx, name)
+}
+
 // ---- groups ----
 
-const groupCols = `g.id, g.tenant_id, t.name, g.name`
+const groupCols = `g.id, g.tenant_id, t.name, g.name, g.active`
 const groupFrom = `FROM groups g JOIN tenants t ON t.id = g.tenant_id`
 
 func scanGroup(sc rowScanner) (Group, error) {
-	var g Group
-	if err := sc.Scan(&g.ID, &g.TenantID, &g.Tenant, &g.Name); err != nil {
+	var (
+		g   Group
+		act int
+	)
+	if err := sc.Scan(&g.ID, &g.TenantID, &g.Tenant, &g.Name, &act); err != nil {
 		return Group{}, err
 	}
+	g.Active = act != 0
 	return g, nil
 }
 
@@ -317,7 +347,7 @@ func (s *Store) CreateGroup(ctx context.Context, tenant, name string) (Group, er
 		return Group{}, err
 	}
 	id, _ := res.LastInsertId()
-	return Group{ID: id, TenantID: tid, Tenant: tenant, Name: name}, nil
+	return Group{ID: id, TenantID: tid, Tenant: tenant, Name: name, Active: true}, nil
 }
 
 // ListGroups lists groups with members; tenantID 0 means all tenants.
@@ -397,6 +427,19 @@ func (s *Store) DeleteGroup(ctx context.Context, id int64) error {
 	return nil
 }
 
+// SetGroupActive suspends or reinstates a group; while inactive, every
+// grant through it is ignored (see GroupIDsFor).
+func (s *Store) SetGroupActive(ctx context.Context, id int64, active bool) error {
+	res, err := s.DB.ExecContext(ctx, "UPDATE groups SET active = ? WHERE id = ?", b2i(active), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // AddMember enrolls a user in a group; both must belong to the same tenant.
 func (s *Store) AddMember(ctx context.Context, groupID, userID int64) error {
 	var gt, ut sql.NullInt64
@@ -427,10 +470,14 @@ func (s *Store) RemoveMember(ctx context.Context, groupID, userID int64) error {
 	return nil
 }
 
-// GroupIDsFor lists the groups a user belongs to (for ACL resolution).
-// Membership is same-tenant by construction (see AddMember).
+// GroupIDsFor lists the *active* groups a user belongs to (for ACL
+// resolution). Membership is same-tenant by construction (see AddMember).
+// An inactive group contributes nothing: its grants are ignored exactly like
+// an expired one, while the row and its grants survive for reinstatement.
 func (s *Store) GroupIDsFor(ctx context.Context, userID int64) ([]int64, error) {
-	rows, err := s.DB.QueryContext(ctx, "SELECT group_id FROM group_members WHERE user_id = ?", userID)
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT gm.group_id FROM group_members gm JOIN groups g ON g.id = gm.group_id
+		 WHERE gm.user_id = ? AND g.active = 1`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -497,7 +544,7 @@ func (s *Store) SessionUser(ctx context.Context, token string) (User, error) {
 	if err != nil {
 		return User{}, err
 	}
-	if u.Expired {
+	if u.Expired || !u.Active { // lapsed or suspended account kills live sessions
 		s.DB.ExecContext(ctx, "DELETE FROM sessions WHERE id = ?", token)
 		return User{}, ErrNotFound
 	}

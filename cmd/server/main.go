@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/user/llm-crud1/internal/acl"
+	"github.com/user/llm-crud1/internal/audit"
 	"github.com/user/llm-crud1/internal/auth"
 	"github.com/user/llm-crud1/internal/db"
 	"github.com/user/llm-crud1/internal/fsx"
@@ -41,9 +42,26 @@ func main() {
 	rburst := flag.Int("rburst", 60, "burst allowance for -rps")
 	authRPS := flag.Float64("auth-rps", 3, "login requests/sec per source IP (0 disables)")
 	authBurst := flag.Int("auth-burst", 10, "burst allowance for -auth-rps")
+	logLevel := flag.String("log-level", envOr("LOG_LEVEL", "info"), "log level: debug|info|warn|error")
+	logJSON := flag.Bool("log-json", envOr("LOG_JSON", "true") == "true", "emit JSON logs (false = human-readable text)")
 	flag.Parse()
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	// Structured logging: one JSON object per line for shipping/jq/grep,
+	// leveled via -log-level; every request line carries a correlation id
+	// (X-Request-Id) so a client complaint maps to exactly one server trace.
+	var lvl slog.Level
+	if err := lvl.UnmarshalText([]byte(strings.ToLower(*logLevel))); err != nil {
+		fmt.Fprintf(os.Stderr, "bad -log-level %q (want debug|info|warn|error)\n", *logLevel)
+		os.Exit(2)
+	}
+	opts := &slog.HandlerOptions{Level: &lvl}
+	var handler slog.Handler
+	if *logJSON {
+		handler = slog.NewJSONHandler(os.Stderr, opts)
+	} else {
+		handler = slog.NewTextHandler(os.Stderr, opts)
+	}
+	log := slog.New(handler)
 	slog.SetDefault(log)
 
 	conn, err := db.Open(*dbPath)
@@ -69,6 +87,7 @@ func main() {
 	api := handlers.API{
 		Auth:       authStore,
 		ACL:        acl.NewStore(conn),
+		Events:     audit.NewStore(conn),
 		FS:         tree,
 		SessionTTL: 24 * time.Hour,
 		MaxFileMB:  *maxMB,

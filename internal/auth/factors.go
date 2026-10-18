@@ -151,7 +151,7 @@ func (s *Store) UserByAPIKey(ctx context.Context, key string) (User, error) {
 	if err != nil {
 		return User{}, err
 	}
-	if u.Expired { // account-level expiry outranks a live key
+	if u.Expired || !u.Active { // account-level lapse/suspension outranks a live key
 		return User{}, ErrNotFound
 	}
 	if !lastUsed.Valid || lastUsed.Int64 < time.Now().Add(-time.Minute).Unix() {

@@ -32,6 +32,8 @@ Flags (env fallbacks in caps; flags win):
 | -rburst | —         | burst allowance for -rps (default 60)                |
 | -auth-rps | —       | login requests/sec per source IP, 0 disables (default 3) |
 | -auth-burst | —     | burst allowance for -auth-rps (default 10)           |
+| -log-level | LOG_LEVEL | debug|info|warn|error (default info)               |
+| -log-json  | LOG_JSON  | JSON log lines, one object per line (default true; false = human text) |
 
 The bootstrap flag creates the tenant *and* a **platform super admin** inside
 it. All paths are logical and rooted at `-root`: no `..`, absolute paths, or
@@ -164,6 +166,77 @@ download endpoint), and login is bucketed per source IP at `-auth-rps`
 (default 3/s) against password brute force. Over the limit returns `429`
 with `Retry-After`. Buckets reset on restart, which is fine at this scale.
 
+## Suspension (`active` flag)
+
+Users and groups can be **deactivated without deleting them** — the kill
+switch for an offboarded customer or a quarantined device. Rows, grants,
+factors and history all survive; every action in the system stops:
+
+- user inactive → login refused (indistinguishable from a wrong password),
+  live sessions die on the *next request*, bearer API keys are rejected, and
+  admin actions are impossible even with a stolen cookie
+- group inactive → every ACL grant *through* it is ignored, exactly like an
+  expired grant; direct user grants are untouched
+- reinstatement (`{"active":true}`) restores everything instantly, because
+  nothing was ever destroyed
+
+```sh
+curl -b jar -X POST localhost:8080/api/v1/users/7/active \
+  -H 'Content-Type: application/json' -d '{"active":false}'
+curl -b jar -X POST localhost:8080/api/v1/groups/3/active \
+  -H 'Content-Type: application/json' -d '{"active":true}'
+```
+
+Admin rights, tenant-scoped. Guard rail: nobody can suspend *their own*
+account (422) — lockouts are always recoverable by another admin. Lists
+(`/api/v1/users`, `/api/v1/groups`, and `/api/v1/perms` grant rows via
+`principal_active`) flag inactive principals so the state is visible.
+
+Distinct from expiry: `expires_at` is a scheduled lapse the admin walks back;
+`active=false` is an immediate suspension. Both block everything.
+
+## Audit trail (events table)
+
+Every authz/authn DML is appended to an `events` table — forensics first:
+who changed what, to whom, from which IP, when. Recorded actions:
+`tenant_create/delete`, `user_create/delete/password/active`,
+`group_create/delete/active`, `member_add/remove`, `perm_set/delete`,
+`factor_create/delete`, `login`, `login_failed`.
+
+Design rules:
+
+- **append-only, no FKs** — events outlive the deletion of their actors and
+  targets; deleted users/grants are named in `target_name` snapshots
+- **no secrets, ever** — password hashes, plaintext API keys and the key
+  hashes themselves never enter the trail (only method/label/expiry)
+- `tenant_id` = the *subject's* tenant, so a tenant admin querying events
+  sees everything that touched their tenant — including actions performed by
+  a super admin — and nothing else
+
+```sh
+curl -b jar 'localhost:8080/api/v1/events?limit=50&action=perm_set'
+# filters: action, target_type, target (name), since (RFC3339)
+```
+
+Admin rights; super admins see all tenants. Newest first. A failed audit
+write is logged loudly but never blocks the operation itself.
+
+## Logging
+
+Structured logging via stdlib `log/slog`: one JSON object per line by
+default (`-log-json=false` for readable text), level-filtered by
+`-log-level`. Every request gets a correlation id (`X-Request-Id` response
+header, generated or adopted from a well-formed incoming one) that appears
+on the request line and panic traces — one client complaint maps to exactly
+one server trace. Request lines carry method/path/query, status, duration,
+and source IP; level by outcome (5xx → error, 429 → warn, rest info, and
+`-log-level=debug` quiets GET noise while adding bearer-auth and rate-limit
+diagnostics). Pipe through `jq` to slice:
+
+```sh
+./bin/server 2>&1 | jq 'select(.level=="ERROR")'
+```
+
 ## File API (session cookie or `Authorization: Bearer <apikey>`)
 
 | method | path                    | body / query                          | needs        |
@@ -185,15 +258,19 @@ with `Retry-After`. Buckets reset on restart, which is fine at this scale.
 - `GET/PUT /api/v1/perms`, `DELETE /api/v1/perms/{id}` — view grants + your
   effective bits (any user); mutate with admin rights, tenant-scoped for
   tenant admins; grants may carry `expires_days`/`expires_at`
-- `GET/POST /api/v1/users`, `DELETE /api/v1/users/{id}`, `POST /api/v1/users/{id}/password` —
+- `GET/POST /api/v1/users`, `DELETE /api/v1/users/{id}`, `POST /api/v1/users/{id}/password`,
+  `POST /api/v1/users/{id}/active {"active"}` —
   tenant admins see and manage only their tenant; the `tenant` field on
   create is honored for super admins and pinned to own tenant otherwise;
-  users may carry `expires_days`/`expires_at` for lapsed customer accounts
+  users may carry `expires_days`/`expires_at` for lapsed customer accounts;
+  `active` suspends/reinstates (kill switch without deletion)
 - `GET/POST /api/v1/users/{id}/factors`, `DELETE /api/v1/users/{id}/factors/{fid}` —
   provision/revoke API keys for device users (admin rights, tenant-scoped);
   `method` may be `apikey` now, `ed25519`/`oauth2` reserved
-- `GET/POST /api/v1/groups`, `DELETE /api/v1/groups/{id}`
+- `GET/POST /api/v1/groups`, `DELETE /api/v1/groups/{id}`, `POST /api/v1/groups/{id}/active {"active"}`
 - `POST /api/v1/groups/{id}/members {"username"}`, `DELETE /api/v1/groups/{id}/members/{userId}`
+- `GET /api/v1/events` — forensic audit trail (see above); query params
+  `limit`, `action`, `target_type`, `target`, `since`
 
 ## Tests
 
@@ -206,10 +283,11 @@ BASE_URL=http://localhost:8095 ADMIN_TENANT=system ADMIN_PASS=secret \
 ## Layout
 
 ```
-cmd/server/        main + middleware (logging, panic recovery)
-internal/db/       SQLite open + schema (tenants/users/groups/members/perms/auth_factors/sessions)
-internal/auth/     tenants, users, groups, bcrypt, sessions, API-key factors
+cmd/server/        main + middleware (JSON logging w/ request ids, panic recovery)
+internal/db/       SQLite open + schema (tenants/users/groups/members/perms/auth_factors/sessions/events)
+internal/auth/     tenants, users, groups, bcrypt, sessions, API-key factors, active flag
 internal/acl/      grant upsert/list + Effective() inheritance engine
+internal/audit/    append-only forensic event trail (authz/authn DML)
 internal/fsx/      sandboxed filesystem ops (list/read/write/mkdir/rename/delete)
 internal/handlers/ REST handlers + route table, JSON error envelope, rate limiters
 web/               vanilla-JS GUI (login w/ tenant, explorer, editor, perms, admin)

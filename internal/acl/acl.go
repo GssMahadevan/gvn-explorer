@@ -20,11 +20,13 @@ type Grant struct {
 	PrincipalID     int64      `json:"principal_id"`
 	PrincipalName   string     `json:"principal_name,omitempty"`
 	PrincipalTenant string     `json:"principal_tenant,omitempty"`
+	PrincipalTID    int64      `json:"-"` // principal's tenant id (audit scoping)
 	Read            bool       `json:"read"`
 	Write           bool       `json:"write"`
 	Delete          bool       `json:"delete"`
 	ExpiresAt       *time.Time `json:"expires_at,omitempty"` // nil = never
 	Expired         bool       `json:"expired"`              // expires_at in the past
+	PrincipalActive bool       `json:"principal_active"`     // false = suspended principal, grant inert
 }
 
 // Bits is the effective permission set for one path.
@@ -129,7 +131,9 @@ func (s *Store) queryGrants(ctx context.Context, where string, args []any) ([]Gr
 	q := `SELECT p.id, p.path, p.principal_type, p.principal_id,
 	         p.can_read, p.can_write, p.can_delete, p.expires_at,
 	         COALESCE(u.username, g.name, '?'),
-	         COALESCE(tu.name, tg.name, '?')
+	         COALESCE(tu.name, tg.name, '?'),
+	         CASE WHEN p.principal_type='user' THEN COALESCE(u.active,0) ELSE COALESCE(g.active,0) END,
+	         COALESCE(u.tenant_id, g.tenant_id, 0)
 	      FROM perms p
 	      LEFT JOIN users u ON p.principal_type='user'  AND u.id = p.principal_id
 	      LEFT JOIN groups g ON p.principal_type='group' AND g.id = p.principal_id
@@ -147,13 +151,15 @@ func (s *Store) queryGrants(ctx context.Context, where string, args []any) ([]Gr
 		var (
 			gr      Grant
 			r, w, d int
+			pact    int
 			exp     sql.NullInt64
 		)
 		if err := rows.Scan(&gr.ID, &gr.Path, &gr.PrincipalType, &gr.PrincipalID,
-			&r, &w, &d, &exp, &gr.PrincipalName, &gr.PrincipalTenant); err != nil {
+			&r, &w, &d, &exp, &gr.PrincipalName, &gr.PrincipalTenant, &pact, &gr.PrincipalTID); err != nil {
 			return nil, err
 		}
 		gr.Read, gr.Write, gr.Delete = r != 0, w != 0, d != 0
+		gr.PrincipalActive = pact != 0
 		if exp.Valid {
 			t := time.Unix(exp.Int64, 0).UTC()
 			gr.ExpiresAt = &t

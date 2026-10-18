@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/user/llm-crud1/internal/acl"
+	"github.com/user/llm-crud1/internal/audit"
 	"github.com/user/llm-crud1/internal/auth"
 )
 
@@ -50,6 +51,8 @@ func (a *API) handleTenantsCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "exists", "tenant name taken")
 		return
 	}
+	a.audit(r, audit.Event{Action: "tenant_create", TenantID: t.ID,
+		TargetType: "tenant", TargetID: t.ID, TargetName: t.Name})
 	writeJSON(w, http.StatusCreated, t)
 }
 
@@ -61,10 +64,22 @@ func (a *API) handleTenantsDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "id must be numeric")
 		return
 	}
+	// snapshot the name before the cascade, for the forensic record
+	name := ""
+	if ts, err := a.Auth.ListTenants(r.Context()); err == nil {
+		for _, t := range ts {
+			if t.ID == id {
+				name = t.Name
+			}
+		}
+	}
 	if err := a.Auth.DeleteTenant(r.Context(), id); err != nil {
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
+	a.audit(r, audit.Event{Action: "tenant_delete", TenantID: id,
+		TargetType: "tenant", TargetID: id, TargetName: name,
+		Details: map[string]any{"cascaded": "users, groups, memberships, grants"}})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -158,7 +173,7 @@ func (a *API) handlePermsPut(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_path", err.Error())
 		return
 	}
-	var pid int64
+	var pid, ptid int64
 	switch b.PrincipalType {
 	case "user":
 		usr, err := a.Auth.UserByName(r.Context(), tenant, b.Principal)
@@ -166,14 +181,14 @@ func (a *API) handlePermsPut(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "no_such_user", tenant+"/"+b.Principal)
 			return
 		}
-		pid = usr.ID
+		pid, ptid = usr.ID, usr.TenantID
 	case "group":
 		g, err := a.Auth.GroupByName(r.Context(), tenant, b.Principal)
 		if errors.Is(err, auth.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "no_such_group", tenant+"/"+b.Principal)
 			return
 		}
-		pid = g.ID
+		pid, ptid = g.ID, g.TenantID
 	default:
 		writeError(w, http.StatusBadRequest, "bad_request", "principal_type must be user or group")
 		return
@@ -183,6 +198,13 @@ func (a *API) handlePermsPut(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	details := map[string]any{"principal_type": b.PrincipalType,
+		"read": b.Read, "write": b.Write, "delete": b.Delete}
+	if exp != nil {
+		details["expires_at"] = exp.Format(time.RFC3339)
+	}
+	a.audit(r, audit.Event{Action: "perm_set", TenantID: ptid, TargetType: "grant",
+		TargetID: gr.ID, TargetName: tenant + "/" + b.Principal, Path: p, Details: details})
 	gr.PrincipalTenant = tenant
 	gr.PrincipalName = b.Principal
 	writeJSON(w, http.StatusOK, gr)
@@ -210,6 +232,10 @@ func (a *API) handlePermsDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
+	a.audit(r, audit.Event{Action: "perm_delete", TenantID: gr.PrincipalTID, TargetType: "grant",
+		TargetID: id, TargetName: gr.PrincipalTenant + "/" + gr.PrincipalName, Path: gr.Path,
+		Details: map[string]any{"principal_type": gr.PrincipalType,
+			"read": gr.Read, "write": gr.Write, "delete": gr.Delete}}) // the revoked bits, for the record
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -263,6 +289,12 @@ func (a *API) handleUsersCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "exists", "username taken, unknown tenant, or invalid input")
 		return
 	}
+	details := map[string]any{"is_admin": b.IsAdmin, "device": b.Password == ""}
+	if exp != nil {
+		details["expires_at"] = exp.Format(time.RFC3339)
+	}
+	a.audit(r, audit.Event{Action: "user_create", TenantID: nu.TenantID,
+		TargetType: "user", TargetID: nu.ID, TargetName: nu.Username, Details: details})
 	writeJSON(w, http.StatusCreated, nu)
 }
 
@@ -295,6 +327,9 @@ func (a *API) handleUsersDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
+	a.audit(r, audit.Event{Action: "user_delete", TenantID: target.TenantID,
+		TargetType: "user", TargetID: id, TargetName: target.Username,
+		Details: map[string]any{"is_admin": target.IsAdmin}}) // names the victim, since the row is gone
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -328,7 +363,57 @@ func (a *API) handleUsersPassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
+	a.audit(r, audit.Event{Action: "user_password", TenantID: target.TenantID,
+		TargetType: "user", TargetID: id, TargetName: target.Username}) // never the password itself
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type activeBody struct {
+	Active bool `json:"active"`
+}
+
+// handleUsersActive: POST /api/v1/users/{id}/active {"active":bool} —
+// suspend/reinstate a user. Suspension is a kill switch, not a deletion:
+// row, grants, factors and history survive; login, live sessions and bearer
+// keys stop working on the next request.
+func (a *API) handleUsersActive(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "id must be numeric")
+		return
+	}
+	var b activeBody
+	if !a.decodeBody(w, r, &b) {
+		return
+	}
+	target, err := a.Auth.UserByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	if !a.targetInScope(w, r, target.TenantID, "user") {
+		return
+	}
+	// footgun guard: nobody suspends their own account; another admin of a
+	// different... same... any admin can reinstate, but you cannot lock
+	// yourself out by accident.
+	if !b.Active && id == userFrom(r.Context()).ID {
+		writeError(w, http.StatusUnprocessableEntity, "validation", "you cannot deactivate your own account")
+		return
+	}
+	if err := a.Auth.SetUserActive(r.Context(), id, b.Active); err != nil {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	a.audit(r, audit.Event{Action: "user_active", TenantID: target.TenantID,
+		TargetType: "user", TargetID: id, TargetName: target.Username,
+		Details: map[string]any{"active": b.Active}})
+	u, err := a.Auth.UserByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, u)
 }
 
 // ---- auth factors (device/API-key auth; ed25519 + oauth2 reserved) ----
@@ -340,31 +425,32 @@ type factorBody struct {
 	Expiry        // expires_days / expires_at: keys can lapse like customer accounts
 }
 
-// factorTarget loads the user and enforces tenant scoping, like other
-// user-management routes.
-func (a *API) factorTarget(w http.ResponseWriter, r *http.Request) (int64, bool) {
+// factorTarget loads the target user and enforces tenant scoping, like
+// other user-management routes. The full user (not just the id) is needed
+// for audit scoping and login-vs-device context in factor events.
+func (a *API) factorTarget(w http.ResponseWriter, r *http.Request) (auth.User, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "id must be numeric")
-		return 0, false
+		return auth.User{}, false
 	}
 	target, err := a.Auth.UserByID(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
-		return 0, false
+		return auth.User{}, false
 	}
 	if !a.targetInScope(w, r, target.TenantID, "user") {
-		return 0, false
+		return auth.User{}, false
 	}
-	return id, true
+	return target, true
 }
 
 func (a *API) handleFactorsList(w http.ResponseWriter, r *http.Request) {
-	id, ok := a.factorTarget(w, r)
+	target, ok := a.factorTarget(w, r)
 	if !ok {
 		return
 	}
-	fs, err := a.Auth.ListFactors(r.Context(), id)
+	fs, err := a.Auth.ListFactors(r.Context(), target.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -373,7 +459,7 @@ func (a *API) handleFactorsList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleFactorsCreate(w http.ResponseWriter, r *http.Request) {
-	id, ok := a.factorTarget(w, r)
+	target, ok := a.factorTarget(w, r)
 	if !ok {
 		return
 	}
@@ -396,7 +482,7 @@ func (a *API) handleFactorsCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "validation", err.Error())
 		return
 	}
-	f, key, err := a.Auth.CreateAPIKey(r.Context(), id, b.Label, exp)
+	f, key, err := a.Auth.CreateAPIKey(r.Context(), target.ID, b.Label, exp)
 	if err != nil {
 		if errors.Is(err, auth.ErrFactorExists) {
 			writeError(w, http.StatusConflict, "exists", "a key with that label already exists")
@@ -405,6 +491,13 @@ func (a *API) handleFactorsCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	details := map[string]any{"method": b.Method, "label": b.Label}
+	if exp != nil {
+		details["expires_at"] = exp.Format(time.RFC3339)
+	}
+	// never the key itself: the hash is not stored plaintext either
+	a.audit(r, audit.Event{Action: "factor_create", TenantID: target.TenantID,
+		TargetType: "factor", TargetID: f.ID, TargetName: target.Username, Details: details})
 	// plaintext key is shown exactly once; the DB keeps only its hash
 	writeJSON(w, http.StatusCreated, struct {
 		Factor auth.Factor `json:"factor"`
@@ -413,7 +506,8 @@ func (a *API) handleFactorsCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleFactorsDelete(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.factorTarget(w, r); !ok {
+	target, ok := a.factorTarget(w, r)
+	if !ok {
 		return
 	}
 	fid, err := strconv.ParseInt(r.PathValue("fid"), 10, 64)
@@ -425,6 +519,8 @@ func (a *API) handleFactorsDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
+	a.audit(r, audit.Event{Action: "factor_delete", TenantID: target.TenantID,
+		TargetType: "factor", TargetID: fid, TargetName: target.Username})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -459,6 +555,8 @@ func (a *API) handleGroupsCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "exists", "group name taken in tenant, or unknown tenant")
 		return
 	}
+	a.audit(r, audit.Event{Action: "group_create", TenantID: g.TenantID,
+		TargetType: "group", TargetID: g.ID, TargetName: g.Name})
 	writeJSON(w, http.StatusCreated, g)
 }
 
@@ -480,7 +578,47 @@ func (a *API) handleGroupsDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
+	a.audit(r, audit.Event{Action: "group_delete", TenantID: g.TenantID,
+		TargetType: "group", TargetID: id, TargetName: g.Name,
+		Details: map[string]any{"members": len(g.Members)}}) // names the victim, since the row is gone
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleGroupsActive: POST /api/v1/groups/{id}/active {"active":bool} —
+// suspend/reinstate a group. While inactive every grant through it is
+// ignored (auth.GroupIDsFor filters it out), exactly like an expired grant,
+// but the row, its members and its grants survive for reinstatement.
+func (a *API) handleGroupsActive(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "id must be numeric")
+		return
+	}
+	var b activeBody
+	if !a.decodeBody(w, r, &b) {
+		return
+	}
+	g, err := a.Auth.GroupByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	if !a.targetInScope(w, r, g.TenantID, "group") {
+		return
+	}
+	if err := a.Auth.SetGroupActive(r.Context(), id, b.Active); err != nil {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	a.audit(r, audit.Event{Action: "group_active", TenantID: g.TenantID,
+		TargetType: "group", TargetID: id, TargetName: g.Name,
+		Details: map[string]any{"active": b.Active}})
+	up, err := a.Auth.GroupByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, up)
 }
 
 type memberBody struct {
@@ -521,6 +659,9 @@ func (a *API) handleGroupAddMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "exists", "already a member")
 		return
 	}
+	a.audit(r, audit.Event{Action: "member_add", TenantID: g.TenantID,
+		TargetType: "member", TargetID: u.ID, TargetName: u.Username,
+		Details: map[string]any{"group": g.Name, "group_id": gid}})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -543,9 +684,16 @@ func (a *API) handleGroupRemoveMember(w http.ResponseWriter, r *http.Request) {
 	if !a.targetInScope(w, r, g.TenantID, "group") {
 		return
 	}
+	victim := "" // snapshot for the record; the membership row is about to go
+	if mv, err := a.Auth.UserByID(r.Context(), uid); err == nil {
+		victim = mv.Username
+	}
 	if err := a.Auth.RemoveMember(r.Context(), gid, uid); err != nil {
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
+	a.audit(r, audit.Event{Action: "member_remove", TenantID: g.TenantID,
+		TargetType: "member", TargetID: uid, TargetName: victim,
+		Details: map[string]any{"group": g.Name, "group_id": gid}})
 	w.WriteHeader(http.StatusNoContent)
 }

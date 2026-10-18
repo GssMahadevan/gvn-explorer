@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/user/llm-crud1/internal/acl"
+	"github.com/user/llm-crud1/internal/audit"
 	"github.com/user/llm-crud1/internal/auth"
 	"github.com/user/llm-crud1/internal/fsx"
 )
@@ -23,6 +24,7 @@ type API struct {
 	Auth       *auth.Store
 	ACL        *acl.Store
 	FS         *fsx.Tree
+	Events     *audit.Store // forensic trail for authz/authn DML
 	SessionTTL time.Duration
 	MaxFileMB  int // read/write size limit
 
@@ -108,6 +110,10 @@ func (a *API) currentUser(r *http.Request) (auth.User, bool) {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 		if u, err := a.Auth.UserByAPIKey(r.Context(), strings.TrimPrefix(h, "Bearer ")); err == nil {
 			return u, true
+		} else {
+			// debug only: unknown/lapsed keys are expected noise ( scanners ),
+			// but during device bring-up this line answers "why 401?"
+			slog.Debug("bearer auth rejected", "path", r.URL.Path, "err", err)
 		}
 	}
 	return auth.User{}, false
@@ -128,6 +134,7 @@ func (a *API) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if !a.principalLim.allow("u" + strconv.FormatInt(u.ID, 10)) {
+			slog.Debug("rate limited principal", "user_id", u.ID, "username", u.Username, "path", r.URL.Path)
 			writeRateLimited(w, time.Second)
 			return
 		}

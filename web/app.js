@@ -21,6 +21,7 @@ const bits = (p) => (p.read ? 'r' : '-') + (p.write ? 'w' : '-') + (p.delete ? '
 const expBadge = (x) => x.expired
   ? ' <span class="exp dead">⏳ expired</span>'
   : x.expires_at ? ` <span class="exp">⏳ till ${new Date(x.expires_at).toLocaleDateString()}</span>` : '';
+const offBadge = (x) => x.active === false ? ' <span class="exp dead">⛔ inactive</span>' : '';
 
 // ---- auth ----
 async function boot() {
@@ -179,7 +180,7 @@ async function loadPerms() {
       ? 'you are platform super admin — ACLs do not apply to you'
       : `effective for you: ${bits(eff)}${eff.source ? ' (inherited from ' + eff.source + ')' : ' (no access)'} — the perms tab lists only grants on this exact path`;
     $('pm-rows').innerHTML = (d.grants || []).map(g => `<tr data-id="${g.id}">
-      <td>${g.principal_type}: ${esc(g.principal_tenant)}/${esc(g.principal_name)}${expBadge(g)}</td>
+      <td>${g.principal_type}: ${esc(g.principal_tenant)}/${esc(g.principal_name)}${g.principal_active === false ? ' <span class="exp dead">⛔ inactive principal</span>' : ''}${expBadge(g)}</td>
       <td>${g.read ? 'r' : '-'}</td><td>${g.write ? 'w' : '-'}</td><td>${g.delete ? 'd' : '-'}</td>
       <td><button data-act="del" class="danger">revoke</button></td></tr>`).join('') || '<tr><td colspan=5 class="muted">no grants on this exact path (inheritance may still apply)</td></tr>';
   } catch (err) { toast(err.message, false); }
@@ -210,14 +211,14 @@ async function loadAdmin() {
   try {
     users = await api('/api/v1/users'); groups = await api('/api/v1/groups');
     $('u-rows').innerHTML = users.map(u => `<tr data-id="${u.id}">
-      <td>${esc(u.tenant)}/${esc(u.username)}${expBadge(u)}</td>
+      <td>${esc(u.tenant)}/${esc(u.username)}${offBadge(u)}${expBadge(u)}</td>
       <td>${u.is_super ? 'super' : u.is_admin ? 'yes' : ''}</td>
       <td class="muted">${new Date(u.created_at).toLocaleDateString()}</td>
-      <td class="rowbtns"><button data-act="key" title="provision an API key (devices/scripts); shown once">apikey</button><button data-act="pass">password</button><button data-act="del" class="danger">delete</button></td></tr>`).join('');
+      <td class="rowbtns"><button data-act="key" title="provision an API key (devices/scripts); shown once">apikey</button><button data-act="pass">password</button><button data-act="active" title="suspend kills sessions and API keys, but keeps the row and history">${u.active === false ? 'activate' : 'suspend'}</button><button data-act="del" class="danger">delete</button></td></tr>`).join('');
     $('g-rows').innerHTML = groups.map(g => `<tr data-id="${g.id}">
-      <td>${esc(g.tenant)}/${esc(g.name)}</td>
+      <td>${esc(g.tenant)}/${esc(g.name)}${offBadge(g)}</td>
       <td>${(g.members || []).map(m => `<span class="chip">${esc(m.username)}<button data-act="rm" data-uid="${m.id}" title="remove">✕</button></span>`).join(' ') || '<span class="muted">none</span>'}</td>
-      <td><button data-act="del" class="danger">delete</button></td></tr>`).join('');
+      <td class="rowbtns"><button data-act="active" title="suspend makes every grant through this group inert">${g.active === false ? 'activate' : 'suspend'}</button><button data-act="del" class="danger">delete</button></td></tr>`).join('');
     $('gm-group').innerHTML = groups.map(g => `<option value="${g.id}">${esc(g.tenant)}/${esc(g.name)}</option>`).join('');
     $('gm-user').innerHTML = users.map(u => `<option value="${u.id}">${esc(u.tenant)}/${esc(u.username)}</option>`).join('');
     if (me.is_super) {
@@ -247,6 +248,10 @@ $('u-rows').addEventListener('click', async (e) => {
     if (act === 'del') {
       if (!confirm('delete user ' + id + '?')) return;
       await api('/api/v1/users/' + id, { method: 'DELETE' });
+    } else if (act === 'active') {
+      const on = users.find(x => String(x.id) === id)?.active !== false;
+      if (on && !confirm('suspend this user? live sessions and API keys die immediately, but the row and history stay.')) return;
+      await api('/api/v1/users/' + id + '/active', { method: 'POST', body: JSON.stringify({ active: !on }) });
     } else if (act === 'pass') {
       const pw = prompt('new password:'); if (!pw) return;
       await api('/api/v1/users/' + id + '/password', { method: 'POST', body: JSON.stringify({ password: pw }) });
@@ -265,6 +270,11 @@ $('g-rows').addEventListener('click', async (e) => {
     if (act === 'rm') {
       await api(`/api/v1/groups/${gid}/members/${e.target.dataset.uid}`, { method: 'DELETE' });
       toast('member removed');
+    } else if (act === 'active') {
+      const on = groups.find(x => String(x.id) === gid)?.active !== false;
+      if (on && !confirm('suspend this group? grants through it become inert until reinstated.')) return;
+      await api('/api/v1/groups/' + gid + '/active', { method: 'POST', body: JSON.stringify({ active: !on }) });
+      toast(on ? 'group suspended' : 'group activated');
     } else if (act === 'del') {
       if (!confirm('delete group?')) return;
       await api('/api/v1/groups/' + gid, { method: 'DELETE' });
