@@ -127,11 +127,18 @@ const userFrom = `FROM users u JOIN tenants t ON t.id = u.tenant_id`
 
 // CreateUser adds a user inside tenant. admin marks a tenant admin; super
 // marks the platform super admin (bootstrap path only — the API never sets it).
-// expiresAt nil = account never expires.
+// expiresAt nil = account never expires. An empty password means "device
+// user": a random hash is stored, so interactive login can never succeed —
+// access goes through auth_factors (API keys) instead.
 func (s *Store) CreateUser(ctx context.Context, tenant, username, password string, admin, super bool, expiresAt *time.Time) (User, error) {
 	tid, err := s.tenantIDByName(ctx, tenant)
 	if err != nil {
 		return User{}, err
+	}
+	if password == "" {
+		if password, err = randomKey(); err != nil { // unknowable; login impossible
+			return User{}, err
+		}
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {

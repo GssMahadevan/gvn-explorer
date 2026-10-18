@@ -5,7 +5,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"path"
+	"strconv"
 	"strings"
 
 	"github.com/user/llm-crud1/internal/acl"
@@ -112,6 +114,11 @@ func (a *API) handleRaw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Disposition", "attachment; filename="+strconvQuote(path.Base(p)))
+	// explicit ETag (size+modtime): devices poll with If-None-Match instead of
+	// If-Modified-Since because ESP clocks are unreliable; ServeFile answers 304.
+	if info, err := os.Stat(abs); err == nil && !info.IsDir() {
+		w.Header().Set("ETag", strconv.Quote(strconv.FormatInt(info.Size(), 10)+"-"+strconv.FormatInt(info.ModTime().Unix(), 10)))
+	}
 	http.ServeFile(w, r, abs)
 }
 

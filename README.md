@@ -28,6 +28,10 @@ Flags (env fallbacks in caps; flags win):
 | -admin  | ADMIN     | bootstrap `tenant:user:pass`, applied only when no users exist |
 | -web    | WEB_DIR   | static GUI dir (empty string disables)               |
 | -max-mb | —         | read/write/upload size cap (default 10)              |
+| -rps    | —         | requests/sec per principal on API endpoints, 0 disables rate limiting (default 20) |
+| -rburst | —         | burst allowance for -rps (default 60)                |
+| -auth-rps | —       | login requests/sec per source IP, 0 disables (default 3) |
+| -auth-burst | —     | burst allowance for -auth-rps (default 10)           |
 
 The bootstrap flag creates the tenant *and* a **platform super admin** inside
 it. All paths are logical and rooted at `-root`: no `..`, absolute paths, or
@@ -111,7 +115,56 @@ curl -b jar -X PUT localhost:8080/api/v1/perms -H 'Content-Type: application/jso
 Databases created before this feature migrate automatically (two additive
 `ALTER TABLE` statements run at startup).
 
-## File API (session cookie required)
+## Device access (API keys)
+
+Non-interactive callers — IoT devices (ESP8266/ESP32 pulling firmware),
+scripts, CI delivering customer artifacts (tgz bundles, docker-image tarballs
+distributed via `docker load` instead of Docker Hub).
+
+A device is just a **user with no password**: `POST /api/v1/users
+{"tenant":"home1","username":"node7"}` stores an unknowable random hash, so
+`/auth/login` structurally can never succeed for it. Access comes from
+**auth factors** — one row per (user, method, label) in `auth_factors`:
+
+| endpoint | meaning |
+|----------|---------|
+| `GET /api/v1/users/{id}/factors` | list factors (metadata only, never the secret) + `last_used_at` fleet health |
+| `POST /api/v1/users/{id}/factors` `{"method":"apikey","label":"v1","expires_days":90}` | generate key; **plaintext returned exactly once**, DB keeps only sha256 |
+| `DELETE /api/v1/users/{id}/factors/{fid}` | revoke — bites on the very next request (no session to expire) |
+
+`label` lets an old and new key coexist while a firmware fleet rotates.
+Factors accept the same `expires_days`/`expires_at` expiry as grants/accounts,
+and an **expired account outranks a live key**. Tenant admins may manage
+factors only for their own tenant's users.
+
+Then the device calls any file endpoint with a bearer token — no login, no
+cookie, and because browsers cannot attach an `Authorization` header
+cross-site, these requests are CSRF-immune by construction:
+
+```sh
+curl -H "Authorization: Bearer $KEY" 'localhost:8080/api/v1/fs/raw?path=/firmware/modelx.bin'
+```
+
+ACLs apply exactly as for human users — grant the device `r` on just
+`/firmware`, and nothing else in the tree even exists for it.
+
+`/fs/raw` sends an `ETag` (size+modtime); firmware should poll with
+`If-None-Match` and get a bodiless `304` on unchanged images — prefer this
+over `If-Modified-Since` since ESP clocks are unreliable.
+
+The factor table also **reserves `ed25519` and `oauth2`** methods (the `alg`
+column names the key algorithm or the provider: google, entra, github...).
+Provisioning either today returns a clean `422 not_implemented`; OAuth2
+subjects will live as factors too, so social login won't need a schema change.
+
+Rate limiting is built in (golang.org/x/time/rate token buckets, in-memory —
+no extra infra): every authenticated principal gets `-rps`/`-rburst`
+(default 20/60 req/s, so one compromised or runaway device cannot hammer the
+download endpoint), and login is bucketed per source IP at `-auth-rps`
+(default 3/s) against password brute force. Over the limit returns `429`
+with `Retry-After`. Buckets reset on restart, which is fine at this scale.
+
+## File API (session cookie or `Authorization: Bearer <apikey>`)
 
 | method | path                    | body / query                          | needs        |
 |--------|-------------------------|---------------------------------------|--------------|
@@ -136,6 +189,9 @@ Databases created before this feature migrate automatically (two additive
   tenant admins see and manage only their tenant; the `tenant` field on
   create is honored for super admins and pinned to own tenant otherwise;
   users may carry `expires_days`/`expires_at` for lapsed customer accounts
+- `GET/POST /api/v1/users/{id}/factors`, `DELETE /api/v1/users/{id}/factors/{fid}` —
+  provision/revoke API keys for device users (admin rights, tenant-scoped);
+  `method` may be `apikey` now, `ed25519`/`oauth2` reserved
 - `GET/POST /api/v1/groups`, `DELETE /api/v1/groups/{id}`
 - `POST /api/v1/groups/{id}/members {"username"}`, `DELETE /api/v1/groups/{id}/members/{userId}`
 
@@ -151,10 +207,10 @@ BASE_URL=http://localhost:8095 ADMIN_TENANT=system ADMIN_PASS=secret \
 
 ```
 cmd/server/        main + middleware (logging, panic recovery)
-internal/db/       SQLite open + schema (tenants/users/groups/members/perms/sessions)
-internal/auth/     tenants, users, groups, bcrypt, sessions
+internal/db/       SQLite open + schema (tenants/users/groups/members/perms/auth_factors/sessions)
+internal/auth/     tenants, users, groups, bcrypt, sessions, API-key factors
 internal/acl/      grant upsert/list + Effective() inheritance engine
 internal/fsx/      sandboxed filesystem ops (list/read/write/mkdir/rename/delete)
-internal/handlers/ REST handlers + route table, JSON error envelope
+internal/handlers/ REST handlers + route table, JSON error envelope, rate limiters
 web/               vanilla-JS GUI (login w/ tenant, explorer, editor, perms, admin)
 ```

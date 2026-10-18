@@ -40,6 +40,17 @@ check() { # check <name> <condition-result(0/1)> [detail]
   else FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %-46s (%s)\n' "$1" "${3:-}"; fi
 }
 
+tb() { # tb <bearer-key> <name> <want_status> <METHOD> <path> — like t() but with an Authorization header
+  local key=$1 name=$2 want=$3 method=$4 path=$5
+  local got; got=$(curl -s -o /tmp/resp.json -w '%{http_code}' -X "$method" -H "Authorization: Bearer $key" "$BASE_URL$path")
+  if [ "$got" = "$want" ]; then
+    PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %-46s %s %s -> %s\n' "$name" "$method" "$path" "$got"
+  else
+    FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %-46s %s %s -> got %s want %s\n' "$name" "$method" "$path" "$got" "$want"
+    [ -s /tmp/resp.json ] && sed 's/^/       /' /tmp/resp.json
+  fi
+}
+
 echo "== health & auth =="
 t - "healthz" 200 GET /healthz
 t - "login no tenant" 422 POST /api/v1/auth/login "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}"
@@ -73,6 +84,9 @@ UP=$(curl -s -o /tmp/resp.json -w '%{http_code}' -b "$AJ" -F "path=$D" -F "file=
 check "upload 201" "$([ "$UP" = 201 ]; echo $?)" "got $UP"
 RAW=$(curl -s -b "$AJ" "$BASE_URL/api/v1/fs/raw?path=$D/up-$SFX.txt")
 check "raw download matches" "$([ "$RAW" = "up-$SFX" ]; echo $?)" "got: $RAW"
+ET=$(curl -s -D- -o /dev/null -b "$AJ" "$BASE_URL/api/v1/fs/raw?path=$D/up-$SFX.txt" | tr -d '\r' | grep -i '^etag:' | awk '{print $2}')
+GOT=$(curl -s -o /dev/null -w '%{http_code}' -b "$AJ" -H "If-None-Match: $ET" "$BASE_URL/api/v1/fs/raw?path=$D/up-$SFX.txt")
+check "conditional GET: ETag -> 304" "$([ "$GOT" = 304 ]; echo $?)" "got: $GOT etag: $ET"
 t "$AJ" "delete non-empty dir" 409 DELETE "/api/v1/fs?path=$D"
 t "$AJ" "traversal blocked" 400 GET "/api/v1/fs?path=$D/../etc"
 
@@ -132,6 +146,30 @@ t "$BJ" "brief account reads share" 200 GET "/api/v1/fs?path=$SHARE"
 sleep 3
 t "$BJ" "session dead after account lapse" 401 GET "/api/v1/fs?path=$SHARE"
 t - "brief cannot relogin" 401 POST /api/v1/auth/login "{\"tenant\":\"$T\",\"username\":\"brief$SFX\",\"password\":\"pw\"}"
+
+echo "== device API keys (non-interactive/IoT) =="
+DEV="dev$SFX"
+t "$AJ" "device user without password" 201 POST /api/v1/users "{\"tenant\":\"$T\",\"username\":\"$DEV\"}"
+DEVID=$(jq -r '.id' /tmp/resp.json)
+t - "device cannot login interactively" 401 POST /api/v1/auth/login "{\"tenant\":\"$T\",\"username\":\"$DEV\",\"password\":\"guess\"}"
+t "$AJ" "ed25519 reserved, rejected" 422 POST /api/v1/users/$DEVID/factors "{\"method\":\"ed25519\"}"
+t "$AJ" "oauth2 reserved, rejected" 422 POST /api/v1/users/$DEVID/factors "{\"method\":\"oauth2\",\"alg\":\"google\"}"
+t "$AJ" "provision apikey" 201 POST /api/v1/users/$DEVID/factors "{\"method\":\"apikey\",\"label\":\"v1\"}"
+KEY=$(jq -r '.key' /tmp/resp.json)
+FID=$(jq -r '.factor.id' /tmp/resp.json)
+check "key looks high-entropy (43 chars)" "$([ ${#KEY} -eq 43 ] && echo 0 || echo 1)"
+t "$AJ" "duplicate label rejected" 409 POST /api/v1/users/$DEVID/factors "{\"method\":\"apikey\",\"label\":\"v1\"}"
+t "$AJ" "grant r on $SHARE to device" 200 PUT /api/v1/perms "{\"path\":\"$SHARE\",\"principal_type\":\"user\",\"principal\":\"$DEV\",\"tenant\":\"$T\",\"read\":true}"
+tb "$KEY" "bearer request works" 200 GET "/api/v1/fs?path=$SHARE"
+tb "bogus000000000000000000000000000000000000000000" "bogus key rejected" 401 GET "/api/v1/fs?path=$SHARE"
+tb "$KEY" "ACL applies to bearer too" 403 GET "/api/v1/fs?path=/nope-$SFX"
+t "$AJ" "factor listed (no secrets)" 200 GET /api/v1/users/$DEVID/factors
+check "secret never listed, last_used recorded" "$(jq -e 'all(.[]; has("secret") | not) and any(.[]; .last_used_at != null)' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "lapsed key refused at creation" 201 POST /api/v1/users/$DEVID/factors "{\"method\":\"apikey\",\"label\":\"dead\",\"expires_at\":\"2000-01-01T00:00:00Z\"}"
+DEADKEY=$(jq -r '.key' /tmp/resp.json)
+tb "$DEADKEY" "lapsed key gets 401" 401 GET "/api/v1/fs?path=$SHARE"
+t "$AJ" "revoke apikey" 204 DELETE /api/v1/users/$DEVID/factors/$FID
+tb "$KEY" "revocation bites next request" 401 GET "/api/v1/fs?path=$SHARE"
 
 echo "== visibility filtering =="
 t "$AJ" "grant r on / to group" 200 PUT /api/v1/perms "{\"path\":\"/\",\"principal_type\":\"group\",\"principal\":\"$GROUP\",\"tenant\":\"$T\",\"read\":true}"

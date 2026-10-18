@@ -213,7 +213,7 @@ async function loadAdmin() {
       <td>${esc(u.tenant)}/${esc(u.username)}${expBadge(u)}</td>
       <td>${u.is_super ? 'super' : u.is_admin ? 'yes' : ''}</td>
       <td class="muted">${new Date(u.created_at).toLocaleDateString()}</td>
-      <td class="rowbtns"><button data-act="pass">password</button><button data-act="del" class="danger">delete</button></td></tr>`).join('');
+      <td class="rowbtns"><button data-act="key" title="provision an API key (devices/scripts); shown once">apikey</button><button data-act="pass">password</button><button data-act="del" class="danger">delete</button></td></tr>`).join('');
     $('g-rows').innerHTML = groups.map(g => `<tr data-id="${g.id}">
       <td>${esc(g.tenant)}/${esc(g.name)}</td>
       <td>${(g.members || []).map(m => `<span class="chip">${esc(m.username)}<button data-act="rm" data-uid="${m.id}" title="remove">✕</button></span>`).join(' ') || '<span class="muted">none</span>'}</td>
@@ -250,6 +250,10 @@ $('u-rows').addEventListener('click', async (e) => {
     } else if (act === 'pass') {
       const pw = prompt('new password:'); if (!pw) return;
       await api('/api/v1/users/' + id + '/password', { method: 'POST', body: JSON.stringify({ password: pw }) });
+    } else if (act === 'key') {
+      const r = await api('/api/v1/users/' + id + '/factors', { method: 'POST', body: JSON.stringify({ method: 'apikey' }) });
+      prompt('API key (shown ONCE, store it in the device):', r.key);
+      toast('API key provisioned'); return;
     }
     toast('ok'); loadAdmin();
   } catch (err) { toast(err.message, false); }

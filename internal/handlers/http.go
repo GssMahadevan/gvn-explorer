@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,16 @@ type API struct {
 	FS         *fsx.Tree
 	SessionTTL time.Duration
 	MaxFileMB  int // read/write size limit
+
+	// Rate limits, token buckets per principal and per source IP;
+	// a non-positive rps/burst disables the respective bucket.
+	RPS       float64
+	RBurst    int
+	AuthRPS   float64
+	AuthBurst int
+
+	principalLim *limiterSet // built by Register
+	authIP       *limiterSet
 }
 
 // ---- JSON helpers (same envelope as before) ----
@@ -85,29 +96,39 @@ func mapFsErr(w http.ResponseWriter, err error) bool {
 
 // ---- auth plumbing ----
 
-// currentUser resolves the session cookie, if any.
+// currentUser resolves the caller: session cookie first, then a bearer
+// API key (non-interactive devices/scripts). Bearer requests carry no
+// ambient cookie, so they are CSRF-immune by construction.
 func (a *API) currentUser(r *http.Request) (auth.User, bool) {
-	c, err := r.Cookie(sessionCookie)
-	if err != nil {
-		return auth.User{}, false
+	if c, err := r.Cookie(sessionCookie); err == nil {
+		if u, err := a.Auth.SessionUser(r.Context(), c.Value); err == nil {
+			return u, true
+		}
 	}
-	u, err := a.Auth.SessionUser(r.Context(), c.Value)
-	if err != nil {
-		return auth.User{}, false
+	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		if u, err := a.Auth.UserByAPIKey(r.Context(), strings.TrimPrefix(h, "Bearer ")); err == nil {
+			return u, true
+		}
 	}
-	return u, true
+	return auth.User{}, false
 }
 
 type ctxKey int
 
 const userKey ctxKey = 1
 
-// withUser stashes the authenticated user on the request context.
+// withUser stashes the authenticated user on the request context. Every
+// authenticated call also passes the per-principal rate bucket, so one
+// runaway or compromised device cannot hammer the file endpoints.
 func (a *API) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u, ok := a.currentUser(r)
 		if !ok {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "login required")
+			return
+		}
+		if !a.principalLim.allow("u" + strconv.FormatInt(u.ID, 10)) {
+			writeRateLimited(w, time.Second)
 			return
 		}
 		next(w, r.WithContext(contextWithUser(r.Context(), u)))

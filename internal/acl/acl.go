@@ -14,17 +14,17 @@ import (
 )
 
 type Grant struct {
-	ID               int64      `json:"id"`
-	Path             string     `json:"path"`
-	PrincipalType    string     `json:"principal_type"` // "user" | "group"
-	PrincipalID      int64      `json:"principal_id"`
-	PrincipalName    string     `json:"principal_name,omitempty"`
-	PrincipalTenant  string     `json:"principal_tenant,omitempty"`
-	Read             bool       `json:"read"`
-	Write            bool       `json:"write"`
-	Delete           bool       `json:"delete"`
-	ExpiresAt        *time.Time `json:"expires_at,omitempty"` // nil = never
-	Expired          bool       `json:"expired"`              // expires_at in the past
+	ID              int64      `json:"id"`
+	Path            string     `json:"path"`
+	PrincipalType   string     `json:"principal_type"` // "user" | "group"
+	PrincipalID     int64      `json:"principal_id"`
+	PrincipalName   string     `json:"principal_name,omitempty"`
+	PrincipalTenant string     `json:"principal_tenant,omitempty"`
+	Read            bool       `json:"read"`
+	Write           bool       `json:"write"`
+	Delete          bool       `json:"delete"`
+	ExpiresAt       *time.Time `json:"expires_at,omitempty"` // nil = never
+	Expired         bool       `json:"expired"`              // expires_at in the past
 }
 
 // Bits is the effective permission set for one path.
@@ -182,6 +182,7 @@ func (s *Store) GrantByID(ctx context.Context, id int64) (Grant, error) {
 //  1. explicit grants for the user at this level  (wins over groups here)
 //  2. union of the user's group grants at this level
 //  3. continue up; no grants anywhere = deny everything.
+//
 // Grants whose expires_at has passed are treated as if absent entirely
 // (they neither grant bits nor stop inheritance).
 //

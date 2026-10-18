@@ -220,7 +220,7 @@ type userBody struct {
 	Password string `json:"password"`
 	Tenant   string `json:"tenant"` // required for super admins; ignored for tenant admins
 	IsAdmin  bool   `json:"is_admin"`
-	Expiry   // expires_days / expires_at: customer accounts with a lifespan
+	Expiry          // expires_days / expires_at: customer accounts with a lifespan
 }
 
 // resolveCreateTenant decides which tenant a new user/group belongs to:
@@ -247,10 +247,11 @@ func (a *API) handleUsersCreate(w http.ResponseWriter, r *http.Request) {
 	if !a.decodeBody(w, r, &b) {
 		return
 	}
-	if b.Username == "" || b.Password == "" {
-		writeError(w, http.StatusUnprocessableEntity, "validation", "username and password required")
+	if b.Username == "" {
+		writeError(w, http.StatusUnprocessableEntity, "validation", "username required")
 		return
 	}
+	// empty password = device user: no interactive login, only auth_factors
 	u := userFrom(r.Context())
 	exp, err := b.Expiry.resolve()
 	if err != nil {
@@ -324,6 +325,103 @@ func (a *API) handleUsersPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.Auth.SetPassword(r.Context(), id, b.Password); err != nil {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---- auth factors (device/API-key auth; ed25519 + oauth2 reserved) ----
+
+type factorBody struct {
+	Method string `json:"method"` // 'apikey' for now
+	Alg    string `json:"alg"`    // reserved: key algo or oauth2 provider (google, entra...)
+	Label  string `json:"label"`  // optional, lets old+new keys coexist during rotation
+	Expiry        // expires_days / expires_at: keys can lapse like customer accounts
+}
+
+// factorTarget loads the user and enforces tenant scoping, like other
+// user-management routes.
+func (a *API) factorTarget(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "id must be numeric")
+		return 0, false
+	}
+	target, err := a.Auth.UserByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return 0, false
+	}
+	if !a.targetInScope(w, r, target.TenantID, "user") {
+		return 0, false
+	}
+	return id, true
+}
+
+func (a *API) handleFactorsList(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.factorTarget(w, r)
+	if !ok {
+		return
+	}
+	fs, err := a.Auth.ListFactors(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, fs)
+}
+
+func (a *API) handleFactorsCreate(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.factorTarget(w, r)
+	if !ok {
+		return
+	}
+	var b factorBody
+	if !a.decodeBody(w, r, &b) {
+		return
+	}
+	switch b.Method {
+	case "apikey":
+	case "ed25519", "oauth2":
+		writeError(w, http.StatusUnprocessableEntity, "not_implemented",
+			"method "+b.Method+" is reserved for a future release")
+		return
+	default:
+		writeError(w, http.StatusUnprocessableEntity, "validation", "unknown method "+b.Method)
+		return
+	}
+	exp, err := b.Expiry.resolve()
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "validation", err.Error())
+		return
+	}
+	f, key, err := a.Auth.CreateAPIKey(r.Context(), id, b.Label, exp)
+	if err != nil {
+		if errors.Is(err, auth.ErrFactorExists) {
+			writeError(w, http.StatusConflict, "exists", "a key with that label already exists")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	// plaintext key is shown exactly once; the DB keeps only its hash
+	writeJSON(w, http.StatusCreated, struct {
+		Factor auth.Factor `json:"factor"`
+		Key    string      `json:"key"`
+	}{f, key})
+}
+
+func (a *API) handleFactorsDelete(w http.ResponseWriter, r *http.Request) {
+	if _, ok := a.factorTarget(w, r); !ok {
+		return
+	}
+	fid, err := strconv.ParseInt(r.PathValue("fid"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "fid must be numeric")
+		return
+	}
+	if err := a.Auth.DeleteFactor(r.Context(), fid); err != nil {
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}

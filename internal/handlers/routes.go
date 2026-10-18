@@ -6,6 +6,9 @@ import (
 )
 
 func (a *API) Register(mux *http.ServeMux) {
+	a.principalLim = newLimiterSet(a.RPS, a.RBurst)
+	a.authIP = newLimiterSet(a.AuthRPS, a.AuthBurst)
+
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		var n int
 		_ = a.Auth.DB.QueryRow("SELECT COUNT(*) FROM users").Scan(&n)
@@ -17,8 +20,8 @@ func (a *API) Register(mux *http.ServeMux) {
 		})
 	})
 
-	// auth
-	mux.HandleFunc("POST /api/v1/auth/login", a.handleLogin)
+	// auth (login is per-IP rate limited: bcrypt is expensive, brute-force must be too)
+	mux.HandleFunc("POST /api/v1/auth/login", a.perIP(a.handleLogin))
 	mux.HandleFunc("POST /api/v1/auth/logout", a.handleLogout)
 	mux.HandleFunc("GET /api/v1/auth/me", a.requireAuth(a.handleMe))
 
@@ -47,6 +50,11 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/users", a.requireAdmin(a.handleUsersCreate))
 	mux.HandleFunc("DELETE /api/v1/users/{id}", a.requireAdmin(a.handleUsersDelete))
 	mux.HandleFunc("POST /api/v1/users/{id}/password", a.requireAdmin(a.handleUsersPassword))
+	// auth factors (API keys today; ed25519 / oauth2 reserved): provisioning
+	// for device users, revocation kills access on the very next request
+	mux.HandleFunc("GET /api/v1/users/{id}/factors", a.requireAdmin(a.handleFactorsList))
+	mux.HandleFunc("POST /api/v1/users/{id}/factors", a.requireAdmin(a.handleFactorsCreate))
+	mux.HandleFunc("DELETE /api/v1/users/{id}/factors/{fid}", a.requireAdmin(a.handleFactorsDelete))
 	mux.HandleFunc("GET /api/v1/groups", a.requireAdmin(a.handleGroupsList))
 	mux.HandleFunc("POST /api/v1/groups", a.requireAdmin(a.handleGroupsCreate))
 	mux.HandleFunc("DELETE /api/v1/groups/{id}", a.requireAdmin(a.handleGroupsDelete))

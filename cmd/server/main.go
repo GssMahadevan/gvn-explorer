@@ -37,6 +37,10 @@ func main() {
 	adminFlag := flag.String("admin", envOr("ADMIN", "system:admin:admin"), "bootstrap super admin as tenant:user:pass (used only when no users exist)")
 	webDir := flag.String("web", envOr("WEB_DIR", "web"), "static GUI directory (empty to disable)")
 	maxMB := flag.Int("max-mb", 10, "max file size for read/write/edit in MB")
+	rps := flag.Float64("rps", 20, "requests/sec per principal on API endpoints (0 disables rate limiting)")
+	rburst := flag.Int("rburst", 60, "burst allowance for -rps")
+	authRPS := flag.Float64("auth-rps", 3, "login requests/sec per source IP (0 disables)")
+	authBurst := flag.Int("auth-burst", 10, "burst allowance for -auth-rps")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -68,6 +72,10 @@ func main() {
 		FS:         tree,
 		SessionTTL: 24 * time.Hour,
 		MaxFileMB:  *maxMB,
+		RPS:        *rps,
+		RBurst:     *rburst,
+		AuthRPS:    *authRPS,
+		AuthBurst:  *authBurst,
 	}
 	mux := http.NewServeMux()
 	api.Register(mux)

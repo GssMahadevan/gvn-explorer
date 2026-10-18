@@ -65,6 +65,26 @@ CREATE TABLE IF NOT EXISTS perms (
 	UNIQUE (path, principal_type, principal_id)
 );
 
+-- Alternate sign-in methods, one row per (user, method, label). Designed so
+-- future methods slot in without schema change: 'apikey' (live), 'ed25519'
+-- (device-signed challenges) and 'oauth2' (alg = provider: google, entra,
+-- github...) are reserved. secret: apikey = hex sha256(key), ed25519 = base64
+-- pubkey, oauth2 = provider subject id. label lets two apikeys coexist while
+-- rotating keys during a firmware rollout.
+CREATE TABLE IF NOT EXISTS auth_factors (
+	id           INTEGER PRIMARY KEY AUTOINCREMENT,
+	user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	method       TEXT NOT NULL CHECK (method IN ('apikey','ed25519','oauth2')),
+	alg          TEXT NOT NULL DEFAULT '',
+	label        TEXT NOT NULL DEFAULT '',
+	secret       TEXT NOT NULL,
+	created_at   TEXT NOT NULL,
+	expires_at   INTEGER,
+	last_used_at INTEGER,
+	UNIQUE (user_id, method, label)
+);
+CREATE INDEX IF NOT EXISTS idx_factors_lookup ON auth_factors (method, secret);
+
 CREATE TABLE IF NOT EXISTS sessions (
 	id         TEXT PRIMARY KEY,
 	user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

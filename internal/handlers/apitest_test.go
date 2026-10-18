@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -25,7 +26,11 @@ type env struct {
 	admin *http.Client // super admin in tenant "acme"
 }
 
-func newEnv(t *testing.T) *env {
+func newEnv(t *testing.T) *env { return newEnvLimits(t, 0, 0, 0, 0) }
+
+// newEnvLimits builds a server with rate limiting enabled: rps/rburst for
+// authenticated endpoints, authRPS/authBurst for login-per-IP. Zero = off.
+func newEnvLimits(t *testing.T, rps float64, rburst int, authRPS float64, authBurst int) *env {
 	t.Helper()
 	conn, err := db.Open(":memory:")
 	if err != nil {
@@ -44,7 +49,8 @@ func newEnv(t *testing.T) *env {
 	if _, err := as.CreateUser(ctx, "acme", "admin", "pw", true, true, nil); err != nil {
 		t.Fatalf("bootstrap admin: %v", err)
 	}
-	api := API{Auth: as, ACL: acl.NewStore(conn), FS: tree, SessionTTL: time.Hour, MaxFileMB: 1}
+	api := API{Auth: as, ACL: acl.NewStore(conn), FS: tree, SessionTTL: time.Hour, MaxFileMB: 1,
+		RPS: rps, RBurst: rburst, AuthRPS: authRPS, AuthBurst: authBurst}
 	mux := http.NewServeMux()
 	api.Register(mux)
 	srv := httptest.NewServer(mux)
@@ -370,7 +376,191 @@ func TestExpiringAccess(t *testing.T) {
 	must(t, &http.Client{}, "POST", u+"/api/v1/auth/login", `{"tenant":"acme","username":"temp","password":"pw"}`, 401)
 }
 
-func TestAuthLifecycle(t *testing.T) {	e := newEnv(t)
+// IoT device flow: user without password + provisioned API key + bearer
+// requests. Revocation must bite on the very next request.
+func TestDeviceAPIKeys(t *testing.T) {
+	e := newEnv(t)
+	u := e.srv.URL
+	must(t, e.admin, "POST", u+"/api/v1/fs/mkdir", `{"path":"/firmware"}`, 201)
+	must(t, e.admin, "POST", u+"/api/v1/fs/write", `{"path":"/firmware/fw.bin","content":"binary-ish"}`, 200)
+
+	// device user: empty password means interactive login is impossible
+	dev := must(t, e.admin, "POST", u+"/api/v1/users", `{"username":"node7"}`, 201)
+	devID := int64(dev["id"].(float64))
+	factorsURL := fmt.Sprintf("%s/api/v1/users/%d/factors", u, devID)
+	must(t, &http.Client{}, "POST", u+"/api/v1/auth/login", `{"tenant":"acme","username":"node7","password":"guess"}`, 401)
+
+	// reserved methods are rejected cleanly
+	must(t, e.admin, "POST", factorsURL, `{"method":"ed25519"}`, 422)
+	must(t, e.admin, "POST", factorsURL, `{"method":"oauth2","alg":"google"}`, 422)
+
+	// provision key (plaintext shown once)
+	kr := must(t, e.admin, "POST", factorsURL, `{"method":"apikey","label":"v1"}`, 201)
+	key, _ := kr["key"].(string)
+	if len(key) < 40 {
+		t.Fatalf("api key too short: %q", key)
+	}
+	fid := int64(kr["factor"].(map[string]any)["id"].(float64))
+	must(t, e.admin, "POST", factorsURL, `{"method":"apikey","label":"v1"}`, 409) // same label
+
+	bearer := func(k, url string) int {
+		t.Helper()
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if k != "" {
+			req.Header.Set("Authorization", "Bearer "+k)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		io.Copy(io.Discard, resp.Body)
+		return resp.StatusCode
+	}
+	bearerIfNoneMatch := func(k, url, etag string) int {
+		t.Helper()
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+k)
+		req.Header.Set("If-None-Match", etag)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		io.Copy(io.Discard, resp.Body)
+		return resp.StatusCode
+	}
+
+	// grant the firmware dir, then bearer downloads must work
+	must(t, e.admin, "PUT", u+"/api/v1/perms", `{"path":"/firmware","principal_type":"user","principal":"node7","read":true}`, 200)
+	if c := bearer(key, u+"/api/v1/fs/raw?path=/firmware/fw.bin"); c != 200 {
+		t.Fatalf("bearer download: %d", c)
+	}
+	if c := bearer("deadbeef", u+"/api/v1/fs/raw?path=/firmware/fw.bin"); c != 401 {
+		t.Fatalf("bogus key: %d", c)
+	}
+	if c := bearer("", u+"/api/v1/fs/raw?path=/firmware/fw.bin"); c != 401 {
+		t.Fatalf("no header: %d", c)
+	}
+
+	// ACLs still apply: same key, path the device has no grant on
+	if c := bearer(key, u+"/api/v1/fs?path=/firmware-locked"); c != 403 {
+		t.Fatalf("ungranted path with valid key: %d", c)
+	}
+
+	// FW polling: raw GET exposes an ETag, If-None-Match yields a bodiless 304
+	rawURL := u + "/api/v1/fs/raw?path=/firmware/fw.bin"
+	req, _ := http.NewRequest("GET", rawURL, nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	etag := resp.Header.Get("ETag")
+	resp.Body.Close()
+	if etag == "" {
+		t.Fatal("raw download should carry an ETag for device polling")
+	}
+	if c := bearerIfNoneMatch(key, rawURL, etag); c != http.StatusNotModified {
+		t.Fatalf("conditional GET: %d", c)
+	}
+
+	// factors are listed without secrets, last use recorded
+	fs := mustList(t, e.admin, "GET", factorsURL, 200)
+	f0 := fs[0].(map[string]any)
+	if _, leaked := f0["secret"]; leaked {
+		t.Fatal("factor listing must not expose the secret")
+	}
+	if f0["last_used_at"] == nil {
+		t.Fatal("last_used_at should be recorded after a bearer hit")
+	}
+
+	// an already-lapsed key is useless
+	past := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	kr2 := must(t, e.admin, "POST", factorsURL, `{"method":"apikey","label":"dead","expires_at":"`+past+`"}`, 201)
+	if c := bearer(kr2["key"].(string), u+"/api/v1/fs/raw?path=/firmware/fw.bin"); c != 401 {
+		t.Fatalf("lapsed key: %d", c)
+	}
+
+	// account expiry outranks a live key
+	ghost := must(t, e.admin, "POST", u+"/api/v1/users", `{"username":"ghost","expires_at":"`+past+`"}`, 201)
+	kr3 := must(t, e.admin, "POST", fmt.Sprintf("%s/api/v1/users/%d/factors", u, int64(ghost["id"].(float64))),
+		`{"method":"apikey"}`, 201)
+	must(t, e.admin, "PUT", u+"/api/v1/perms", `{"path":"/firmware","principal_type":"user","principal":"ghost","read":true}`, 200)
+	if c := bearer(kr3["key"].(string), u+"/api/v1/fs/raw?path=/firmware/fw.bin"); c != 401 {
+		t.Fatalf("key on lapsed account: %d", c)
+	}
+
+	// revocation bites immediately
+	must(t, e.admin, "DELETE", fmt.Sprintf("%s/%d", factorsURL, fid), "", 204)
+	if c := bearer(key, u+"/api/v1/fs/raw?path=/firmware/fw.bin"); c != 401 {
+		t.Fatalf("after revoke: %d", c)
+	}
+
+	// tenant scoping: tenant admin may not touch another tenant's user
+	must(t, e.admin, "POST", u+"/api/v1/tenants", `{"name":"globex"}`, 201)
+	gUser := must(t, e.admin, "POST", u+"/api/v1/users", `{"tenant":"globex","username":"gnode"}`, 201)
+	must(t, e.admin, "POST", u+"/api/v1/users", `{"username":"tacme","password":"pw","is_admin":true}`, 201)
+	ta := login(t, e.srv, "acme", "tacme", "pw")
+	must(t, ta, "GET", fmt.Sprintf("%s/api/v1/users/%d/factors", u, int64(gUser["id"].(float64))), "", 403)
+	must(t, ta, "POST", fmt.Sprintf("%s/api/v1/users/%d/factors", u, devID), `{"method":"apikey"}`, 201) // own tenant: fine
+}
+
+// DoS control: per-principal token bucket on every authenticated endpoint.
+func TestRateLimitPerPrincipal(t *testing.T) {
+	e := newEnvLimits(t, 5, 3, 0, 0) // 5 req/s, burst 3
+	u := e.srv.URL
+	// setup first, then let the admin bucket refill so the burst math is exact
+	must(t, e.admin, "POST", u+"/api/v1/users", `{"username":"other","password":"pw"}`, 201)
+	must(t, e.admin, "PUT", u+"/api/v1/perms", `{"path":"/","principal_type":"user","principal":"other","read":true}`, 200)
+	other := login(t, e.srv, "acme", "other", "pw") // login route: no principal bucket
+	time.Sleep(1200 * time.Millisecond)             // refill to burst (5/s)
+
+	var codes []int
+	for i := 0; i < 5; i++ {
+		code, _, _ := reqJSON(t, e.admin, "GET", u+"/api/v1/fs?path=/", "")
+		codes = append(codes, code)
+	}
+	for i := 0; i < 3; i++ {
+		if codes[i] != http.StatusOK {
+			t.Fatalf("burst should allow 3: %v", codes)
+		}
+	}
+	if codes[4] != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 after burst: %v", codes)
+	}
+	// a different principal has its own bucket
+	if code, _, _ := reqJSON(t, other, "GET", u+"/api/v1/fs?path=/", ""); code != http.StatusOK {
+		t.Fatalf("second principal must not share the bucket: %d", code)
+	}
+}
+
+// Brute-force control: login is bucketed by source IP.
+func TestRateLimitLoginPerIP(t *testing.T) {
+	e := newEnvLimits(t, 0, 0, 2, 3) // 2 logins/s, burst 3
+	u := e.srv.URL
+	c := &http.Client{}
+	var codes []int
+	for i := 0; i < 6; i++ {
+		code, _, _ := reqJSON(t, c, "POST", u+"/api/v1/auth/login", `{"tenant":"acme","username":"admin","password":"wrong"}`)
+		codes = append(codes, code)
+	}
+	if codes[0] != http.StatusUnauthorized {
+		t.Fatalf("first attempt should be a plain 401: %v", codes)
+	}
+	if codes[len(codes)-1] != http.StatusTooManyRequests {
+		t.Fatalf("eventually rate limited: %v", codes)
+	}
+}
+
+func TestAuthLifecycle(t *testing.T) {
+	e := newEnv(t)
 	u := e.srv.URL
 	jar, _ := cookiejar.New(nil)
 	c := &http.Client{Jar: jar}
