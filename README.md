@@ -43,7 +43,11 @@ curl -b jar -X PUT localhost:8080/api/v1/perms \
 ```
 
 gives readers read on `/docs` and everything below, unless overridden deeper.
-`GET /api/v1/fs` hides entries the caller cannot read.
+`GET /api/v1/fs` hides entries the caller cannot read. A **zero grant**
+(everything false) on a nearer path intentionally *excludes* a subtree:
+inheritance stops at the nearest ancestor with any grant row for the principal,
+so `{"path":"/secret","principal_type":"group","principal":"readers","read":false}`
+removes `/secret` from readers' listings even when they hold read on `/`.
 
 ## File API (session cookie required)
 
