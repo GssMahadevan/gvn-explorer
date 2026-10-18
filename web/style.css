@@ -3,6 +3,8 @@
   --dim: #8b949e; --accent: #4da3ff; --ok: #3fb950; --bad: #f85149;
 }
 * { box-sizing: border-box; }
+/* the hidden attribute must beat any display rule below (e.g. #login's grid) */
+[hidden] { display: none !important; }
 body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
 header { display: flex; align-items: center; gap: 1rem; padding: .7rem 1.2rem; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
 #who { color: var(--accent); }
