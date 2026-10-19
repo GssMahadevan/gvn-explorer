@@ -310,6 +310,33 @@ directories always sort first regardless of `dir`.
 - `GET /api/v1/events` — forensic audit trail (see above); query params
   `limit`, `action`, `target_type`, `target`, `since`
 
+## Web GUI
+
+The console lives in `frontend/` — **React 19 + Ant Design** (all MIT),
+built with Vite. The Go server ships the built bundle as plain static
+files and never runs any JS itself; every list panel drives the shared
+paging/search/sort contract above, with antd's server-side table paging
+(`X-Total-Count` → last page). `docs/gui-survey.md` records the framework
+survey and the perf data behind this choice.
+
+```sh
+cd frontend
+npm install
+npm run dev            # vite dev server, proxies /api -> :8095
+npm run build          # type-check + static bundle -> frontend/dist
+```
+
+Serve the bundle from the backend itself (or hand `dist/` to nginx — any
+static host works as long as the API is same-origin):
+
+```sh
+./bin/server -web frontend/dist
+```
+
+`web/` — the hand-written vanilla-JS GUI, zero build toolchain — stays in
+the tree as a fallback and as a compact reference of the API contract;
+`-web web` serves it.
+
 ## Tests
 
 ```sh
@@ -328,5 +355,6 @@ internal/acl/      grant upsert/list + Effective() inheritance engine
 internal/audit/    append-only forensic event trail (authz/authn DML)
 internal/fsx/      sandboxed filesystem ops (list/read/write/mkdir/rename/delete)
 internal/handlers/ REST handlers + route table, JSON error envelope, rate limiters
-web/               vanilla-JS GUI (panels per view w/ paging+search+sort, editor, perms, admin)
+frontend/          React 19 + Ant Design GUI (Vite; `npm run build` -> dist/ static bundle)
+web/               vanilla-JS GUI fallback (panels per view w/ paging+search+sort, editor, perms, admin)
 ```
