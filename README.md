@@ -576,12 +576,44 @@ profiled `postgres` service ready for the Postgres cutover. Placeholder
 READMEs in `deployments/k8s/` and `deployments/swarm/` sketch the next
 steps; nothing there is deployed yet.
 
+## Release & publish
+
+Source repo: `https://github.com/GssMahadevan/gvn-explorer` (origin;
+the PAT in `~/.gitconfig`'s `insteadOf` rewrite authenticates pushes).
+
+**Multi-arch container** — one tag, both architectures
+(`linux/amd64` + `linux/arm64`; consumers pull their own). Both build
+stages pin to `$BUILDPLATFORM`, so Node and Go run natively and only
+cross-compile — no QEMU penalty:
+
+```sh
+docker login ghcr.io                      # PAT works for ghcr (needs write:packages)
+make docker-push IMAGE=ghcr.io/gssmahadevan/gvn-explorer:latest
+```
+
+The first run creates a `docker-container`-driver buildx builder
+(`gvn-builder`, overridable via `BUILDER=`); it keeps its own layer
+cache, so repeat pushes are fast. Verify with
+`docker buildx imagetools inspect <image>`.
+
+**Bare binaries** — `make dist` cross-builds all six platforms
+(linux/windows/darwin × amd64/arm64). Each `dist/bundles/` archive is
+self-contained: server binary + the `web/` GUI bundle it serves from
+`./web` + `deployments/binary/README.md` (unpack-and-run guide; the
+`/help` docs are inside the binary, nothing else travels). Bare
+binaries also land flat in `dist/`. Artifacts are named with
+`VERSION=` (default: current commit short SHA — override for tags,
+e.g. `make dist VERSION=v0.3.0`), which is what to attach to a GitHub
+Release. A version stamp *inside* the binary (`-ldflags -X main.version`)
+is still on the backlog.
+
 ## Layout
 
 ```
 Makefile           entry points; includes makefiles/ (same layout as gvndb sample)
-makefiles/         build.mk (server+GUI), test.mk (go/curl/GUI suites), deploy.mk (docker+compose)
-deployments/       docker/ (Dockerfile, compose, README), k8s/ + swarm/ (planned, README sketches)
+makefiles/         build.mk (server+GUI + `dist` cross-builds), test.mk (go/curl/GUI suites), deploy.mk (docker+compose + multi-arch `docker-push`)
+deployments/       docker/ (Dockerfile, compose, README), binary/ (README shipped inside dist archives), k8s/ + swarm/ (planned, README sketches)
+docs/              user guide embedded into the binary at build time (embed.go) and served read-only under /help; guide set in docs/user/
 cmd/server/        main + middleware (JSON logging w/ request ids, panic recovery)
 internal/db/       SQL layer: dialect-aware DB wrapper + embedded versioned migrations (tenants/users/groups/members/perms/auth_factors/sessions/events/file_drafts)
 internal/auth/     tenants, users, groups, bcrypt, sessions, API-key factors, active flag

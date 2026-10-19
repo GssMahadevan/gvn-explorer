@@ -3,10 +3,22 @@
 DOCKER_DIR := deployments/docker
 IMAGE ?= file-explorer:dev
 APP_PORT ?= 8080
+# multi-arch publish knobs (make docker-push IMAGE=<registry>/gvn-explorer:latest)
+PLATFORMS ?= linux/amd64,linux/arm64
+BUILDER ?= gvn-builder
 
 docker-build:
 	docker build -f $(DOCKER_DIR)/Dockerfile -t $(IMAGE) .
-.PHONY: docker-build docker-up docker-down docker-logs docker-test
+.PHONY: docker-build docker-push docker-up docker-down docker-logs docker-test
+
+# Publish one tag containing every architecture in $(PLATFORMS). Needs a
+# namespaced IMAGE (a registry/repo path) and buildx with the
+# docker-container driver — created here on first use. Log in to the
+# registry first (e.g. docker login ghcr.io or docker login).
+docker-push:
+	@case "$(IMAGE)" in */*) ;; *) echo "docker-push: IMAGE '$(IMAGE)' needs a registry prefix, e.g. make docker-push IMAGE=ghcr.io/gssmahadevan/gvn-explorer:latest"; exit 1 ;; esac
+	docker buildx inspect $(BUILDER) >/dev/null 2>&1 || docker buildx create --name $(BUILDER) --driver docker-container --bootstrap
+	docker buildx build --builder $(BUILDER) --platform $(PLATFORMS) -f $(DOCKER_DIR)/Dockerfile -t $(IMAGE) --push .
 
 docker-up:
 	docker compose -f $(DOCKER_DIR)/docker-compose.yml up -d --build

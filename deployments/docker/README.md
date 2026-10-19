@@ -40,6 +40,14 @@ If :8080 is taken on your host (common — many stacks use it), pick
 another host port: `APP_PORT=8098 make docker-up`
 (and `APP_PORT=8098 make docker-test`).
 
+Pre-built multi-arch images (linux/amd64 + linux/arm64) are published
+on GitHub Container Registry, so building locally is optional:
+
+```sh
+docker run -p 8080:8080 -v "$PWD/data:/data" \
+  ghcr.io/gssmahadevan/gvn-explorer:latest
+```
+
 Without make:
 
 ```sh

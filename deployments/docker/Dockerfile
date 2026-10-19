@@ -4,12 +4,19 @@
 # off and the runtime image carries nothing but the binary, the static
 # bundle and a healthcheck client.
 #
-# Build from the repo root (the context needs cmd/, internal/, frontend/):
+# Build from the repo root (the context needs cmd/, internal/, docs/,
+# frontend/):
 #   docker build -f deployments/docker/Dockerfile -t file-explorer:dev .
 # or just: make docker-build
+#
+# Multi-arch: the two build stages pin to $BUILDPLATFORM so Node and Go
+# run natively once per build; the Go stage then cross-compiles per
+# target via TARGETOS/TARGETARCH. Publish both architectures with:
+#   make docker-push   (buildx, linux/amd64 + linux/arm64, one tag)
 
 # ---- GUI bundle -----------------------------------------------------------
-FROM node:22-alpine AS web
+# Static JS: architecture-neutral, so always build it on the build host.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
@@ -17,14 +24,15 @@ COPY frontend/ ./
 RUN npm run build
 
 # ---- server binary ---------------------------------------------------------
-FROM golang:1.26-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 COPY docs/ ./docs/
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/server ./cmd/server
+ARG TARGETOS TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags='-s -w' -o /out/server ./cmd/server
 
 # ---- runtime ---------------------------------------------------------------
 FROM alpine:3.21

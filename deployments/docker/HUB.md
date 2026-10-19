@@ -53,7 +53,7 @@ password `change-me`.
 ```yaml
 services:
   file-explorer:
-    image: yourorg/file-explorer:1
+    image: ghcr.io/gssmahadevan/gvn-explorer:latest
     ports:
       - "8080:8080"
     volumes:
@@ -119,7 +119,9 @@ Two mounts, that's the whole state:
 
 ## Upgrades
 
-The image is versioned as `:major.minor.patch` and `:latest`. The server
+Currently published as `:latest` (`ghcr.io/gssmahadevan/gvn-explorer`,
+multi-arch amd64+arm64); `:major.minor.patch` tags will come with
+tagged releases. The server
 applies its SQLite migrations automatically at startup, and migrations
 are **not reversed on rollback** — before a `major`/`minor` bump, stop
 the container and copy `/data`. Patch releases are drop-in. `GET /` is
