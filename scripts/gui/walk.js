@@ -386,6 +386,56 @@ fs.mkdirSync(OUT, { recursive: true });
     );
     await closeModals();
 
+    // phone-width regression: at 390px the detail tables must NOT be
+    // squeezed (values used to clip to a few characters) — they keep
+    // real column widths and scroll horizontally, and the path stack
+    // moves into the ☰ drawer.
+    await page.setViewport({ width: 390, height: 844 });
+    await new Promise((r) => setTimeout(r, 600));
+    await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'walk-cfg.yml')?.click(),
+    );
+    await waitModal();
+    await page.waitForFunction(
+      () =>
+        [...document.querySelectorAll('.ant-modal')]
+          .find((x) => x.offsetParent !== null)
+          ?.querySelector('[data-testid="yaml-kv-d0"]') ?? false,
+      { timeout: 5000 },
+    ).catch(() => {});
+    // antd's breakpoint hook flips "narrow" a beat after the emulated
+    // viewport change — wait for the mobile toolbar, not a sleep.
+    await page.waitForFunction(
+      () =>
+        [...document.querySelectorAll('.ant-modal')]
+          .find((x) => x.offsetParent !== null)
+          ?.querySelector('[data-testid="yaml-nav-open"]') ?? false,
+      { timeout: 5000 },
+    ).catch(() => {});
+    const mobileOk = await page.evaluate(() => {
+      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+      if (!m) return { ok: false, why: 'no modal', modals: document.querySelectorAll('.ant-modal').length };
+      const key = m.querySelector('[data-testid="yaml-key-d0.0"]');
+      const kw = key ? key.getBoundingClientRect().width : 0;
+      const box =
+        m.querySelector('[data-testid="yaml-kv-d0"] .ant-table-content') ||
+        m.querySelector('[data-testid="yaml-kv-d0"] .ant-table-body');
+      const scrolls = !!box && box.scrollWidth > box.clientWidth + 40;
+      return {
+        ok: !!m.querySelector('[data-testid="yaml-nav-open"]') && kw >= 140 && scrolls,
+        title: m.querySelector('.ant-modal-title, .ant-modal-header')?.innerText?.slice(0, 60) ?? '(none)',
+        hasKv: !!m.querySelector('[data-testid="yaml-kv-d0"]'),
+        hasEditor: !!m.querySelector('[data-testid="yaml-editor"]'),
+        navBtn: !!m.querySelector('[data-testid="yaml-nav-open"]'),
+        kw, scrolls,
+      };
+    });
+    if (!mobileOk.ok) console.log('  dbg mobile:', JSON.stringify(mobileOk));
+    check('phone width: path stack in drawer, tables keep width + scroll sideways', mobileOk.ok);
+    await closeModals();
+    await page.setViewport({ width: 800, height: 600 });
+    await new Promise((r) => setTimeout(r, 600));
+
     await page.evaluate(() =>
       [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'deliverables/')?.click(),
     );

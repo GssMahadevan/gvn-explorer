@@ -70,22 +70,21 @@ export default function YamlKvPanel({ r, path, ctx }: { r: Resolved; path: strin
           );
         const raw = val == null ? '' : scalarText(val as Scalar).replace(/\n+/g, ' ');
         return (
-          <span data-testid={`yaml-valview-${childPath}`} style={{ ...mono, opacity: val == null ? 0.35 : 0.75 }}>
-            {val == null ? '(empty)' : short(raw)}
+          <span data-testid={`yaml-valview-${childPath}`} style={{ ...mono, opacity: val == null ? 0.35 : 0.75, whiteSpace: 'pre' }}>
+            {val == null ? '(empty)' : short(raw, 200)}
           </span>
         );
       },
     },
     {
       title: 'description',
-      width: 220,
       render: (p, _1, i) => {
         const holder = (p.value ?? p.key) as { comment?: string };
         const text = cmtGet(holder.comment);
         if (!text) return null;
         return (
-          <span data-testid={`yaml-cmtview-${path}.${i}`} style={{ ...mono, fontSize: 12, opacity: 0.55 }}>
-            {short(text, 60)}
+          <span data-testid={`yaml-cmtview-${path}.${i}`} style={{ ...mono, fontSize: 12, opacity: 0.55, whiteSpace: 'pre' }}>
+            {short(text, 160)}
           </span>
         );
       },
@@ -117,6 +116,10 @@ export default function YamlKvPanel({ r, path, ctx }: { r: Resolved; path: strin
       <Table
         size="small"
         pagination={false}
+        // columns keep their real width and the table scrolls sideways
+        // on narrow screens — squeezing the cells made keys unreadable
+        // on phones (same pattern as the admin tables).
+        scroll={{ x: 'max-content' }}
         rowKey={(p) => String(map.items.indexOf(p))}
         dataSource={map.items.filter(isPair) as Pair[]}
         columns={columns}

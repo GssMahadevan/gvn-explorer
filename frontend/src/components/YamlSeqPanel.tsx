@@ -47,21 +47,20 @@ export default function YamlSeqPanel({ r, path, ctx }: { r: Resolved; path: stri
             </Button>
           );
         return (
-          <span data-testid={`yaml-valview-${childPath}`} style={{ ...mono, opacity: 0.75 }}>
-            {short(scalarText(item as Scalar).replace(/\n+/g, ' '))}
+          <span data-testid={`yaml-valview-${childPath}`} style={{ ...mono, opacity: 0.75, whiteSpace: 'pre' }}>
+            {short(scalarText(item as Scalar).replace(/\n+/g, ' '), 200)}
           </span>
         );
       },
     },
     {
       title: 'comment',
-      width: 220,
       render: (item, _1, i) => {
         const text = cmtGet((item as { comment?: string }).comment);
         if (!text) return null;
         return (
-          <span data-testid={`yaml-cmtview-${path}.${i}`} style={{ ...mono, fontSize: 12, opacity: 0.55 }}>
-            {short(text, 60)}
+          <span data-testid={`yaml-cmtview-${path}.${i}`} style={{ ...mono, fontSize: 12, opacity: 0.55, whiteSpace: 'pre' }}>
+            {short(text, 160)}
           </span>
         );
       },
@@ -93,6 +92,9 @@ export default function YamlSeqPanel({ r, path, ctx }: { r: Resolved; path: stri
       <Table
         size="small"
         pagination={false}
+        // keep real column widths on narrow screens; horizontal scroll
+        // instead of squeezing values to a few characters (see KV panel).
+        scroll={{ x: 'max-content' }}
         rowKey={(item) => String(seq.items.indexOf(item))}
         dataSource={seq.items as Node[]}
         columns={columns}
