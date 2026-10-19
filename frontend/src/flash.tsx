@@ -154,7 +154,7 @@ export function FlashBar() {
         <div
           key={it.id}
           className="flash-item"
-          title="click to open the event log"
+          title="click to open the message log"
           onClick={() => setLogOpen(true)}
         >
           <Dot k={it.kind} />
@@ -172,7 +172,7 @@ export function FlashBar() {
         placement="bottomRight"
       >
         <Badge count={Math.min(items.length, 99)} size="small" offset={[-2, 2]}>
-          <Button size="small">event log</Button>
+          <Button size="small">msg log</Button>
         </Badge>
       </Popover>
     </div>

@@ -84,3 +84,22 @@ export interface Tenant {
   description: string;
   created_at: string;
 }
+
+// One row of the append-only audit trail (GET /api/v1/events).
+// actor is a "tenant/username" snapshot and empty for unauthenticated
+// attempts (failed logins); tenant_id is the subject tenant, 0 = platform.
+export interface EventRow {
+  id: number;
+  ts: number; // unix seconds
+  time: string;
+  actor_id?: number;
+  actor?: string;
+  tenant_id: number;
+  action: string; // perm_set, user_create, login_failed, fs_commit, ...
+  target_type?: string; // user | group | grant | tenant | session | file ...
+  target_id?: number;
+  target_name?: string;
+  path?: string; // for file/grant actions
+  details?: Record<string, unknown>;
+  ip?: string;
+}

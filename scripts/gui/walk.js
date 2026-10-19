@@ -34,9 +34,11 @@ fs.mkdirSync(OUT, { recursive: true });
   page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
   const fsReqs = [];
   const userReqs = [];
+  const eventReqs = [];
   page.on('request', (r) => {
     if (r.url().includes('/api/v1/fs?')) fsReqs.push(r.url());
     if (r.url().includes('/api/v1/users?')) userReqs.push(r.url());
+    if (r.url().includes('/api/v1/events?')) eventReqs.push(r.url());
   });
 
   const click = (sel, re) =>
@@ -723,7 +725,7 @@ fs.mkdirSync(OUT, { recursive: true });
     }));
     check('flash log button with badge', await page.evaluate(() => {
       const b = document.querySelector('[data-testid="flash-bar"]');
-      return !!b && !!b.querySelector('.ant-badge') && /event log/i.test(b.innerText);
+      return !!b && !!b.querySelector('.ant-badge') && /msg log/i.test(b.innerText);
     }));
     // close the still-open create modal via its Cancel button and wait
     // until it is gone (a lingering mask swallows the flash-bar click)
@@ -735,7 +737,7 @@ fs.mkdirSync(OUT, { recursive: true });
       )
       .catch(() => {});
 
-    // clicking a flash entry opens the recent-events log
+    // clicking a flash entry opens the recent-messages log
     const flashPos = await page.evaluate(() => {
       const el = document.querySelector('[data-testid="flash-bar"] .flash-item');
       if (!el) return null;
@@ -745,7 +747,7 @@ fs.mkdirSync(OUT, { recursive: true });
     check('flash entry clickable', flashPos !== null);
     if (flashPos) await page.mouse.click(flashPos.x, flashPos.y);
     await new Promise((r) => setTimeout(r, 800));
-    check('clicking flash opens event log', await page.evaluate(() => {
+    check('clicking flash opens msg log', await page.evaluate(() => {
       const p = [...document.querySelectorAll('.ant-popover')].find((x) => x.offsetParent !== null);
       return !!p && /tenant name taken/.test(p.innerText) && /clear/.test(p.innerText);
     }));
@@ -868,6 +870,91 @@ fs.mkdirSync(OUT, { recursive: true });
       i.dispatchEvent(new Event('input', { bubbles: true }));
     });
     await new Promise((r) => setTimeout(r, 400));
+
+    // ---- events tab: the audit trail as a real table — every column,
+    // server-side paging/search/sort like the other lists, plus the
+    // audit-only action= filter and per-row details expansion ----
+    await click('[role="tab"]', 'events');
+    await page
+      .waitForFunction(
+        () =>
+          [...document.querySelectorAll('tbody tr')].some(
+            (tr) => tr.offsetParent !== null && /perm_set|user_create|login/.test(tr.innerText),
+          ),
+        { timeout: 8000 },
+      )
+      .catch(() => {});
+    check('events tab table shows every audit column', await page.evaluate(() => {
+      const hs = [...document.querySelectorAll('th')]
+        .filter((th) => th.offsetParent !== null)
+        .map((th) => th.innerText.trim());
+      return ['id', 'time', 'actor', 'tenant', 'action', 'target', 'path', 'ip'].every((c) =>
+        hs.includes(c),
+      );
+    }));
+    const eventsRows = () =>
+      page.evaluate(() =>
+        [...document.querySelectorAll('tbody tr.ant-table-row')]
+          .filter((tr) => tr.offsetParent !== null)
+          .map((tr) => (tr.innerText || '').replace(/\s+/g, ' ')),
+      );
+    const rowsNow = await eventsRows();
+    check('events tab lists recorded audit actions', rowsNow.some((t) => /perm_set/.test(t)));
+    if (!rowsNow.some((t) => /perm_set/.test(t)))
+      console.log('EVENTS-DIAG rows=' + JSON.stringify(rowsNow.slice(0, 8)) +
+        ' reqs=' + JSON.stringify(eventReqs.slice(-3)) +
+        ' flash=' + JSON.stringify(await page.evaluate(() => document.querySelector('[data-testid="flash-bar"]')?.innerText ?? '')));
+    // action filter: first visible toolbar select (other panels are hidden)
+    const actPos = await page.evaluate(() => {
+      const s = [...document.querySelectorAll('.bar .ant-select')].find(
+        (x) => x.offsetParent !== null,
+      );
+      if (!s) return null;
+      const q = s.getBoundingClientRect();
+      return { x: q.x + q.width / 2, y: q.y + q.height / 2 };
+    });
+    // the action list is long, so the select is searchable: open it,
+    // type to filter (defeats option virtualization), then click the hit
+    const pickTyped = async (x, y, typeText, label) => {
+      await page.mouse.click(x, y);
+      await new Promise((r) => setTimeout(r, 600));
+      await page.keyboard.type(typeText);
+      await new Promise((r) => setTimeout(r, 500));
+      await mouseClick('.ant-select-item-option', '^' + label + '$');
+      await new Promise((r) => setTimeout(r, 400));
+    };
+    if (actPos) await pickTyped(actPos.x, actPos.y, 'perm_set', 'perm_set');
+    await new Promise((r) => setTimeout(r, 1300));
+    check('events action filter sends action=perm_set', /action=perm_set/.test(eventReqs.at(-1) ?? ''));
+    const filteredRows = await eventsRows();
+    check('action-filtered rows all show perm_set', filteredRows.length > 0 && filteredRows.every((t) => /perm_set/.test(t)));
+    if (!filteredRows.length || !filteredRows.every((t) => /perm_set/.test(t)))
+      console.log('EVENTS-DIAG filtered=' + JSON.stringify(filteredRows.slice(0, 8)));
+    if (actPos) await pickTyped(actPos.x, actPos.y, 'all act', 'all actions');
+    await new Promise((r) => setTimeout(r, 1000));
+    check('events search sends q= scoped to audit cols', await (async () => {
+      await page.type('input[placeholder="search events"]', 'walk-perms');
+      await new Promise((r) => setTimeout(r, 1500));
+      return /q=walk-perms/.test(eventReqs.at(-1) ?? '');
+    })());
+    check(
+      'details expander shows the structured payload',
+      await page.evaluate(() => {
+        const b = [...document.querySelectorAll('.ant-table-row-expand-icon')].find(
+          (x) => x.offsetParent !== null && !x.classList.contains('ant-table-row-expand-icon-disabled'),
+        );
+        if (!b) return false;
+        b.click();
+        return true;
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 500));
+    check('expanded event details render as JSON', await page.evaluate(() => {
+      const p = [...document.querySelectorAll('[data-testid="event-details"]')].find(
+        (x) => x.offsetParent !== null,
+      );
+      return !!p && p.innerText.trim().startsWith('{') && p.innerText.includes('":');
+    }));
 
     // ---- header menus ----
     // user menu (avatar top-right): identity header + profile/settings/sign out

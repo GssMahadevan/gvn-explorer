@@ -12,6 +12,7 @@ import PermsPanel from './panels/PermsPanel';
 import UsersPanel from './panels/UsersPanel';
 import GroupsPanel from './panels/GroupsPanel';
 import TenantsPanel from './panels/TenantsPanel';
+import EventsPanel from './panels/EventsPanel';
 import type { FileTarget } from './components/FilePane';
 
 // the file page pulls in CodeMirror + markdown rendering; lazy so the
@@ -81,6 +82,7 @@ export default function App() {
   if (isMgr) {
     items.push({ key: 'users', label: 'Users', children: <UsersPanel me={me} /> });
     items.push({ key: 'groups', label: 'Groups', children: <GroupsPanel me={me} /> });
+    items.push({ key: 'events', label: 'Events', children: <EventsPanel me={me} visible={tab === 'events' && !fileTarget} /> });
   }
   if (me.is_super)
     items.push({ key: 'tenants', label: 'Tenants', children: <TenantsPanel me={me} /> });

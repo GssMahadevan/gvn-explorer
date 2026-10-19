@@ -210,7 +210,7 @@ Every authz/authn DML is appended to an `events` table — forensics first:
 who changed what, to whom, from which IP, when. Recorded actions:
 `tenant_create/update/delete/active`, `user_create/update/delete/password/active`,
 `group_create/update/delete/active`, `member_add/remove`, `perm_set/delete`,
-`factor_create/delete`, `login`, `login_failed`.
+`factor_create/delete`, `login`, `login_failed`, `fs_commit` (published file writes).
 
 Design rules:
 
@@ -229,7 +229,9 @@ curl -b jar 'localhost:8080/api/v1/events?limit=50&action=perm_set'
 ```
 
 Admin rights; super admins see all tenants. Newest first. A failed audit
-write is logged loudly but never blocks the operation itself.
+write is logged loudly but never blocks the operation itself. The GUI
+mirrors this API one-for-one as the **Events tab** (see Web GUI): all
+columns, the same filters, and per-row expansion of the `details` JSON.
 
 ## Logging
 
@@ -384,6 +386,21 @@ tables stay usable at phone widths no matter how many actions an entity
 has; destructive items pop a themed confirm dialog whose OK button
 carries the action name.
 
+The **Events tab** (admins only) shows the forensic audit trail as a
+first-class table: every stored column — id, time, actor (the
+`tenant/username` snapshot, tagged `anonymous` for unauthenticated
+attempts), tenant (super admins only, resolved from the id), action,
+target, path and source IP. It rides the same server-side list contract
+as every other panel (`q`/`col` across actor/action/target/path,
+sort by ts/actor/action/target/path, newest first by default) plus the
+audit-only filters the API accepts: a searchable `action=` select over
+the full action vocabulary and a time-range select mapped to `since=`.
+Events carrying structured `details` get a row expander rendering the
+JSON payload. The panel re-fetches each time the tab becomes visible —
+the trail is append-only, so the freshest tail is what you should see.
+(The flash center's badge button is unrelated UI history, now labeled
+`msg log` to keep the two apart.)
+
 Clicking a file either opens the **file page** or downloads, decided from
 the **name** alone — GitHub-style policy in `filekind.ts`: `.yml`/`.yaml`
 get the structured editor below, an allowlist of text extensions (plus
@@ -504,8 +521,10 @@ ribbon → save, YAML structured-view → edit with drill-down +
 draft-autosave → publish incl. comment/block-scalar preservation and the
 390px-width drawer/scroll regression, download links for non-text files,
 the active-filter wire format,
-flash center, per-file grant flow, header menus, dark mode, sign-out)
-with 70 assertions plus a zero-console-error guard. `SHOTS=1` additionally
+flash center, per-file grant flow, the Events tab (all audit columns,
+the `action=` filter wire format, search scoping, details expansion),
+header menus, dark mode, sign-out)
+with 77 assertions plus a zero-console-error guard. `SHOTS=1` additionally
 writes light/dark screenshots to `$OUT_DIR` (default `/tmp/fx-gui`).
 Needs a local Chrome; `CHROME_PATH` overrides the macOS default.
 
