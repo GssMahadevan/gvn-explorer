@@ -5,6 +5,8 @@
 
 import {
   createContext,
+  lazy,
+  Suspense,
   useCallback,
   useContext,
   useEffect,
@@ -13,7 +15,13 @@ import {
   useState,
 } from 'react';
 import type { ReactNode } from 'react';
-import { Badge, Button, Popover, theme } from 'antd';
+import { Badge, Button, Divider, Drawer, Popover, Spin, theme } from 'antd';
+import type { Me } from './types';
+
+// The full audit table would otherwise import back through useListView
+// into this very module, so it is lazy — it only downloads when the log
+// drawer is actually opened.
+const EventsTable = lazy(() => import('./components/EventsTable'));
 
 export type FlashKind = 'error' | 'warn' | 'info' | 'success';
 
@@ -88,12 +96,17 @@ const Dot = ({ k }: { k: FlashKind }) => (
 );
 
 // The strip itself. Lives between the header and the content, so mount
-// it inside the provider and the themed ConfigProvider.
-export function FlashBar() {
+// it inside the provider and the themed ConfigProvider. For admins the
+// badge opens the full audit-event table in a drawer (the same component
+// the Events tab embeds) with the local session history below it; for
+// plain users — who cannot query /api/v1/events — the badge opens just
+// the session history popover.
+export function FlashBar({ me }: { me: Me }) {
   const { items, clear } = useFlash();
   const { token } = theme.useToken();
   const [now, setNow] = useState(() => Date.now());
   const [logOpen, setLogOpen] = useState(false);
+  const isMgr = me.is_admin || me.is_super;
 
   // one chained timer: wake up when the earliest live entry expires;
   // the effect re-arms (via `now`) until none are left
@@ -115,10 +128,11 @@ export function FlashBar() {
     live.push(it);
   }
 
-  if (!items.length) return null; // no history, no bar
-
-  const history = (
-    <div style={{ width: 480 }}>
+  // session history section: local messages the audit trail does not
+  // carry (validation errors, 4xx detail strings). Shared by the plain
+  // user's popover and the admin drawer.
+  const sessionLog = (opts: { width: number | string; closeAfterClear: boolean }) => (
+    <div style={{ width: opts.width }}>
       <div style={{ maxHeight: 320, overflowY: 'auto' }}>
         {items.slice(0, HISTORY_SHOW).map((it) => (
           <div key={it.id} className="flash-row">
@@ -135,7 +149,7 @@ export function FlashBar() {
           size="small"
           onClick={() => {
             clear();
-            setLogOpen(false);
+            if (opts.closeAfterClear) setLogOpen(false);
           }}
         >
           clear
@@ -143,6 +157,40 @@ export function FlashBar() {
       </div>
     </div>
   );
+
+  const logButton = (
+    <Badge count={Math.min(items.length, 99)} size="small" offset={[-2, 2]}>
+      <Button size="small" data-testid="log-button">
+        {isMgr ? 'event log' : 'msg log'}
+      </Button>
+    </Badge>
+  );
+
+  const drawer = isMgr ? (
+    <Drawer
+      title="event log"
+      placement="right"
+      width="min(1080px, 96vw)"
+      open={logOpen}
+      onClose={() => setLogOpen(false)}
+    >
+      <Suspense fallback={<Spin />}>
+        <EventsTable me={me} visible={logOpen} />
+      </Suspense>
+      {items.length > 0 && (
+        <>
+          <Divider style={{ margin: '16px 0 8px' }}>
+            this session (not in the audit trail)
+          </Divider>
+          {sessionLog({ width: '100%', closeAfterClear: false })}
+        </>
+      )}
+    </Drawer>
+  ) : null;
+
+  // no history, no bar — but the admin's drawer stays mounted while open,
+  // so clearing the session messages leaves the audit table in place
+  if (!items.length) return drawer;
 
   return (
     <div
@@ -154,7 +202,7 @@ export function FlashBar() {
         <div
           key={it.id}
           className="flash-item"
-          title="click to open the message log"
+          title={`click to open the ${isMgr ? 'event' : 'message'} log`}
           onClick={() => setLogOpen(true)}
         >
           <Dot k={it.kind} />
@@ -164,17 +212,20 @@ export function FlashBar() {
         </div>
       ))}
       <span style={{ flex: 1 }} />
-      <Popover
-        open={logOpen}
-        onOpenChange={setLogOpen}
-        content={history}
-        trigger="click"
-        placement="bottomRight"
-      >
-        <Badge count={Math.min(items.length, 99)} size="small" offset={[-2, 2]}>
-          <Button size="small">msg log</Button>
-        </Badge>
-      </Popover>
+      {isMgr ? (
+        <span onClick={() => setLogOpen(true)}>{logButton}</span>
+      ) : (
+        <Popover
+          open={logOpen}
+          onOpenChange={setLogOpen}
+          content={sessionLog({ width: 480, closeAfterClear: true })}
+          trigger="click"
+          placement="bottomRight"
+        >
+          {logButton}
+        </Popover>
+      )}
+      {drawer}
     </div>
   );
 }

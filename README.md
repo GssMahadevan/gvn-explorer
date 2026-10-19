@@ -380,8 +380,8 @@ error or success shows for 30 seconds, the full history stays behind the
 badge and clears on demand — no modal dialogs standing between you and
 the table. Confirmations name their subject instead of just the verb —
 `grant saved: acme/alice on /reports/q3.md → r-w-`, `suspended user
-acme/bob`, `renamed /a → /b` — so the msg log doubles as a "what did I
-just change" trail; cross-session forensics is the Events tab. Every row's actions live behind one vertical three-dots menu
+acme/bob`, `renamed /a → /b` — so the session messages double as a "what
+did I just change" trail. Every row's actions live behind one vertical three-dots menu
 (`components/RowActions`): entity operations (edit, set password, new API
 key, suspend/activate, delete), file operations (permissions, rename,
 delete) and grant revoke all occupy the same one-column-wide slot, so
@@ -390,7 +390,8 @@ has; destructive items pop a themed confirm dialog whose OK button
 carries the action name.
 
 The **Events tab** (admins only) shows the forensic audit trail as a
-first-class table: every stored column — id, time, actor (the
+first-class table (`components/EventsTable`, embedded by the panel):
+every stored column — id, time, actor (the
 `tenant/username` snapshot, tagged `anonymous` for unauthenticated
 attempts), tenant (super admins only, resolved from the id), action,
 target, path and source IP. It rides the same server-side list contract
@@ -399,10 +400,17 @@ sort by ts/actor/action/target/path, newest first by default) plus the
 audit-only filters the API accepts: a searchable `action=` select over
 the full action vocabulary and a time-range select mapped to `since=`.
 Events carrying structured `details` get a row expander rendering the
-JSON payload. The panel re-fetches each time the tab becomes visible —
-the trail is append-only, so the freshest tail is what you should see.
-(The flash center's badge button is unrelated UI history, now labeled
-`msg log` to keep the two apart.)
+JSON payload. The table re-fetches every time it becomes visible — tab
+or drawer — the trail is append-only, so the freshest tail is what you
+should see; the server pages it like every other list, so a trail of
+100k events costs the same as one of 100. The same component also
+stands as a side drawer behind the flash center's **`event log`**
+button for admins: from anywhere — even while viewing a file — the full
+audit table with columns, sort, filters and search is one click away,
+with this session's local messages (the things that are not audit
+events) in a separate small section below it, clearable on demand. For
+plain users, who cannot query the events API, the badge stays a
+`msg log` popover of session history.
 
 Clicking a file either opens the **file page** or downloads, decided from
 the **name** alone — GitHub-style policy in `filekind.ts`: `.yml`/`.yaml`
@@ -527,7 +535,7 @@ the active-filter wire format,
 flash center, per-file grant flow, the Events tab (all audit columns,
 the `action=` filter wire format, search scoping, details expansion),
 header menus, dark mode, sign-out)
-with 77 assertions plus a zero-console-error guard. `SHOTS=1` additionally
+with 78 assertions plus a zero-console-error guard. `SHOTS=1` additionally
 writes light/dark screenshots to `$OUT_DIR` (default `/tmp/fx-gui`).
 Needs a local Chrome; `CHROME_PATH` overrides the macOS default.
 

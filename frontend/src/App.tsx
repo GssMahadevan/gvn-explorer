@@ -121,7 +121,7 @@ export default function App() {
             />
             <UserMenu me={me} onLogout={logout} dark={dark} setDark={setDark} />
           </Layout.Header>
-          <FlashBar />
+          <FlashBar me={me} />
           {/* all panels stay mounted; only the active one is visible —
               panel state (page, search, sort) survives tab switches.
               Opening a file hides them (still mounted) and shows the file

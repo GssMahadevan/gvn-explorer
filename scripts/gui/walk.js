@@ -6,7 +6,8 @@
 // perms -> users -> tenants, asserting along the way + screenshots.
 // Covers the modal-based entity forms (create/edit), the per-row action
 // menu (the vertical three-dots on every table row), the active-filter
-// select, and the flash centre strip under the header.
+// select, the flash centre strip under the header, and the event log
+// drawer (the full audit table) behind it.
 //
 // Needs a running server + fixture data; scripts/test_gui.sh boots both.
 // Env: BASE_URL (default http://localhost:8096), CHROME_PATH, OUT_DIR.
@@ -725,7 +726,7 @@ fs.mkdirSync(OUT, { recursive: true });
     }));
     check('flash log button with badge', await page.evaluate(() => {
       const b = document.querySelector('[data-testid="flash-bar"]');
-      return !!b && !!b.querySelector('.ant-badge') && /msg log/i.test(b.innerText);
+      return !!b && !!b.querySelector('.ant-badge') && /event log/i.test(b.innerText);
     }));
     // close the still-open create modal via its Cancel button and wait
     // until it is gone (a lingering mask swallows the flash-bar click)
@@ -737,7 +738,8 @@ fs.mkdirSync(OUT, { recursive: true });
       )
       .catch(() => {});
 
-    // clicking a flash entry opens the recent-messages log
+    // clicking a flash entry opens the event log drawer: the full audit
+    // table (same component as the Events tab) + session messages below
     const flashPos = await page.evaluate(() => {
       const el = document.querySelector('[data-testid="flash-bar"] .flash-item');
       if (!el) return null;
@@ -746,18 +748,45 @@ fs.mkdirSync(OUT, { recursive: true });
     });
     check('flash entry clickable', flashPos !== null);
     if (flashPos) await page.mouse.click(flashPos.x, flashPos.y);
-    await new Promise((r) => setTimeout(r, 800));
-    check('clicking flash opens msg log', await page.evaluate(() => {
-      const p = [...document.querySelectorAll('.ant-popover')].find((x) => x.offsetParent !== null);
-      return !!p && /tenant name taken/.test(p.innerText) && /clear/.test(p.innerText);
+    // NB: the .ant-drawer root is position:fixed so offsetParent is
+    // always null — detect "open" via the ant-drawer-open class.
+    await page
+      .waitForFunction(
+        () => {
+          const d = document.querySelector('.ant-drawer-open');
+          return (
+            !!d &&
+            [...d.querySelectorAll('th')].some((h) => /actor/i.test(h.textContent)) &&
+            !!d.querySelector('tr.ant-table-row')
+          );
+        },
+        { timeout: 8000 },
+      )
+      .catch(() => {});
+    check('clicking flash opens event log drawer with the audit table', await page.evaluate(() => {
+      const d = document.querySelector('.ant-drawer-open');
+      if (!d) return false;
+      const heads = [...d.querySelectorAll('th')].map((h) => h.textContent.toLowerCase());
+      return ['time', 'actor', 'action', 'target', 'path'].every((c) => heads.some((h) => h.includes(c))) &&
+        !!d.querySelector('[data-testid="events-table"]') &&
+        !!d.querySelector('tr.ant-table-row');
     }));
-    // clear() empties the history: the log closes and the bar disappears
-    await mouseClick('.ant-popover button', '^clear$');
+    check('event log drawer keeps session messages outside the audit', await page.evaluate(() => {
+      const d = document.querySelector('.ant-drawer-open');
+      return !!d && /not in the audit trail/.test(d.innerText) && /tenant name taken/.test(d.innerText);
+    }));
+    // clear() empties the session history: the bar disappears (the
+    // drawer and its audit table stay open)
+    await mouseClick('.ant-drawer-open button', '^clear$');
     await new Promise((r) => setTimeout(r, 700));
     check('clear removes flash history and bar', await page.evaluate(
-      () => !document.querySelector('[data-testid="flash-bar"]') &&
-        ![...document.querySelectorAll('.ant-popover')].some((p) => p.offsetParent !== null),
+      () => !document.querySelector('[data-testid="flash-bar"]'),
     ));
+    await page.click('.ant-drawer-open .ant-drawer-close');
+    await page
+      .waitForFunction(() => !document.querySelector('.ant-drawer-open'), { timeout: 4000 })
+      .catch(() => {});
+    await new Promise((r) => setTimeout(r, 500)); // let the mask unmount
 
     // edit tenant goes through the row menu -> prefilled, name-locked modal
     check('tenant edit via row menu', await openRowMenu('your tenant'));
