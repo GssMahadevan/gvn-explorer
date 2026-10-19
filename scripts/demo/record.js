@@ -2,20 +2,21 @@
 //
 //   node record.js standalone|docker   (expects the app at FX_DEMO_URL)
 //
-// Scenes are declared per scenario below; every scene gets a narration
-// track generated with macOS `say`, and frames captured from headless
-// Chrome at DEMO_FPS while the scripted actions run in real time:
-//   card  - title/end card (local HTML)
-//   term  - typing-animation terminal (local HTML; the commands shown
-//           are the real ones for the scenario)
-//   gui   - the live app: cursor moves, clicks, keystrokes — same
-//           selectors the GUI walk uses.
-// ffmpeg muxes each scene (video + padded narration) and concatenates.
-// Everything intermediate lives in /tmp/fx-demo/<scenario>/.
+// Scenes come from scenarios.js. Every scene gets a narration track
+// generated with macOS `say`, and frames captured from headless Chrome
+// while the scripted GUI actions run in real time (real mouse + keyboard
+// events, so the cursor work looks like a human demo; vocabulary mirrors
+// scripts/gui/walk.js: row menus, modals, antd selects, CodeMirror).
+// A GUI scene never ends before its (estimated) actions finish, even if
+// the narration is shorter. ffmpeg muxes each scene with padded
+// narration, then concatenates with +faststart so browsers can stream
+// the file from GitHub without buffering the whole thing.
+// All intermediates live in /tmp/fx-demo/<scenario>/.
 
 const { spawnSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const { SCENARIOS } = require("./scenarios");
 
 const FPS = Number(process.env.DEMO_FPS || 12);
 const VOICE = process.env.DEMO_VOICE || "Samantha";
@@ -29,101 +30,19 @@ const run = (cmd, args) => {
   return r.stdout;
 };
 
-// ---------- scenarios ----------
-const SCENARIOS = {
-  standalone: {
-    out: "docs/demo-standalone.mp4",
-    scenes: [
-      { type: "card", title: "gvn-explorer", sub: "Standalone — one self-contained binary",
-        caption: "A self-hosted web file explorer — no install, no Docker",
-        say: "Try g-v-n explorer standalone: one self-contained binary. No install, and no Docker." },
-      { type: "term", caption: "Download the archive → unpack → run. That's the whole install.",
-        lines: [
-          { cmd: "curl -LO https://github.com/GssMahadevan/gvn-explorer/releases/download/v0.1.0/gvn-explorer-v0.1.0-linux-amd64.tar.gz" },
-          { cmd: "tar xzf gvn-explorer-v0.1.0-linux-amd64.tar.gz" },
-          { cmd: "cd gvn-explorer-v0.1.0-linux-amd64" },
-          { cmd: "./gvn-explorer-v0.1.0-linux-amd64" },
-          { out: 'INFO  file root        path=/srv/files' },
-          { out: 'INFO  web gui enabled  dir=(embedded)' },
-          { out: 'INFO  server starting  addr=:8080' },
-        ],
-        say: "Grab the archive for your platform from the releases page. Unpack it, and run the binary. That is the whole install. The web console and the full user guide live inside the binary itself, and on first run it creates its data folder and database." },
-      { type: "gui", url: "/", caption: "Open http://localhost:8080 — first-run admin: system / admin / admin",
-        say: "Now open localhost colon 8080 in a browser. Sign in with the first-run admin: tenant system, user admin, password admin. In a real deployment you would change that password right away.",
-        steps: [
-          { waitSel: 'input[autocomplete="organization"]' },
-          { type: { sel: 'input[autocomplete="organization"]', text: "system" } },
-          { type: { sel: 'input[autocomplete="username"]', text: "admin" } },
-          { type: { sel: 'input[autocomplete="current-password"]', text: "admin" } },
-          { clickText: { sel: "button", text: "login" } },
-          { waitSel: ".app-user" },
-        ] },
-      { type: "gui", url: "/", caption: "Real files on disk · markdown renders · the guide is built in",
-        say: "Your files stay plain files on disk: browse, search, open — markdown renders exactly as you would expect. And the brand menu's Help opens the complete user guide — permissions, sharing, API keys — offline, inside the app.",
-        steps: [
-          { waitSel: "tbody tr" },
-          { clickText: { sel: "tbody button", text: "projects" } },
-          { wait: 700 },
-          { clickText: { sel: "tbody button", text: "release-notes.md" } },
-          { wait: 1600 },
-          { click: ".app-brand" },
-          { wait: 500 },
-          { clickText: { sel: ".ant-dropdown li, .ant-menu-item", text: "Help" } },
-          { wait: 2000 },
-        ] },
-      { type: "card", title: "data/ + perms.db", sub: "…that's the whole backup. Upgrade = swap the binary.",
-        caption: "Releases: github.com/GssMahadevan/gvn-explorer",
-        say: "Back up one folder and one file. And upgrading is just swapping the binary." },
-    ],
-  },
-  docker: {
-    out: "docs/demo-docker.mp4",
-    scenes: [
-      { type: "card", title: "gvn-explorer", sub: "Docker — one command, multi-arch",
-        caption: "Self-hosted file explorer, containerized",
-        say: "Try g-v-n explorer with Docker: one command, a multi-arch image." },
-      { type: "term", caption: "Your files at /data/root · accounts+audit at /data (back this up!)",
-        lines: [
-          { cmd: 'mkdir -p files state' },
-          { cmd: 'docker run -d --name gvn -p 8080:8080 \\\n  -v "$PWD/files:/data/root" \\\n  -v "$PWD/state:/data" \\\n  ghcr.io/gssmahadevan/gvn-explorer:latest' },
-          { cmd: "docker logs -f gvn" },
-          { out: 'INFO  file root        path=/data/root' },
-          { out: 'INFO  web gui enabled  dir=/app/web' },
-          { out: 'INFO  server starting  addr=:8080' },
-        ],
-        say: "Run the published multi-arch image with two volumes: your file tree at slash data slash root, and slash data for accounts, permissions, and the audit trail — that is the one to back up. The container starts with a health-check and structured JSON logs." },
-      { type: "gui", url: "/", caption: "localhost:8080 — admin set by the ADMIN env (default system/admin/admin)",
-        say: "Point a browser at localhost colon 8080 — the same full console. Sign in with the admin you set with the A D M I N variable; the default is system, admin, admin.",
-        steps: [
-          { waitSel: 'input[autocomplete="organization"]' },
-          { type: { sel: 'input[autocomplete="organization"]', text: "system" } },
-          { type: { sel: 'input[autocomplete="username"]', text: "admin" } },
-          { type: { sel: 'input[autocomplete="current-password"]', text: "admin" } },
-          { clickText: { sel: "button", text: "login" } },
-          { waitSel: ".app-user" },
-        ] },
-      { type: "gui", url: "/", caption: "Same app: draft+publish editing, per-path permissions, built-in guide",
-        say: "Everything is here: browsing, editing with draft and publish, per-path permissions with inheritance, tenants, API keys — and the built-in guide, one click away in the Help menu.",
-        steps: [
-          { waitSel: "tbody tr" },
-          { clickText: { sel: "tbody button", text: "projects" } },
-          { wait: 700 },
-          { clickText: { sel: "tbody button", text: "release-notes.md" } },
-          { wait: 1500 },
-          { click: ".app-brand" },
-          { wait: 500 },
-          { clickText: { sel: ".ant-dropdown li, .ant-menu-item", text: "Help" } },
-          { wait: 1800 },
-        ] },
-      { type: "card", title: "ghcr.io/gssmahadevan/gvn-explorer", sub: "amd64 + arm64 · compose + k8s notes in the repo",
-        caption: "Upgrade = pull a new image; data stays in the volumes",
-        say: "Upgrades mean pulling a new image — your data stays in the volumes." },
-    ],
-  },
+// rough worst-case duration per step type, used to floor scene length
+const EST = {
+  wait: (s) => s.wait, waitSel: () => 600, type: (s) => s.type.text.length * 120 + 1500,
+  clickText: () => 2000, click: () => 1500, tab: () => 1800, btn: () => 1600,
+  fill: (s) => s.fill.text.length * 100 + 1500, mbtn: () => 1300, rowMenu: () => 2800,
+  cm: (s) => s.cm.length * 100 + 1500, clickSel: () => 1400, yamlOpen: () => 1600,
+  setLeaf: () => 3200, search: () => 1600, opt: () => 1600, typeIn: (s) => s.typeIn.text.length * 100 + 1500,
 };
+const estimate = (steps) =>
+  steps.reduce((t, s) => t + ((EST[Object.keys(s)[0]] || (() => 500))(s) || 0), 0) + 3000;
 
-// ---------- html ----------
-const CAPTION_CSS = `position:fixed;left:0;right:0;bottom:0;padding:10px 24px;
+// ---------- static scene html ----------
+const CAPTION_CSS = `position:fixed;left:0;right:0;bottom:0;padding:10px 24px;pointer-events:none;
   background:rgba(0,0,0,.75);color:#fff;font:500 22px/1.35 -apple-system,sans-serif;z-index:9999`;
 const CURSOR_CSS = `position:fixed;width:22px;height:22px;border-radius:50%;
   background:rgba(255,80,80,.85);border:2px solid #fff;transform:translate(-999px,-999px);
@@ -139,7 +58,6 @@ function cardHtml(s) {
 }
 
 function termHtml(s) {
-  const esc = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;");
   return `<!doctype html><meta charset=utf-8><style>html,body{margin:0;height:100%;
   background:#0d1117;color:#e6edf3;font:16px/1.5 Menlo,monospace;padding:24px;box-sizing:border-box}
   .p{color:#7ee787}.cmd{white-space:pre-wrap}.out{white-space:pre-wrap;color:#9aa7b4;opacity:.9}
@@ -156,13 +74,189 @@ function termHtml(s) {
   window.T();</script>`;
 }
 
-// ---------- per-scene capture ----------
+// ---------- live-app step interpreter ----------
+// Every step is best-effort: a missing element logs and skips, so one
+// drifted selector can never abort a recording.
+async function runSteps(page, steps) {
+  const moveCursor = (x, y) =>
+    page.evaluate(([x, y]) => (document.getElementById("fxcur").style.transform =
+      `translate(${x}px,${y}px)`), [x, y]);
+
+  // center of the first visible element matching sel (+ optional text/re)
+  const rectOf = (sel, text, rowRe) =>
+    page.evaluate((s, t, rr) => {
+      let pool = [...document.querySelectorAll(s)].filter((e) => e.offsetParent !== null);
+      if (rr) pool = pool.filter((e) => new RegExp(rr, "i").test(
+        (e.closest("tr") || e.closest('[data-testid^="yaml-kv-"]') || e.parentElement)?.innerText ?? ""));
+      const el = t ? pool.find((e) => (e.textContent || "").toLowerCase().includes(String(t).toLowerCase())) : pool[0];
+      if (!el) return null;
+      el.scrollIntoView({ block: "center", inline: "nearest" });
+      const q = el.getBoundingClientRect();
+      return { x: q.x + q.width / 2, y: q.y + q.height / 2 };
+    }, sel, text ?? "", rowRe ?? "");
+
+  const realClick = async (p) => {
+    if (!p) return false;
+    await moveCursor(p.x, p.y);
+    await page.mouse.move(p.x, p.y, { steps: 10 });
+    await page.evaluate((ms) => new Promise((r) => setTimeout(r, ms)), 220);
+    await page.mouse.click(p.x, p.y);
+    return true;
+  };
+  const clickAt = async (sel, text, rowRe) => realClick(await rectOf(sel, text, rowRe));
+  const sleep = (ms) => page.evaluate((m) => new Promise((r) => setTimeout(r, m)), ms);
+
+  // visible modal (antd portals several .ant-modal nodes; only one is open)
+  const modalRect = (sel) =>
+    page.evaluate((s) => {
+      const m = [...document.querySelectorAll(".ant-modal")].find((x) => x.offsetParent !== null);
+      const el = m && ((s && m.querySelector(s)) || m.querySelector("input:not([disabled])"));
+      if (!el) return null;
+      el.scrollIntoView({ block: "center" }); // tall modals put OK below the fold
+      const q = el.getBoundingClientRect();
+      return { x: q.x + q.width / 2, y: q.y + q.height / 2 };
+    }, sel);
+
+  const openRowMenu = async (rowRe) => {
+    // the ⋮ column sits at the right edge of a horizontally scrolled table,
+    // and lists refresh asynchronously after a create - so retry like
+    // walk.js does for virtualized selects
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (await clickAt('[data-testid="row-actions"]', "", rowRe)) {
+        try {
+          await page.waitForFunction(
+            () => [...document.querySelectorAll(".ant-dropdown")].some((d) => d.offsetParent !== null),
+            { timeout: 4000 },
+          );
+          await sleep(500); // rc-motion settle
+          return true;
+        } catch { /* dropdown never opened; retry */ }
+      }
+      await sleep(800);
+    }
+    return false;
+  };
+
+  for (const st of steps) {
+    const op = Object.keys(st)[0];
+    try {
+      if (op === "wait") await sleep(st.wait);
+      else if (op === "waitSel") await page.waitForSelector(st.waitSel, { timeout: 8000 });
+      else if (op === "tab") { await clickAt('[role="tab"]', st.tab); await sleep(1300); }
+      else if (op === "btn") {
+        const label = st.btn.replace(/[$^]/g, "");
+        if (!(await clickAt("button", label))) {
+          await page.evaluate((r) => {
+            [...document.querySelectorAll("button")].find((b) => b.offsetParent !== null &&
+              new RegExp(r, "i").test(b.textContent.trim()))?.click();
+          }, st.btn.startsWith("^") ? st.btn : "^" + label + "$");
+        }
+        await sleep(600);
+      }
+      else if (op === "clickSel") await clickAt(st.clickSel);
+      else if (op === "clickText") await clickAt(st.clickText.sel, st.clickText.text);
+      else if (op === "type") { await clickAt(st.type.sel); await page.type(st.type.sel, st.type.text, { delay: 90 }); }
+      else if (op === "typeIn") {
+        await page.evaluate((s) => document.querySelector(s)?.focus(), st.typeIn.sel);
+        await page.keyboard.type(st.typeIn.text, { delay: 90 });
+      }
+      else if (op === "fill") {
+        const p = await modalRect(st.fill.sel);
+        if (!p) throw new Error("modal input not found: " + st.fill.sel);
+        await realClick(p);
+        await page.keyboard.type(st.fill.text, { delay: 80 });
+      }
+      else if (op === "mbtn") {
+        // submit, and retry once if the modal survived the click (antd
+        // swallows input that lands during the open animation)
+        let clicked = false;
+        for (let attempt = 0; attempt < 2 && !clicked; attempt++) {
+          const p = await page.evaluate((t) => {
+            const m = [...document.querySelectorAll(".ant-modal")].find((x) => x.offsetParent !== null);
+            const b = m && [...m.querySelectorAll("button")].find((x) => x.offsetParent !== null &&
+              x.textContent.toLowerCase().includes(String(t).toLowerCase()));
+            if (!b) return null;
+            b.scrollIntoView({ block: "center" }); // tall modals put OK below the fold
+            const q = b.getBoundingClientRect();
+            return { x: q.x + q.width / 2, y: q.y + q.height / 2 };
+          }, st.mbtn);
+          if (!p) throw new Error("modal button not found: " + st.mbtn);
+          await realClick(p);
+          await sleep(700);
+          clicked = await page.evaluate(() =>
+            ![...document.querySelectorAll(".ant-modal")].some((x) => x.offsetParent !== null));
+        }
+        if (!clicked) console.error("  note: modal still open after mbtn:", st.mbtn);
+      }
+      else if (op === "rowMenu") {
+        if (await openRowMenu(st.rowMenu.row)) await clickAt(".ant-dropdown [role='menuitem']", st.rowMenu.item);
+        else throw new Error("row not found: " + st.rowMenu.row);
+        await sleep(500);
+      }
+      else if (op === "cm") {
+        if (!(await clickAt(".cm-content", "", ""))) throw new Error("no CodeMirror");
+        await page.keyboard.type(st.cm, { delay: 60 });
+      }
+      else if (op === "yamlOpen") {
+        // the key cell is an <input>, so row text never contains the key
+        // name; match key inputs by value and drill via the open button
+        // that shares the same path suffix (yaml-key-d0.2 -> yaml-open-d0.2)
+        const p = await page.evaluate((t) => {
+          const key = [...document.querySelectorAll('[data-testid^="yaml-key-"]')]
+            .find((e) => e.offsetParent !== null && (e.value || "").toLowerCase().includes(String(t).toLowerCase()));
+          if (!key) return null;
+          const suffix = key.getAttribute("data-testid").replace(/^yaml-key-/, "");
+          const btn = document.querySelector(`[data-testid="yaml-open-${suffix}"]`) ||
+            key.closest("tr")?.querySelector('[data-testid^="yaml-open-"]');
+          if (!btn) return null;
+          btn.scrollIntoView({ block: "center" });
+          const q = btn.getBoundingClientRect();
+          return { x: q.x + q.width / 2, y: q.y + q.height / 2 };
+        }, st.yamlOpen);
+        if (!p) throw new Error("yaml row not found: " + st.yamlOpen);
+        await realClick(p);
+      }
+      else if (op === "setLeaf") {
+        if (!(await clickAt('[data-testid^="yaml-valview-"]', st.setLeaf.match)))
+          throw new Error("yaml value not found");
+        await sleep(800);
+        const p = await rectOf('[data-testid^="file-pane"] [data-testid^="yaml-val-"]');
+        if (!p) throw new Error("yaml leaf editor not found");
+        await page.mouse.click(p.x, p.y);
+        // the antd input ignores synthetic click focus; select explicitly
+        // so the typed value replaces the old one on screen
+        await page.evaluate(() => {
+          const el = document.querySelector('[data-testid^="file-pane"] [data-testid^="yaml-val-"]');
+          el.focus();
+          el.setSelectionRange(0, el.value.length);
+        });
+        await page.keyboard.type(st.setLeaf.text, { delay: 80 });
+      }
+      else if (op === "search") {
+        await page.evaluate((s, v) => {
+          const i = document.querySelector(s);
+          if (!i) return;
+          Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(i, v);
+          i.dispatchEvent(new Event("input", { bubbles: true }));
+        }, st.search.sel, st.search.text);
+        await sleep(900);
+      }
+      else if (op === "opt") await clickAt(".ant-select-item-option", st.opt);
+      else throw new Error("unknown step: " + op);
+    } catch (e) {
+      console.error("  step skipped:", JSON.stringify(st), "|", String(e.message).split("\n")[0]);
+    }
+  }
+}
+
+// ---------- capture one scene ----------
 async function captureScene(browser, scene, dir, audio) {
   fs.mkdirSync(dir, { recursive: true });
   const dur = Number(run("ffprobe", ["-v", "error", "-show_entries", "format=duration",
-    "-of", "csv=p=0", audio]
-  ).trim());
-  const frames = Math.ceil((dur + 0.4) * FPS);
+    "-of", "csv=p=0", audio]).trim());
+  const minDur = scene.steps ? estimate(scene.steps) / 1000 : 0;
+  const total = Math.max(dur + 0.4, minDur);
+  const frames = Math.ceil(total * FPS);
 
   const page = await browser.newPage();
   await page.setViewport({ width: W, height: H });
@@ -182,79 +276,36 @@ async function captureScene(browser, scene, dir, audio) {
   const timer = setInterval(() => {
     const want = Math.min(frames, Math.floor(((Date.now() - t0) / 1000) * FPS) + 1);
     (async () => {
-      while (n < want) {
-        await page.screenshot({ path: path.join(dir, String(n++).padStart(4, "0") + ".png") });
-      }
+      while (n < want) await page.screenshot({ path: path.join(dir, String(n++).padStart(4, "0") + ".png") });
     })();
   }, 1000 / FPS);
 
-  if (scene.type === "gui") await guiSteps(page, scene.steps);
+  if (scene.type === "gui") await runSteps(page, scene.steps);
   const slept = Date.now() - t0;
-  if ((dur + 0.25) * 1000 > slept) await page.evaluate((ms) => new Promise((r) => setTimeout(r, ms)), (dur + 0.25) * 1000 - slept);
+  if ((total - 0.2) * 1000 > slept) await page.evaluate((ms) => new Promise((r) => setTimeout(r, ms)), (total - 0.2) * 1000 - slept);
   clearInterval(timer);
-  // final catch-up so the frame count is exact
   while (n < frames) await page.screenshot({ path: path.join(dir, String(n++).padStart(4, "0") + ".png") });
   await page.close();
-  return { frames, audio, dur };
-}
-
-async function guiSteps(page, steps) {
-  const moveCursor = async (x, y) =>
-    page.evaluate(([x, y]) => document.getElementById("fxcur")
-      .style.transform = `translate(${x}px,${y}px)`, [x, y]);
-  const hover = async (sel, text) => {
-    let bx = null;
-    if (text) {
-      for (const c of await page.$$(sel)) {
-        const t = await c.evaluate((e) => e.textContent || "");
-        if (t.trim().toLowerCase().includes(String(text).toLowerCase())) { bx = await c.boundingBox(); break; }
-      }
-    } else {
-      const el = await page.$(sel);
-      if (el) bx = await el.boundingBox();
-    }
-    if (!bx) return null;
-    const x = bx.x + bx.width / 2, y = bx.y + bx.height / 2;
-    await moveCursor(x, y);
-    await page.mouse.move(x, y, { steps: 12 });
-    await page.evaluate((ms) => new Promise((r) => setTimeout(r, ms)), 260);
-    return { x, y };
-  };
-  for (const st of steps) {
-    try {
-      if (st.waitSel) await page.waitForSelector(st.waitSel, { timeout: 8000 });
-      else if (st.wait) await page.evaluate((ms) => new Promise((r) => setTimeout(r, ms)), st.wait);
-      else if (st.type) {
-        const b = await hover(st.type.sel);
-        if (b) await page.mouse.click(b.x, b.y);
-        await page.type(st.type.sel, st.type.text, { delay: 90 });
-      } else if (st.click) {
-        const b = await hover(st.click);
-        if (b) await page.mouse.click(b.x, b.y);
-      } else if (st.clickText) {
-        const b = await hover(st.clickText.sel, st.clickText.text);
-        if (b) await page.mouse.click(b.x, b.y);
-      }
-    } catch (e) { console.error("step skipped:", JSON.stringify(st), e.message.split("\n")[0]); }
-  }
+  return { frames, dur };
 }
 
 // ---------- main ----------
-(async () => {
+module.exports = { runSteps };
+if (require.main === module) (async () => {
   const scen = process.argv[2];
   const S = SCENARIOS[scen];
   if (!S) { console.error("usage: record.js standalone|docker"); process.exit(2); }
   const tmp = `/tmp/fx-demo/${scen}`;
   fs.rmSync(tmp, { recursive: true, force: true });
   fs.mkdirSync(tmp, { recursive: true });
-  // reuse the GUI test harness's puppeteer-core + local Chrome (same as walk.js)
+
+  // reuse the GUI test harness's puppeteer-core + local Chrome (as walk.js)
   const puppeteer = require(path.join(__dirname, "../gui/node_modules/puppeteer-core"));
   const CHROME = process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   if (!fs.existsSync(CHROME)) { console.error("Chrome not found at " + CHROME + " (set CHROME_PATH)"); process.exit(2); }
 
-  // 1. narration first (frame counts derive from its length). say's AIFF
-  // has an unreliable header (ffprobe vs ffmpeg disagree on length), so
-  // normalize to WAV immediately and use that everywhere.
+  // narration first (frame counts derive from its length); say's AIFF has
+  // an unreliable header, so normalize to WAV and use that everywhere.
   const audios = [];
   S.scenes.forEach((s, i) => {
     const aiff = path.join(tmp, `n${i}.aiff`);
@@ -269,7 +320,7 @@ async function guiSteps(page, steps) {
   for (let i = 0; i < S.scenes.length; i++) {
     const dir = path.join(tmp, `s${i}`);
     const { frames, dur } = await captureScene(browser, S.scenes[i], dir, audios[i]);
-    console.log(`scene ${i} (${S.scenes[i].type}): ${frames} frames, ${dur.toFixed(1)}s`);
+    console.log(`scene ${i} (${S.scenes[i].type}): ${frames} frames, ${(frames / FPS).toFixed(1)}s (narration ${dur.toFixed(1)}s)`);
     const mp4 = path.join(tmp, `s${i}.mp4`);
     run("ffmpeg", ["-y", "-v", "error", "-framerate", String(FPS), "-i", path.join(dir, "%04d.png"),
       "-i", audios[i], "-af", "apad", "-c:v", "libx264", "-crf", "21", "-preset", "medium",
@@ -280,7 +331,9 @@ async function guiSteps(page, steps) {
 
   fs.writeFileSync(path.join(tmp, "list.txt"), parts.map((p) => `file '${p}'`).join("\n"));
   fs.mkdirSync(path.dirname(S.out), { recursive: true });
+  // +faststart: moov index up front → no buffering lag when the file is
+  // streamed from GitHub Releases / raw.githubusercontent
   run("ffmpeg", ["-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", path.join(tmp, "list.txt"),
-    "-c", "copy", S.out]);
+    "-c", "copy", "-movflags", "+faststart", S.out]);
   console.log("wrote", S.out);
 })().catch((e) => { console.error(e); process.exit(1); });
