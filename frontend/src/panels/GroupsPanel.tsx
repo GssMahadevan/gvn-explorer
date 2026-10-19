@@ -1,48 +1,27 @@
-import {
-  App as AntApp,
-  Button,
-  Form,
-  Input,
-  Popconfirm,
-  Select,
-  Space,
-  Table,
-  Tag,
-  Typography,
-} from 'antd';
+import { useState } from 'react';
+import { Button, Form, Input, Popconfirm, Select, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { api, qs } from '../api';
 import type { Group, Me } from '../types';
 import { useListView } from '../useListView';
+import { useFlash } from '../flash';
 import ListSearch from '../components/ListSearch';
+import ActiveFilterSelect from '../components/ActiveFilterSelect';
+import GroupForm from '../components/forms/GroupForm';
 
-// Groups panel: create, suspend/activate, delete, member list with
-// inline add (group select + username) and tag-close removal.
+// Groups panel: search/filter/sort, member management (inline add + tag
+// remove), suspend/activate, delete. Creation and the description edit
+// live in the GroupForm modal.
 export default function GroupsPanel({ me }: { me: Me }) {
-  const { message } = AntApp.useApp();
+  const flash = useFlash();
   const lv = useListView<Group[]>((s) => `/api/v1/groups?${qs(s)}`, { sort: 'name' });
-  const [createForm] = Form.useForm();
   const [memberForm] = Form.useForm();
+  const [formFor, setFormFor] = useState<Group | 'new' | null>(null);
   const groups = lv.payload ?? [];
-  const isSuper = me.is_super;
-
-  const createGroup = async (v: { tenant?: string; name: string }) => {
-    try {
-      await api('/api/v1/groups', {
-        method: 'POST',
-        body: JSON.stringify({ tenant: v.tenant?.trim() || me.tenant, name: v.name.trim() }),
-      });
-      message.success('group created');
-      createForm.resetFields();
-      lv.reload();
-    } catch (e) {
-      message.error((e as Error).message);
-    }
-  };
 
   const addMember = async (v: { gid?: number; username: string }) => {
     if (!v.gid) {
-      message.warning('pick a group first (listed on this page)');
+      flash.warn('pick a group first (listed on this page)');
       return;
     }
     try {
@@ -50,11 +29,24 @@ export default function GroupsPanel({ me }: { me: Me }) {
         method: 'POST',
         body: JSON.stringify({ username: v.username.trim() }),
       });
-      message.success('member added');
+      flash.ok('member added');
       memberForm.setFieldValue('username', '');
       lv.reload();
     } catch (e) {
-      message.error((e as Error).message);
+      flash.err((e as Error).message);
+    }
+  };
+
+  const setActive = async (g: Group, active: boolean) => {
+    try {
+      await api(`/api/v1/groups/${g.id}/active`, {
+        method: 'POST',
+        body: JSON.stringify({ active }),
+      });
+      flash.ok(active ? 'group activated' : 'group suspended');
+      lv.reload();
+    } catch (e) {
+      flash.err((e as Error).message);
     }
   };
 
@@ -65,7 +57,7 @@ export default function GroupsPanel({ me }: { me: Me }) {
       sorter: true,
       sortOrder: lv.sortOrder('tenant'),
       showSorterTooltip: false,
-      width: 140,
+      width: 110,
     },
     {
       title: 'group',
@@ -74,13 +66,26 @@ export default function GroupsPanel({ me }: { me: Me }) {
       sorter: true,
       sortOrder: lv.sortOrder('name'),
       showSorterTooltip: false,
-      width: 200,
-      render: (_, g) => (
-        <Space size={4}>
-          <span>{g.name}</span>
-          {g.active === false && <Tag color="red">inactive</Tag>}
-        </Space>
-      ),
+      width: 170,
+    },
+    {
+      title: 'active',
+      key: 'active',
+      sorter: true,
+      sortOrder: lv.sortOrder('active'),
+      showSorterTooltip: false,
+      width: 100,
+      render: (_, g) =>
+        g.active === false ? <Tag color="red">suspended</Tag> : <Tag color="green">active</Tag>,
+    },
+    {
+      title: 'description',
+      key: 'description',
+      dataIndex: 'description',
+      sorter: true,
+      sortOrder: lv.sortOrder('description'),
+      showSorterTooltip: false,
+      ellipsis: true,
     },
     {
       title: 'members',
@@ -96,10 +101,10 @@ export default function GroupsPanel({ me }: { me: Me }) {
                 e.preventDefault();
                 try {
                   await api(`/api/v1/groups/${g.id}/members/${m.id}`, { method: 'DELETE' });
-                  message.success('member removed');
+                  flash.ok('member removed');
                   lv.reload();
                 } catch (err) {
-                  message.error((err as Error).message);
+                  flash.err((err as Error).message);
                 }
               }}
             >
@@ -110,33 +115,20 @@ export default function GroupsPanel({ me }: { me: Me }) {
     },
     {
       title: '',
-      width: 170,
+      width: 240,
       render: (_, g) => (
         <Space>
+          <Button size="small" onClick={() => setFormFor(g)}>
+            edit
+          </Button>
           {g.active === false ? (
-            <Button size="small" onClick={async () => {
-              try {
-                await api(`/api/v1/groups/${g.id}/active`, { method: 'POST', body: JSON.stringify({ active: true }) });
-                message.success('group activated');
-                lv.reload();
-              } catch (e) {
-                message.error((e as Error).message);
-              }
-            }}>
+            <Button size="small" onClick={() => setActive(g, true)}>
               activate
             </Button>
           ) : (
             <Popconfirm
               title="Suspend? grants through this group become inert until reinstated."
-              onConfirm={async () => {
-                try {
-                  await api(`/api/v1/groups/${g.id}/active`, { method: 'POST', body: JSON.stringify({ active: false }) });
-                  message.success('group suspended');
-                  lv.reload();
-                } catch (e) {
-                  message.error((e as Error).message);
-                }
-              }}
+              onConfirm={() => setActive(g, false)}
             >
               <Button size="small">suspend</Button>
             </Popconfirm>
@@ -146,10 +138,10 @@ export default function GroupsPanel({ me }: { me: Me }) {
             onConfirm={async () => {
               try {
                 await api('/api/v1/groups/' + g.id, { method: 'DELETE' });
-                message.success('group deleted');
+                flash.ok('group deleted');
                 lv.reload();
               } catch (e) {
-                message.error((e as Error).message);
+                flash.err((e as Error).message);
               }
             }}
           >
@@ -166,28 +158,18 @@ export default function GroupsPanel({ me }: { me: Me }) {
     <>
       <div className="bar">
         <span>groups</span>
+        <ActiveFilterSelect state={lv.state} patch={lv.patch} />
         <span className="grow" />
         <ListSearch
           state={lv.state}
           patch={lv.patch}
-          cols={['name', 'tenant']}
+          cols={['name', 'tenant', 'description']}
           placeholder="search groups"
         />
-      </div>
-
-      <Form form={createForm} layout="inline" onFinish={createGroup} style={{ marginBottom: 8, rowGap: 8 }}>
-        {isSuper && (
-          <Form.Item name="tenant" noStyle>
-            <Input style={{ width: 120 }} placeholder={`tenant (${me.tenant})`} />
-          </Form.Item>
-        )}
-        <Form.Item name="name" noStyle rules={[{ required: true }]}>
-          <Input style={{ width: 180 }} placeholder="group name" />
-        </Form.Item>
-        <Button type="primary" htmlType="submit">
+        <Button type="primary" onClick={() => setFormFor('new')}>
           Create group
         </Button>
-      </Form>
+      </div>
 
       <Form form={memberForm} layout="inline" onFinish={addMember} style={{ marginBottom: 12, rowGap: 8 }}>
         <Form.Item name="gid" noStyle>
@@ -214,8 +196,20 @@ export default function GroupsPanel({ me }: { me: Me }) {
         onChange={lv.onTableChange}
         pagination={lv.pagination}
         sticky
+        scroll={{ x: 'max-content' }}
         locale={{
           emptyText: lv.state.q ? `nothing matches "${lv.state.q}"` : 'no groups',
+        }}
+      />
+
+      <GroupForm
+        open={formFor !== null}
+        editing={formFor === 'new' || formFor === null ? null : formFor}
+        me={me}
+        onClose={() => setFormFor(null)}
+        onSaved={() => {
+          setFormFor(null);
+          lv.reload();
         }}
       />
     </>

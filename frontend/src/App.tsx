@@ -3,6 +3,7 @@ import { ConfigProvider, Layout, Spin, Tabs, theme as antdTheme } from 'antd';
 import type { TabsProps } from 'antd';
 import { api } from './api';
 import type { Me } from './types';
+import { FlashBar, FlashProvider } from './flash';
 import Login from './components/Login';
 import { BrandMenu, UserMenu } from './components/AppMenus';
 import FilesPanel from './panels/FilesPanel';
@@ -68,47 +69,51 @@ export default function App() {
     items.push({ key: 'users', label: 'Users', children: <UsersPanel me={me} /> });
     items.push({ key: 'groups', label: 'Groups', children: <GroupsPanel me={me} /> });
   }
-  if (me.is_super) items.push({ key: 'tenants', label: 'Tenants', children: <TenantsPanel /> });
+  if (me.is_super)
+    items.push({ key: 'tenants', label: 'Tenants', children: <TenantsPanel me={me} /> });
 
   return (
-    <ConfigProvider
-      theme={{
-        algorithm: dark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
-        components: {
-          // the header is dark navy in both themes, but default Tabs labels
-          // use the light-theme colorText (near-black) and turn invisible on
-          // it — only the active tab (primary blue) shows. force light text;
-          // the header nav is the only Tabs instance in the app.
-          Tabs: {
-            itemColor: 'rgba(255, 255, 255, 0.72)',
-            itemHoverColor: '#ffffff',
-            itemSelectedColor: '#ffffff',
+    <FlashProvider>
+      <ConfigProvider
+        theme={{
+          algorithm: dark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
+          components: {
+            // the header is dark navy in both themes, but default Tabs labels
+            // use the light-theme colorText (near-black) and turn invisible on
+            // it — only the active tab (primary blue) shows. force light text;
+            // the header nav is the only Tabs instance in the app.
+            Tabs: {
+              itemColor: 'rgba(255, 255, 255, 0.72)',
+              itemHoverColor: '#ffffff',
+              itemSelectedColor: '#ffffff',
+            },
           },
-        },
-      }}
-    >
-      <Layout style={{ minHeight: '100vh' }}>
-        <Layout.Header className="app-header">
-          <BrandMenu />
-          <Tabs
-            activeKey={tab}
-            onChange={setTab}
-            items={items.map(({ key, label }) => ({ key, label }))}
-            style={{ flex: 1, minWidth: 0 }}
-            tabBarStyle={{ margin: 0 }}
-          />
-          <UserMenu me={me} onLogout={logout} dark={dark} setDark={setDark} />
-        </Layout.Header>
-        {/* all panels stay mounted; only the active one is visible —
-            panel state (page, search, sort) survives tab switches */}
-        <Layout.Content style={{ padding: 16 }}>
-          {items.map(({ key, children }) => (
-            <div key={key} style={{ display: tab === key ? undefined : 'none' }}>
-              {children}
-            </div>
-          ))}
-        </Layout.Content>
-      </Layout>
-    </ConfigProvider>
+        }}
+      >
+        <Layout style={{ minHeight: '100vh' }}>
+          <Layout.Header className="app-header">
+            <BrandMenu />
+            <Tabs
+              activeKey={tab}
+              onChange={setTab}
+              items={items.map(({ key, label }) => ({ key, label }))}
+              style={{ flex: 1, minWidth: 0 }}
+              tabBarStyle={{ margin: 0 }}
+            />
+            <UserMenu me={me} onLogout={logout} dark={dark} setDark={setDark} />
+          </Layout.Header>
+          <FlashBar />
+          {/* all panels stay mounted; only the active one is visible —
+              panel state (page, search, sort) survives tab switches */}
+          <Layout.Content style={{ padding: 16 }}>
+            {items.map(({ key, children }) => (
+              <div key={key} style={{ display: tab === key ? undefined : 'none' }}>
+                {children}
+              </div>
+            ))}
+          </Layout.Content>
+        </Layout>
+      </ConfigProvider>
+    </FlashProvider>
   );
 }

@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import {
-  App as AntApp,
   Breadcrumb,
   Button,
   Input,
@@ -15,6 +14,7 @@ import {
 import { FileAddOutlined, FolderAddOutlined, UploadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { api, bits, fmtSize, qs } from '../api';
+import { useFlash } from '../flash';
 import type { EntryView, FsList } from '../types';
 import { useListView } from '../useListView';
 import ListSearch from '../components/ListSearch';
@@ -31,7 +31,7 @@ export default function FilesPanel({
   setCur: (p: string) => void;
   showPerms: (p: string) => void;
 }) {
-  const { message } = AntApp.useApp();
+  const flash = useFlash();
   const lv = useListView<FsList>(
     (s) => `/api/v1/fs?path=${encodeURIComponent(cur)}&${qs(s)}`,
     { sort: 'name' },
@@ -53,7 +53,7 @@ export default function FilesPanel({
     try {
       if (newKind === 'dir') {
         await api('/api/v1/fs/mkdir', { method: 'POST', body: JSON.stringify({ path: p }) });
-        message.success('created ' + p);
+        flash.ok('created ' + p);
       } else {
         await api('/api/v1/fs/write', { method: 'POST', body: JSON.stringify({ path: p, content: '' }) });
         setEditPath(p);
@@ -62,7 +62,7 @@ export default function FilesPanel({
       setNewName('');
       lv.reload();
     } catch (e) {
-      message.error((e as Error).message);
+      flash.err((e as Error).message);
     }
   };
 
@@ -74,11 +74,11 @@ export default function FilesPanel({
     }
     try {
       await api('/api/v1/fs/rename', { method: 'POST', body: JSON.stringify({ from: rename.from, to: rename.to }) });
-      message.success('renamed');
+      flash.ok('renamed');
       setRename(null);
       lv.reload();
     } catch (e) {
-      message.error((e as Error).message);
+      flash.err((e as Error).message);
     }
   };
 
@@ -149,10 +149,10 @@ export default function FilesPanel({
             onConfirm={async () => {
               try {
                 await api('/api/v1/fs?path=' + encodeURIComponent(x.entry.path), { method: 'DELETE' });
-                message.success('deleted ' + x.entry.path);
+                flash.ok('deleted ' + x.entry.path);
                 lv.reload();
               } catch (e) {
-                message.error((e as Error).message);
+                flash.err((e as Error).message);
               }
             }}
           >
@@ -206,11 +206,11 @@ export default function FilesPanel({
                 error?: { message?: string };
               };
               if (!r.ok) throw new Error(b?.error?.message || `${r.status} ${r.statusText}`);
-              message.success('uploaded ' + (b.path ?? ''));
+              flash.ok('uploaded ' + (b.path ?? ''));
               onSuccess?.(b);
               lv.reload();
             } catch (e) {
-              message.error((e as Error).message);
+              flash.err((e as Error).message);
               onError?.(e as Error);
             }
           }}
@@ -227,6 +227,7 @@ export default function FilesPanel({
         onChange={lv.onTableChange}
         pagination={lv.pagination}
         sticky
+        scroll={{ x: 'max-content' }}
         locale={{
           emptyText: lv.state.q
             ? `nothing matches "${lv.state.q}"`

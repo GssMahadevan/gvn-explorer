@@ -114,8 +114,8 @@ curl -b jar -X PUT localhost:8080/api/v1/perms -H 'Content-Type: application/jso
   -d '{"path":"/deliverables","principal_type":"user","principal":"cust42","tenant":"acme","read":true,"expires_days":3}'
 ```
 
-Databases created before this feature migrate automatically (two additive
-`ALTER TABLE` statements run at startup).
+Databases created before this feature are migrated forward automatically at
+startup (see *Schema & migrations*).
 
 ## Device access (API keys)
 
@@ -168,15 +168,19 @@ with `Retry-After`. Buckets reset on restart, which is fine at this scale.
 
 ## Suspension (`active` flag)
 
-Users and groups can be **deactivated without deleting them** — the kill
-switch for an offboarded customer or a quarantined device. Rows, grants,
-factors and history all survive; every action in the system stops:
+Tenants, users and groups can be **deactivated without deleting them** —
+the kill switch for an offboarded customer, a paused account or a
+quarantined device. Rows, grants, factors and history all survive; every
+action in the system stops:
 
 - user inactive → login refused (indistinguishable from a wrong password),
   live sessions die on the *next request*, bearer API keys are rejected, and
   admin actions are impossible even with a stolen cookie
 - group inactive → every ACL grant *through* it is ignored, exactly like an
   expired grant; direct user grants are untouched
+- tenant inactive → the whole tenant goes dark at once: no logins, live
+  sessions and API keys of its principals stop working, but the rows (and
+  every grant targeting them) are untouched and come back on reinstatement
 - reinstatement (`{"active":true}`) restores everything instantly, because
   nothing was ever destroyed
 
@@ -185,12 +189,17 @@ curl -b jar -X POST localhost:8080/api/v1/users/7/active \
   -H 'Content-Type: application/json' -d '{"active":false}'
 curl -b jar -X POST localhost:8080/api/v1/groups/3/active \
   -H 'Content-Type: application/json' -d '{"active":true}'
+curl -b jar -X POST localhost:8080/api/v1/tenants/2/active \
+  -H 'Content-Type: application/json' -d '{"active":false}'   # super admin only
 ```
 
-Admin rights, tenant-scoped. Guard rail: nobody can suspend *their own*
-account (422) — lockouts are always recoverable by another admin. Lists
-(`/api/v1/users`, `/api/v1/groups`, and `/api/v1/perms` grant rows via
-`principal_active`) flag inactive principals so the state is visible.
+Admin rights, tenant-scoped; tenant suspension is super-admin only. Guard
+rails: nobody can suspend *their own* account, and a super admin cannot
+suspend *their own tenant* (422) — lockouts are always recoverable. Lists
+(`/api/v1/users`, `/api/v1/groups`, `/api/v1/tenants`, and `/api/v1/perms`
+grant rows via `principal_active`) flag inactive principals, and the entity
+lists accept `?active=true|false` so a suspended-accounts view is one
+query.
 
 Distinct from expiry: `expires_at` is a scheduled lapse the admin walks back;
 `active=false` is an immediate suspension. Both block everything.
@@ -199,8 +208,8 @@ Distinct from expiry: `expires_at` is a scheduled lapse the admin walks back;
 
 Every authz/authn DML is appended to an `events` table — forensics first:
 who changed what, to whom, from which IP, when. Recorded actions:
-`tenant_create/delete`, `user_create/delete/password/active`,
-`group_create/delete/active`, `member_add/remove`, `perm_set/delete`,
+`tenant_create/update/delete/active`, `user_create/update/delete/password/active`,
+`group_create/update/delete/active`, `member_add/remove`, `perm_set/delete`,
 `factor_create/delete`, `login`, `login_failed`.
 
 Design rules:
@@ -252,23 +261,25 @@ optional query parameters, so the GUI drives every panel identically:
 | `col`    | restrict `q` to one column (see below); empty = all searchable ones  |
 | `sort`   | sort key (see below)                                                |
 | `dir`    | `asc` or `desc`                                                     |
+| `active` | `true`/`false` (or `1`/`0`): only active or only suspended principals — users/groups/tenants lists only; a 400 anywhere else |
 
 Anything outside the whitelists gets a 400, so typos surface loudly instead
 of silently changing what a query means. **Every response carries an
 `X-Total-Count` header**: how many rows match the filters regardless of the
 page returned, which is all a caller needs to compute the last page.
 
-| endpoint  | searchable `col`s           | `sort` keys                         | default order         |
-|-----------|-----------------------------|-------------------------------------|-----------------------|
-| fs        | name                        | name, size, mtime                   | name asc, dirs first  |
-| perms     | principal, tenant           | principal, type, expires            | principal asc         |
-| users     | username, tenant            | username, tenant, created, active   | username asc          |
-| groups    | name, tenant                | name, tenant, active                | name asc              |
-| tenants   | name                        | name, created                       | name asc              |
-| events    | actor, action, target, path | ts, actor, action, target, path     | ts desc (newest first)|
+| endpoint  | searchable `col`s           | `sort` keys                                   | default order         |
+|-----------|-----------------------------|-----------------------------------------------|-----------------------|
+| fs        | name                        | name, size, mtime                             | name asc, dirs first  |
+| perms     | principal, tenant           | principal, type, expires                      | principal asc         |
+| users     | username, tenant, description | username, tenant, created, active, description | username asc          |
+| groups    | name, tenant, description   | name, tenant, active, description             | name asc              |
+| tenants   | name, description           | name, created, active                         | name asc              |
+| events    | actor, action, target, path | ts, actor, action, target, path               | ts desc (newest first)|
 
 ```sh
 curl -b jar 'localhost:8080/api/v1/users?q=ali&col=username&sort=created&dir=desc&limit=25&offset=25'
+curl -b jar 'localhost:8080/api/v1/users?active=false'   # suspended accounts only
 ```
 
 File listings live on disk, not in SQL, so fs search/sort/paging run
@@ -290,13 +301,19 @@ directories always sort first regardless of `dir`.
 
 ## Admin API
 
-- `GET/POST /api/v1/tenants`, `DELETE /api/v1/tenants/{id}` — **super admin only**;
-  deleting a tenant cascades to its users, groups, memberships and every ACL
-  grant that targets them
+All three entity kinds carry a free-text `description` for operators
+("customer acme vault", "build agents"): accepted on create, edited via
+the PUT below, and searchable/sortable through the list contract.
+
+- `GET/POST /api/v1/tenants`, `PUT /api/v1/tenants/{id} {"description"}`,
+  `POST /api/v1/tenants/{id}/active {"active"}`, `DELETE /api/v1/tenants/{id}` —
+  **super admin only**; deleting a tenant cascades to its users, groups,
+  memberships and every ACL grant that targets them
 - `GET/PUT /api/v1/perms`, `DELETE /api/v1/perms/{id}` — view grants + your
   effective bits (any user); mutate with admin rights, tenant-scoped for
   tenant admins; grants may carry `expires_days`/`expires_at`
-- `GET/POST /api/v1/users`, `DELETE /api/v1/users/{id}`, `POST /api/v1/users/{id}/password`,
+- `GET/POST /api/v1/users`, `PUT /api/v1/users/{id} {"description"}`,
+  `DELETE /api/v1/users/{id}`, `POST /api/v1/users/{id}/password`,
   `POST /api/v1/users/{id}/active {"active"}` —
   tenant admins see and manage only their tenant; the `tenant` field on
   create is honored for super admins and pinned to own tenant otherwise;
@@ -305,7 +322,8 @@ directories always sort first regardless of `dir`.
 - `GET/POST /api/v1/users/{id}/factors`, `DELETE /api/v1/users/{id}/factors/{fid}` —
   provision/revoke API keys for device users (admin rights, tenant-scoped);
   `method` may be `apikey` now, `ed25519`/`oauth2` reserved
-- `GET/POST /api/v1/groups`, `DELETE /api/v1/groups/{id}`, `POST /api/v1/groups/{id}/active {"active"}`
+- `GET/POST /api/v1/groups`, `PUT /api/v1/groups/{id} {"description"}`,
+  `DELETE /api/v1/groups/{id}`, `POST /api/v1/groups/{id}/active {"active"}`
 - `POST /api/v1/groups/{id}/members {"username"}`, `DELETE /api/v1/groups/{id}/members/{userId}`
 - `GET /api/v1/events` — forensic audit trail (see above); query params
   `limit`, `action`, `target_type`, `target`, `since`
@@ -320,6 +338,17 @@ paging/search/sort contract above, with antd's server-side table paging
 survey and the perf data behind this choice. A file or folder row's
 **perms** action points the Permissions panel at that exact path, so
 granting access to one file is one click from the browser.
+
+Structure: all panels stay mounted under a tab header and swap instantly;
+entity lists (users, groups, tenants, grants) show `active` and
+`description` columns with an all/active/suspended filter that maps
+straight onto `?active=` — suspended principals are one click away. Every
+create/edit goes through a small per-entity modal (users, groups, tenants,
+grants; edit mode only offers what the API's PUT accepts). API errors and
+confirmations land in a **flash center** under the header: the latest
+error or success shows for 30 seconds, the full history stays behind the
+badge and clears on demand — no modal dialogs standing between you and
+the table.
 
 ```sh
 cd frontend
@@ -339,6 +368,36 @@ static host works as long as the API is same-origin):
 the tree as a fallback and as a compact reference of the API contract;
 `-web web` serves it.
 
+## Schema & migrations
+
+The schema is versioned migration files, not inline strings:
+
+- `internal/db/migrations/<dialect>/NNNN_slug.sql`, embedded in the binary
+  (`go:embed`) and applied in filename order, each exactly once in its own
+  transaction; applied versions are recorded in a `schema_migrations` table
+- databases created **before** the mechanism are baselined: if the `tenants`
+  table exists but nothing is recorded, the first migration is marked applied
+  without running it (its content *is* that schema) and the server upgrades
+  from there — running yesterday's database with today's binary is the
+  normal path, and the curl suite covers exactly that upgrade
+- engine differences live in one place (`internal/db`'s `Dialect`): call
+  sites write `?`-placeholder SQL once, and the `DB` wrapper rebinds to the
+  engine (`$1, $2, …`) and retrieves inserted ids the way that engine
+  returns them (`RETURNING id` vs `LastInsertId`)
+
+**SQLite is the only engine wired up today.** The `postgres` groundwork is
+in tree (dialect + `migrations/postgres/0001_init.sql`, deliberately
+shape-identical to the sqlite baseline: BIGINT ids, text/unix timestamps,
+0/1 booleans). Actually running on Postgres would additionally mean:
+
+- importing a driver (`pgx/v5` stdlib) in `cmd/server` and passing it to
+  `db.Open("postgres", dsn)`
+- `migrate`'s own bookkeeping SQL uses `?` and probes `sqlite_master` for
+  the baseline check — both need a dialect branch, and pgx accepts one
+  statement per `Exec`, so multi-statement migration files must be split
+- `q=` search relies on SQLite's ASCII case-insensitive `LIKE`; Postgres
+  would need `ILIKE`, `LOWER()`, or `citext` columns
+
 ## Tests
 
 ```sh
@@ -351,12 +410,12 @@ BASE_URL=http://localhost:8095 ADMIN_TENANT=system ADMIN_PASS=secret \
 
 ```
 cmd/server/        main + middleware (JSON logging w/ request ids, panic recovery)
-internal/db/       SQLite open + schema (tenants/users/groups/members/perms/auth_factors/sessions/events)
+internal/db/       SQL layer: dialect-aware DB wrapper + embedded versioned migrations (tenants/users/groups/members/perms/auth_factors/sessions/events)
 internal/auth/     tenants, users, groups, bcrypt, sessions, API-key factors, active flag
 internal/acl/      grant upsert/list + Effective() inheritance engine
 internal/audit/    append-only forensic event trail (authz/authn DML)
 internal/fsx/      sandboxed filesystem ops (list/read/write/mkdir/rename/delete)
 internal/handlers/ REST handlers + route table, JSON error envelope, rate limiters
-frontend/          React 19 + Ant Design GUI (Vite; `npm run build` -> dist/ static bundle)
+frontend/          React 19 + Ant Design GUI (Vite; list panels, per-entity form modals, flash center; `npm run build` -> dist/ static bundle)
 web/               vanilla-JS GUI fallback (panels per view w/ paging+search+sort, editor, perms, admin)
 ```

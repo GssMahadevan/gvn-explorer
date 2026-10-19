@@ -34,20 +34,42 @@ body {
   flex: 1;
 }
 
-.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+/* flash centre strip (see flash.tsx): one row of live entries under the
+   header; the full history lives in the popover behind the badge. */
+.flash-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 5px 16px;
 }
 
-/* antd v6's message list-content box spans the whole top of the viewport
-   while any toast is alive and would swallow clicks on the app header
-   (e.g. the user avatar right after any action shows a toast). pass clicks
-   through the container, keep the notices themselves interactive
-   (hover-to-pause). two-class selectors to outrank antd's injected css. */
-.ant-message .ant-message-list-content {
-  pointer-events: none;
+.flash-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  max-width: 430px;
+  min-width: 0;
 }
-.ant-message .ant-message-notice {
-  pointer-events: auto;
+
+.flash-item .flash-text,
+.flash-row .flash-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.flash-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 textarea.code {

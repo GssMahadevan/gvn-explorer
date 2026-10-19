@@ -5,7 +5,6 @@
 import { useState } from 'react';
 import {
   Alert,
-  App as AntApp,
   Avatar,
   Button,
   Descriptions,
@@ -28,6 +27,7 @@ import {
   UserOutlined,
 } from '@ant-design/icons';
 import { api } from '../api';
+import { useFlash } from '../flash';
 import type { Me } from '../types';
 
 const roleLabel = (me: Me) =>
@@ -133,7 +133,7 @@ export function BrandMenu() {
 }
 
 function ChangePassword({ me }: { me: Me }) {
-  const { message } = AntApp.useApp();
+  const flash = useFlash();
   const [form] = Form.useForm();
   const [busy, setBusy] = useState(false);
 
@@ -145,10 +145,10 @@ function ChangePassword({ me }: { me: Me }) {
         method: 'POST',
         body: JSON.stringify({ password: v.password }),
       });
-      message.success('password updated');
+      flash.ok('password updated');
       form.resetFields();
     } catch (e) {
-      message.error((e as Error).message);
+      flash.err((e as Error).message);
     }
     setBusy(false);
   };

@@ -1,66 +1,26 @@
-import {
-  Alert,
-  App as AntApp,
-  Button,
-  Checkbox,
-  Form,
-  Input,
-  InputNumber,
-  Popconfirm,
-  Select,
-  Space,
-  Table,
-  Tag,
-  Typography,
-} from 'antd';
+import { useState } from 'react';
+import { Alert, Button, Popconfirm, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { api, bits, qs } from '../api';
 import type { Grant, Me, PermsList } from '../types';
 import { useListView } from '../useListView';
+import { useFlash } from '../flash';
 import ListSearch from '../components/ListSearch';
+import GrantForm from '../components/forms/GrantForm';
 
 // Permissions panel: grants on a target path (a directory — or one file via
 // a row's "perms" action; nearest-ancestor inheritance applies server-side),
-// effective-for-you summary, grant form (admin+), revoke.
+// effective-for-you summary, grant modal (admin+), revoke.
 export default function PermsPanel({ path, me }: { path: string; me: Me }) {
-  const { message } = AntApp.useApp();
+  const flash = useFlash();
   const lv = useListView<PermsList>(
     (s) => `/api/v1/perms?path=${encodeURIComponent(path)}&${qs(s)}`,
     { sort: 'principal' },
   );
-  const [form] = Form.useForm();
+  const [grantOpen, setGrantOpen] = useState(false);
   const grants = lv.payload?.grants ?? [];
   const eff = lv.payload?.effective;
   const isMgr = me.is_admin || me.is_super;
-
-  const addGrant = async (v: {
-    principal_type: 'user' | 'group';
-    tenant?: string;
-    principal: string;
-    exp?: number | null;
-    r: boolean;
-    w: boolean;
-    d: boolean;
-  }) => {
-    const body: Record<string, unknown> = {
-      path,
-      principal_type: v.principal_type,
-      principal: v.principal.trim(),
-      tenant: v.tenant?.trim() || me.tenant,
-      read: v.r,
-      write: v.w,
-      delete: v.d,
-    };
-    if (v.exp) body.expires_days = v.exp;
-    try {
-      await api('/api/v1/perms', { method: 'PUT', body: JSON.stringify(body) });
-      message.success('grant saved');
-      form.resetFields();
-      lv.reload();
-    } catch (e) {
-      message.error((e as Error).message);
-    }
-  };
 
   const columns: ColumnsType<Grant> = [
     {
@@ -115,10 +75,10 @@ export default function PermsPanel({ path, me }: { path: string; me: Me }) {
           onConfirm={async () => {
             try {
               await api('/api/v1/perms/' + g.id, { method: 'DELETE' });
-              message.success('grant revoked');
+              flash.ok('grant revoked');
               lv.reload();
             } catch (e) {
-              message.error((e as Error).message);
+              flash.err((e as Error).message);
             }
           }}
         >
@@ -143,6 +103,11 @@ export default function PermsPanel({ path, me }: { path: string; me: Me }) {
           cols={['principal', 'tenant']}
           placeholder="search grants"
         />
+        {isMgr && (
+          <Button type="primary" onClick={() => setGrantOpen(true)}>
+            Grant access
+          </Button>
+        )}
       </div>
 
       <Alert
@@ -158,47 +123,6 @@ export default function PermsPanel({ path, me }: { path: string; me: Me }) {
         description="grants apply to this path and inherit down; a grant with all bits off excludes the subtree for that principal. only the platform super admin bypasses ACLs."
       />
 
-      {isMgr && (
-        <Form
-          form={form}
-          layout="inline"
-          onFinish={addGrant}
-          initialValues={{ principal_type: 'user', r: true, w: false, d: false }}
-          style={{ marginBottom: 12, rowGap: 8 }}
-        >
-          <Form.Item name="principal_type" noStyle>
-            <Select
-              style={{ width: 100 }}
-              options={[
-                { value: 'user', label: 'user' },
-                { value: 'group', label: 'group' },
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="tenant" noStyle>
-            <Input style={{ width: 130 }} placeholder={`tenant (${me.tenant})`} />
-          </Form.Item>
-          <Form.Item name="principal" noStyle rules={[{ required: true }]}>
-            <Input style={{ width: 150 }} placeholder="principal name" />
-          </Form.Item>
-          <Form.Item name="exp" noStyle>
-            <InputNumber style={{ width: 100 }} min={0.1} placeholder="days" />
-          </Form.Item>
-          <Form.Item name="r" valuePropName="checked" noStyle>
-            <Checkbox>r</Checkbox>
-          </Form.Item>
-          <Form.Item name="w" valuePropName="checked" noStyle>
-            <Checkbox>w</Checkbox>
-          </Form.Item>
-          <Form.Item name="d" valuePropName="checked" noStyle>
-            <Checkbox>d</Checkbox>
-          </Form.Item>
-          <Button type="primary" htmlType="submit">
-            Grant
-          </Button>
-        </Form>
-      )}
-
       <Table
         rowKey={(g) => g.id}
         size="small"
@@ -208,12 +132,26 @@ export default function PermsPanel({ path, me }: { path: string; me: Me }) {
         onChange={lv.onTableChange}
         pagination={lv.pagination}
         sticky
+        scroll={{ x: 'max-content' }}
         locale={{
           emptyText: lv.state.q
             ? `nothing matches "${lv.state.q}"`
             : 'no grants on this exact path (inheritance may still apply)',
         }}
       />
+
+      {isMgr && (
+        <GrantForm
+          open={grantOpen}
+          path={path}
+          me={me}
+          onClose={() => setGrantOpen(false)}
+          onSaved={() => {
+            setGrantOpen(false);
+            lv.reload();
+          }}
+        />
+      )}
     </>
   );
 }

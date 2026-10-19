@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Alert, App as AntApp, Button, Modal, Spin, Typography } from 'antd';
+import { Alert, Button, Modal, Spin, Typography } from 'antd';
 import { api } from '../api';
+import { useFlash } from '../flash';
 
 interface FsContent {
   content?: string;
@@ -17,7 +18,7 @@ export default function EditorModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const { message } = AntApp.useApp();
+  const flash = useFlash();
   const [content, setContent] = useState('');
   const [binary, setBinary] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -31,7 +32,7 @@ export default function EditorModal({
         setContent(d.content ?? '');
       })
       .catch((e: Error) => {
-        message.error(e.message);
+        flash.err(e.message);
         onClose();
       })
       .finally(() => setBusy(false));
@@ -41,10 +42,10 @@ export default function EditorModal({
   const save = async () => {
     try {
       await api('/api/v1/fs/write', { method: 'POST', body: JSON.stringify({ path, content }) });
-      message.success('saved ' + path);
+      flash.ok('saved ' + path);
       onSaved();
     } catch (e) {
-      message.error((e as Error).message);
+      flash.err((e as Error).message);
     }
   };
 

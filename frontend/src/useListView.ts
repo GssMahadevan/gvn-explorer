@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { App as AntApp } from 'antd';
 import type { TablePaginationConfig } from 'antd';
 import { apiList, qs } from './api';
-import type { ListState } from './api';
+import type { ActiveFilter, ListState } from './api';
+import { useFlash } from './flash';
 
 export const PAGE_SIZES = [10, 25, 50, 100];
 
@@ -28,9 +28,9 @@ export interface ListApi<P> {
 // q, col, sort, dir) and its clampPage step-back after deletes.
 export function useListView<P>(
   url: (s: ListState) => string,
-  init: { sort: string; dir?: 'asc' | 'desc'; limit?: number },
+  init: { sort: string; dir?: 'asc' | 'desc'; limit?: number; active?: ActiveFilter },
 ): ListApi<P> {
-  const { message } = AntApp.useApp();
+  const flash = useFlash();
   const [state, setState] = useState<ListState>({
     limit: init.limit ?? 25,
     page: 1,
@@ -38,6 +38,7 @@ export function useListView<P>(
     col: '',
     sort: init.sort,
     dir: init.dir ?? 'asc',
+    active: init.active ?? '',
   });
   const [payload, setPayload] = useState<P | null>(null);
   const [total, setTotal] = useState(0);
@@ -62,7 +63,7 @@ export function useListView<P>(
         setTotal(total);
       })
       .catch((err: Error) => {
-        if (id === reqId.current) message.error(err.message);
+        if (id === reqId.current) flash.err(err.message);
       })
       .finally(() => {
         if (id === reqId.current) setLoading(false);

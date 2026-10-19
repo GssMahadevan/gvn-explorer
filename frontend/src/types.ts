@@ -57,6 +57,7 @@ export interface User {
   is_admin: boolean;
   is_super: boolean;
   active: boolean;
+  description: string;
   expires_at?: number | null;
   expired?: boolean;
   created_at: string;
@@ -72,11 +73,14 @@ export interface Group {
   tenant: string;
   name: string;
   active: boolean;
+  description: string;
   members?: GroupMember[];
 }
 
 export interface Tenant {
   id: number;
   name: string;
+  active: boolean;
+  description: string;
   created_at: string;
 }

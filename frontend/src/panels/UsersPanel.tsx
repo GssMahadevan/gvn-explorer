@@ -1,12 +1,8 @@
 import { useState } from 'react';
 import {
   Alert,
-  App as AntApp,
   Button,
-  Checkbox,
-  Form,
   Input,
-  InputNumber,
   Modal,
   Popconfirm,
   Space,
@@ -18,43 +14,23 @@ import type { ColumnsType } from 'antd/es/table';
 import { api, qs } from '../api';
 import type { Me, User } from '../types';
 import { useListView } from '../useListView';
+import { useFlash } from '../flash';
 import ListSearch from '../components/ListSearch';
+import ActiveFilterSelect from '../components/ActiveFilterSelect';
+import UserForm from '../components/forms/UserForm';
 
-// Users panel: create, api-key provisioning (shown once), password set,
-// suspend/activate kill switch, delete. Suspension keeps row + history.
+// Users panel: search/filter/sort, api-key provisioning (shown once),
+// password set, suspend/activate kill switch, delete. Creation and the
+// description edit live in the UserForm modal. Suspension keeps the row
+// and its history — it is the kill switch, not delete.
 export default function UsersPanel({ me }: { me: Me }) {
-  const { message } = AntApp.useApp();
+  const flash = useFlash();
   const lv = useListView<User[]>((s) => `/api/v1/users?${qs(s)}`, { sort: 'username' });
-  const [form] = Form.useForm();
+  const [formFor, setFormFor] = useState<User | 'new' | null>(null);
   const [keyShown, setKeyShown] = useState<{ username: string; key: string } | null>(null);
   const [pwFor, setPwFor] = useState<User | null>(null);
   const [pw, setPw] = useState('');
   const users = lv.payload ?? [];
-  const isSuper = me.is_super;
-
-  const createUser = async (v: {
-    tenant?: string;
-    username: string;
-    password?: string;
-    exp?: number | null;
-    admin?: boolean;
-  }) => {
-    const body: Record<string, unknown> = {
-      tenant: v.tenant?.trim() || me.tenant,
-      username: v.username.trim(),
-      password: v.password ?? '',
-      is_admin: !!v.admin,
-    };
-    if (v.exp) body.expires_days = v.exp;
-    try {
-      await api('/api/v1/users', { method: 'POST', body: JSON.stringify(body) });
-      message.success('user created');
-      form.resetFields();
-      lv.reload();
-    } catch (e) {
-      message.error((e as Error).message);
-    }
-  };
 
   const provisionKey = async (u: User) => {
     try {
@@ -64,7 +40,7 @@ export default function UsersPanel({ me }: { me: Me }) {
       });
       setKeyShown({ username: u.username, key: r.key });
     } catch (e) {
-      message.error((e as Error).message);
+      flash.err((e as Error).message);
     }
   };
 
@@ -74,10 +50,10 @@ export default function UsersPanel({ me }: { me: Me }) {
         method: 'POST',
         body: JSON.stringify({ active }),
       });
-      message.success(active ? 'user activated' : 'user suspended');
+      flash.ok(active ? 'user activated' : 'user suspended');
       lv.reload();
     } catch (e) {
-      message.error((e as Error).message);
+      flash.err((e as Error).message);
     }
   };
 
@@ -88,11 +64,11 @@ export default function UsersPanel({ me }: { me: Me }) {
         method: 'POST',
         body: JSON.stringify({ password: pw }),
       });
-      message.success('password updated');
+      flash.ok('password updated');
       setPwFor(null);
       setPw('');
     } catch (e) {
-      message.error((e as Error).message);
+      flash.err((e as Error).message);
     }
   };
 
@@ -103,7 +79,7 @@ export default function UsersPanel({ me }: { me: Me }) {
       sorter: true,
       sortOrder: lv.sortOrder('tenant'),
       showSorterTooltip: false,
-      width: 140,
+      width: 110,
     },
     {
       title: 'username',
@@ -112,10 +88,10 @@ export default function UsersPanel({ me }: { me: Me }) {
       sorter: true,
       sortOrder: lv.sortOrder('username'),
       showSorterTooltip: false,
+      width: 180,
       render: (_, u) => (
         <Space size={4}>
           <span>{u.username}</span>
-          {u.active === false && <Tag color="red">inactive</Tag>}
           {u.expired && <Tag color="orange">expired</Tag>}
           {!u.expired && u.expires_at && (
             <Tag color="orange">till {new Date(u.expires_at).toLocaleDateString()}</Tag>
@@ -124,8 +100,27 @@ export default function UsersPanel({ me }: { me: Me }) {
       ),
     },
     {
+      title: 'active',
+      key: 'active',
+      sorter: true,
+      sortOrder: lv.sortOrder('active'),
+      showSorterTooltip: false,
+      width: 100,
+      render: (_, u) =>
+        u.active === false ? <Tag color="red">suspended</Tag> : <Tag color="green">active</Tag>,
+    },
+    {
+      title: 'description',
+      key: 'description',
+      dataIndex: 'description',
+      sorter: true,
+      sortOrder: lv.sortOrder('description'),
+      showSorterTooltip: false,
+      ellipsis: true,
+    },
+    {
       title: 'admin',
-      width: 80,
+      width: 70,
       render: (_, u) => (u.is_super ? <Tag color="gold">super</Tag> : u.is_admin ? 'yes' : ''),
     },
     {
@@ -134,14 +129,17 @@ export default function UsersPanel({ me }: { me: Me }) {
       sorter: true,
       sortOrder: lv.sortOrder('created'),
       showSorterTooltip: false,
-      width: 130,
+      width: 110,
       render: (_, u) => new Date(u.created_at).toLocaleDateString(),
     },
     {
       title: '',
-      width: 330,
+      width: 400,
       render: (_, u) => (
         <Space>
+          <Button size="small" onClick={() => setFormFor(u)}>
+            edit
+          </Button>
           <Button size="small" title="manage API keys for headless devices" onClick={() => provisionKey(u)}>
             apikey
           </Button>
@@ -165,10 +163,10 @@ export default function UsersPanel({ me }: { me: Me }) {
             onConfirm={async () => {
               try {
                 await api('/api/v1/users/' + u.id, { method: 'DELETE' });
-                message.success('user deleted');
+                flash.ok('user deleted');
                 lv.reload();
               } catch (e) {
-                message.error((e as Error).message);
+                flash.err((e as Error).message);
               }
             }}
           >
@@ -185,42 +183,18 @@ export default function UsersPanel({ me }: { me: Me }) {
     <>
       <div className="bar">
         <span>users</span>
+        <ActiveFilterSelect state={lv.state} patch={lv.patch} />
         <span className="grow" />
         <ListSearch
           state={lv.state}
           patch={lv.patch}
-          cols={['username', 'tenant']}
+          cols={['username', 'tenant', 'description']}
           placeholder="search users"
         />
-      </div>
-
-      <Form
-        form={form}
-        layout="inline"
-        onFinish={createUser}
-        style={{ marginBottom: 12, rowGap: 8 }}
-      >
-        {isSuper && (
-          <Form.Item name="tenant" noStyle>
-            <Input style={{ width: 120 }} placeholder={`tenant (${me.tenant})`} />
-          </Form.Item>
-        )}
-        <Form.Item name="username" noStyle rules={[{ required: true }]}>
-          <Input style={{ width: 150 }} placeholder="username" />
-        </Form.Item>
-        <Form.Item name="password" noStyle>
-          <Input.Password style={{ width: 190 }} placeholder="password (blank = device user)" />
-        </Form.Item>
-        <Form.Item name="exp" noStyle>
-          <InputNumber style={{ width: 120 }} min={0.1} placeholder="expires in days" />
-        </Form.Item>
-        <Form.Item name="admin" valuePropName="checked" noStyle>
-          <Checkbox>admin</Checkbox>
-        </Form.Item>
-        <Button type="primary" htmlType="submit">
+        <Button type="primary" onClick={() => setFormFor('new')}>
           Create user
         </Button>
-      </Form>
+      </div>
 
       <Table
         rowKey={(u) => u.id}
@@ -231,8 +205,20 @@ export default function UsersPanel({ me }: { me: Me }) {
         onChange={lv.onTableChange}
         pagination={lv.pagination}
         sticky
+        scroll={{ x: 'max-content' }}
         locale={{
           emptyText: lv.state.q ? `nothing matches "${lv.state.q}"` : 'no users',
+        }}
+      />
+
+      <UserForm
+        open={formFor !== null}
+        editing={formFor === 'new' || formFor === null ? null : formFor}
+        me={me}
+        onClose={() => setFormFor(null)}
+        onSaved={() => {
+          setFormFor(null);
+          lv.reload();
         }}
       />
 

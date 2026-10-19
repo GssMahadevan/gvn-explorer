@@ -9,7 +9,12 @@ export interface ListState {
   col: string;
   sort: string;
   dir: 'asc' | 'desc';
+  // '' = unfiltered; entity lists (users/groups/tenants) accept
+  // active=true|false as an exact-match filter (400 elsewhere).
+  active: ActiveFilter;
 }
+
+export type ActiveFilter = '' | 'true' | 'false';
 
 export function qs(s: ListState): string {
   const p = new URLSearchParams();
@@ -21,6 +26,7 @@ export function qs(s: ListState): string {
     p.set('q', s.q);
     if (s.col) p.set('col', s.col);
   }
+  if (s.active) p.set('active', s.active);
   return p.toString();
 }
 
