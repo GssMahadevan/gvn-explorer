@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Breadcrumb,
   Button,
@@ -16,24 +16,29 @@ import { api, bits, fmtSize, qs } from '../api';
 import { useFlash } from '../flash';
 import { fileKind, rawUrl } from '../filekind';
 import type { EntryView, FsList } from '../types';
+import type { FileTarget } from '../components/FilePane';
 import { useListView } from '../useListView';
 import ListSearch from '../components/ListSearch';
 import RowActions from '../components/RowActions';
-import EditorModal from '../components/EditorModal';
 
 // Files panel: breadcrumb browser + server-paged entry table (dirs first
-// is done by the backend), editor modal for text/YAML, mkdir/upload/
-// rename/delete. Files outside the text allowlist (binaries, pdf, …) get
-// a download instead of an editor: the name itself links to /fs/raw and
-// the row menu offers download too (see filekind.ts).
+// is done by the backend). Clicking a file name opens the file PAGE in
+// the viewer (GitHub-style default); editing is the ⋮ menu's "edit"
+// action. Files outside the text allowlist (binaries, pdf, …) never open
+// a page: the name links to /fs/raw and the menu offers download too
+// (see filekind.ts). mkdir/upload/rename/delete as before.
 export default function FilesPanel({
   cur,
   setCur,
   showPerms,
+  openFile,
+  filesEpoch,
 }: {
   cur: string;
   setCur: (p: string) => void;
   showPerms: (p: string) => void;
+  openFile: (t: FileTarget) => void;
+  filesEpoch: number;
 }) {
   const flash = useFlash();
   const lv = useListView<FsList>(
@@ -43,7 +48,14 @@ export default function FilesPanel({
   const [newKind, setNewKind] = useState<null | 'dir' | 'file'>(null);
   const [newName, setNewName] = useState('');
   const [rename, setRename] = useState<{ from: string; to: string } | null>(null);
-  const [editPath, setEditPath] = useState<string | null>(null);
+
+  // the file page reports writes through filesEpoch; refresh our table
+  const firstEpoch = useRef(true);
+  useEffect(() => {
+    if (firstEpoch.current) firstEpoch.current = false;
+    else lv.reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filesEpoch]);
 
   const rows = lv.payload?.entries ?? [];
   const goto = (p: string) => {
@@ -60,7 +72,7 @@ export default function FilesPanel({
         flash.ok('created ' + p);
       } else {
         await api('/api/v1/fs/write', { method: 'POST', body: JSON.stringify({ path: p, content: '' }) });
-        setEditPath(p);
+        openFile({ path: p, mode: 'edit' });
       }
       setNewKind(null);
       setNewName('');
@@ -111,7 +123,8 @@ export default function FilesPanel({
             {x.entry.name}
           </Button>
         ) : (
-          <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setEditPath(x.entry.path)}>
+          // default click = the viewer page (editing comes from the menu)
+          <Button type="link" size="small" style={{ padding: 0 }} onClick={() => openFile({ path: x.entry.path, mode: 'view' })}>
             {x.entry.name}
           </Button>
         ),
@@ -159,6 +172,11 @@ export default function FilesPanel({
             { key: 'perms', label: 'permissions', onClick: () => showPerms(x.entry.path) },
             ...(!x.entry.is_dir
               ? [
+                  // editing is an explicit menu step — the name click is
+                  // the viewer. Not offered for download-only files.
+                  ...(fileKind(x.entry.name) !== 'download'
+                    ? [{ key: 'edit', label: 'edit', onClick: () => openFile({ path: x.entry.path, mode: 'edit' }) }]
+                    : []),
                   {
                     key: 'download',
                     label: 'download',
@@ -301,8 +319,6 @@ export default function FilesPanel({
           onPressEnter={doRename}
         />
       </Modal>
-
-      <EditorModal path={editPath} onClose={() => setEditPath(null)} onSaved={lv.reload} />
     </>
   );
 }

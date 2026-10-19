@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { App as AntApp, ConfigProvider, Layout, Spin, Tabs, theme as antdTheme } from 'antd';
 import type { TabsProps } from 'antd';
 import { api } from './api';
@@ -12,6 +12,11 @@ import PermsPanel from './panels/PermsPanel';
 import UsersPanel from './panels/UsersPanel';
 import GroupsPanel from './panels/GroupsPanel';
 import TenantsPanel from './panels/TenantsPanel';
+import type { FileTarget } from './components/FilePane';
+
+// the file page pulls in CodeMirror + markdown rendering; lazy so the
+// base bundle stays lean and this only downloads when a file is opened
+const FilePane = lazy(() => import('./components/FilePane'));
 
 export default function App() {
   // undefined = booting, null = anonymous (login screen), Me = session
@@ -20,6 +25,10 @@ export default function App() {
   const [permPath, setPermPath] = useState('/'); // path the perms panel targets (a row's "perms" can point it at a file)
   const [tab, setTab] = useState('files'); // active tab (hooks: all before early returns)
   const [dark, setDark] = useState(() => localStorage.getItem('fx.theme') === 'dark');
+  // the file page: null = not viewing a file. view/edit mode lives here so
+  // the Files row ⋮ menu can open either directly (the name opens 'view').
+  const [fileTarget, setFileTarget] = useState<FileTarget | null>(null);
+  const [filesEpoch, setFilesEpoch] = useState(0); // bump -> FilesPanel reloads after file writes
 
   useEffect(() => {
     api<Me>('/api/v1/auth/me')
@@ -63,7 +72,9 @@ export default function App() {
     {
       key: 'files',
       label: 'Files',
-      children: <FilesPanel cur={cur} setCur={goto} showPerms={showPerms} />,
+      children: (
+        <FilesPanel cur={cur} setCur={goto} showPerms={showPerms} openFile={setFileTarget} filesEpoch={filesEpoch} />
+      ),
     },
     { key: 'perms', label: 'Permissions', children: <PermsPanel path={permPath} me={me} /> },
   ];
@@ -98,7 +109,10 @@ export default function App() {
             <BrandMenu />
             <Tabs
               activeKey={tab}
-              onChange={setTab}
+              onChange={(k) => {
+                setFileTarget(null); // switching tabs leaves the file page
+                setTab(k);
+              }}
               items={items.map(({ key, label }) => ({ key, label }))}
               style={{ flex: 1, minWidth: 0 }}
               tabBarStyle={{ margin: 0 }}
@@ -107,13 +121,24 @@ export default function App() {
           </Layout.Header>
           <FlashBar />
           {/* all panels stay mounted; only the active one is visible —
-              panel state (page, search, sort) survives tab switches */}
+              panel state (page, search, sort) survives tab switches.
+              Opening a file hides them (still mounted) and shows the file
+              page in their place. */}
           <Layout.Content style={{ padding: 16 }}>
             {items.map(({ key, children }) => (
-              <div key={key} style={{ display: tab === key ? undefined : 'none' }}>
+              <div key={key} style={{ display: fileTarget || tab !== key ? 'none' : undefined }}>
                 {children}
               </div>
             ))}
+            {fileTarget && (
+              <Suspense fallback={<Spin style={{ display: 'block', margin: '60px auto' }} />}>
+                <FilePane
+                  target={fileTarget}
+                  onClose={() => setFileTarget(null)}
+                  onSaved={() => setFilesEpoch((n) => n + 1)}
+                />
+              </Suspense>
+            )}
           </Layout.Content>
         </Layout>
         </AntApp>

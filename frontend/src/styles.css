@@ -71,3 +71,47 @@ body {
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+
+/* rendered markdown view (file page "Render" mode) — readable defaults
+   that follow the app theme via currentColor; only layout is styled */
+.md-view {
+  max-width: 900px;
+  line-height: 1.6;
+}
+.md-view pre {
+  background: rgba(128, 128, 128, 0.12);
+  padding: 10px 12px;
+  border-radius: 6px;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+.md-view code {
+  background: rgba(128, 128, 128, 0.15);
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+.md-view pre code {
+  background: none;
+  padding: 0;
+}
+.md-view table {
+  border-collapse: collapse;
+  margin: 8px 0;
+}
+.md-view th,
+.md-view td {
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  padding: 4px 10px;
+}
+.md-view blockquote {
+  border-left: 3px solid rgba(128, 128, 128, 0.5);
+  margin: 8px 0;
+  padding: 2px 12px;
+  opacity: 0.85;
+}
+.md-view img {
+  max-width: 100%;
+}

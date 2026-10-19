@@ -384,19 +384,31 @@ tables stay usable at phone widths no matter how many actions an entity
 has; destructive items pop a themed confirm dialog whose OK button
 carries the action name.
 
-Clicking a file either opens the editor modal or downloads, decided from
+Clicking a file either opens the **file page** or downloads, decided from
 the **name** alone — GitHub-style policy in `filekind.ts`: `.yml`/`.yaml`
 get the structured editor below, an allowlist of text extensions (plus
-extension-less files like `LICENSE`/`Makefile`) get the document editor,
-everything else (binaries, `.pdf`, unknown types) never opens an editor:
+extension-less files like `LICENSE`/`Makefile`) get the document view,
+everything else (binaries, `.pdf`, unknown types) never opens a page:
 the name itself links to `/fs/raw` (attachment disposition), and every
-file's ⋮ menu carries `download` too. Text files get a **CodeMirror 6**
-editor (`components/DocEditor`, markdown/JSON/HTML highlighting, dark-mode
-aware) — the editor family behind GitHub's in-browser file editing,
-chosen over Monaco for a tenth the bundle size and real touch support.
-Its Save sends the `base_mtime` captured on open: if
+file's ⋮ menu carries `download` too. The file page
+(`components/FilePane`) is a real pane, not a modal: it replaces the tab
+area (the panels stay mounted behind it) and one component serves both
+viewing and editing, like GitHub's file pages. The name click is always
+the **viewer**: markdown files **render** (react-markdown + GFM, with a
+Render/Code toggle — the source side is read-only **CodeMirror 6**),
+other text files open read-only CodeMirror, YAML shows the structured
+tree read-only. Editing is an explicit step: every editable file's ⋮
+menu carries `edit`, and the viewer header has an Edit button for the
+case where you already know you want it. Text editing uses CodeMirror —
+the editor family behind GitHub's in-browser file editing, chosen over
+Monaco for a tenth the bundle size and real touch support; markdown
+files additionally get a formatting **ribbon** above the editor (bold /
+italic / strike / H1-H3 / quote / lists / link / code — GitHub-comment
+style: the icons edit the markdown *source* around the selection, so the
+file always stays plain lossless markdown). Its Save sends the
+`base_mtime` captured on open: if
 the file changed underneath, the server refuses with 409 conflict and the
-text stays in the box to be copied out. **YAML config files** (`.yml`,
+text stays in the pane to be copied out. **YAML config files** (`.yml`,
 `.yaml`) instead open the structured editor (`components/YamlEditor`),
 organized like drilling into folders. The **left panel is a flat path
 stack**: one row per level — file (multi-doc files), document, key,
@@ -404,7 +416,7 @@ index — top item is the root, the current node at the bottom, each row
 an icon + name + value hint. It is deliberately not an indented tree,
 so deeply nested files never need horizontal scrolling at any width;
 tapping any row jumps the editor back to that level, `↑ parent` pops
-one level (and closes the editor at the root). The **right side** edits
+one level. The **right side** edits
 the node the stack sits on: mappings as a **K / V / description** table
 (description = the entry's inline YAML comment), arrays as a **value /
 comment** table — both view-and-navigate, with container rows showing a
@@ -422,8 +434,8 @@ YAML rather than JSON.
 Edits autosave to the server-side draft (a banner names the last writer
 and time); the file on disk changes only on **Publish**, where the server
 re-validates and audits the draft, and a rejected draft surfaces its 422
-inside the modal without losing anything. Drafting requires `w` — with
-plain `r` the same editor renders read-only.
+inside the pane without losing anything. Drafting requires `w` — the
+viewer and readers with plain `r` get the same tree read-only.
 
 ```sh
 cd frontend
@@ -486,12 +498,14 @@ BASE_URL=http://localhost:8095 ADMIN_TENANT=system ADMIN_PASS=secret \
 when missing, boots a real server against a throwaway sandbox root with
 seeded fixture tenants/users, then drives `scripts/gui/walk.js` — a
 puppeteer-core walk of the live UI (login, file table, the ⋮ row action
-menus, modal forms, the YAML editor's drill-down + draft-autosave → publish flow
-incl. comment/block-scalar preservation, the document editor open→type→save
-round trip via CodeMirror, download links for non-text files,
+menus, modal forms, the file page: viewer-by-default flows — rendered
+markdown + read-only Code source toggle, row-menu `edit` → markdown
+ribbon → save, YAML structured-view → edit with drill-down +
+draft-autosave → publish incl. comment/block-scalar preservation and the
+390px-width drawer/scroll regression, download links for non-text files,
 the active-filter wire format,
 flash center, per-file grant flow, header menus, dark mode, sign-out)
-with ~60 assertions plus a zero-console-error guard. `SHOTS=1` additionally
+with 70 assertions plus a zero-console-error guard. `SHOTS=1` additionally
 writes light/dark screenshots to `$OUT_DIR` (default `/tmp/fx-gui`).
 Needs a local Chrome; `CHROME_PATH` overrides the macOS default.
 
@@ -533,7 +547,7 @@ internal/audit/    append-only forensic event trail (authz/authn DML, fs_commit)
 internal/drafts/   per-path working copies for the draft/publish edit model
 internal/fsx/      sandboxed filesystem ops (list/read/write/mkdir/rename/delete)
 internal/handlers/ REST handlers + route table, JSON error envelope, rate limiters
-frontend/          React 19 + Ant Design GUI (Vite; list panels, per-entity form modals, row action menus, YAML structured editor w/ draft+publish, CodeMirror doc editor + download actions (filekind.ts policy), flash center; `npm run build` -> dist/ static bundle)
+frontend/          React 19 + Ant Design GUI (Vite; list panels, per-entity form modals, row action menus, file page (FilePane): viewer default - rendered md / read-only CodeMirror / structured YAML, edit via row menu w/ markdown ribbon, YAML structured editor w/ draft+publish, download actions (filekind.ts policy), flash center; `npm run build` -> dist/ static bundle)
 scripts/           test suites: test_files.sh (curl API regression), test_gui.sh + gui/ (puppeteer GUI walk + screenshots)
 web/               vanilla-JS GUI fallback (panels per view w/ paging+search+sort, editor, perms, admin)
 ```

@@ -1,14 +1,16 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
-import { Alert, Button, Modal, Space, Spin, Tag, Typography } from 'antd';
+import { useEffect, useRef, useState } from 'react';
+import { Alert, Button, Segmented, Space, Tag, Typography } from 'antd';
+import { ArrowLeftOutlined, DownloadOutlined, EditOutlined } from '@ant-design/icons';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { ApiError, api } from '../api';
 import { useFlash } from '../flash';
 import { fileKind, rawUrl } from '../filekind';
 import type { PermsList } from '../types';
+import DocEditor from './DocEditor';
 import YamlEditor from './YamlEditor';
 
-// CodeMirror lands in its own lazy chunk: the base bundle stays lean and
-// the editor code only downloads the first time a text file is opened.
-const DocEditor = lazy(() => import('./DocEditor'));
+export type FileTarget = { path: string; mode: 'view' | 'edit' };
 
 interface FsContent {
   content?: string;
@@ -26,27 +28,36 @@ interface DraftResp {
 
 const fmtTs = (ts: number) => new Date(ts * 1000).toLocaleString();
 
-// View/edit a text file. Plain documents (markdown, txt, json, code…) get
-// CodeMirror — GitHub's editor family — with the base_mtime guard so two
-// writers get a 409 instead of clobbering. YAML config files (.yml/.yaml)
-// get the structured editor — an explorer-style tree plus per-node detail
-// tables — on top of the draft/publish model: every change autosaves to
-// the server-side draft, and the file on disk only changes when the draft
-// is published. Drafting needs the w bit; readers can preview the draft
-// but not edit. Files outside the text allowlist never reach this modal —
-// their row action is already "download" (see filekind.ts); the binary
-// branch below is only the safety net for text-looking names that sniff
-// binary on content.
-export default function EditorModal({
-  path,
+// The file page — a real browser pane, not a modal (one component serves
+// viewing AND editing, like GitHub's file pages). Default entry is the
+// VIEWER: markdown renders (with a Code toggle), other text is read-only
+// CodeMirror, YAML shows the read-only structured tree. Editing is an
+// explicit step: the Files row ⋮ menu offers "edit", the pane header has
+// an Edit button for convenience. Plain docs edit in CodeMirror with a
+// markdown ribbon and the base_mtime guard (409 on clobber). YAML edits
+// run the draft/publish model: every change autosaves to the server-side
+// draft; the file on disk only changes on publish. Drafting needs the w
+// bit; readers preview but cannot edit. Files outside the text allowlist
+// never open this pane — their row action is download (see filekind.ts);
+// the binary branch below is only the safety net for text-looking names
+// that sniff binary on content.
+export default function FilePane({
+  target,
   onClose,
   onSaved,
 }: {
-  path: string | null;
+  target: FileTarget;
   onClose: () => void;
   onSaved: () => void;
 }) {
   const flash = useFlash();
+  const { path } = target;
+  const kind = fileKind(path);
+  const yaml = kind === 'yaml';
+  const md = /\.(md|markdown)$/i.test(path);
+
+  const [mode, setMode] = useState<'view' | 'edit'>(target.mode);
+  const [view, setView] = useState<'render' | 'code'>(md ? 'render' : 'code');
   const [busy, setBusy] = useState(true);
   const [binary, setBinary] = useState(false);
   const [canW, setCanW] = useState(false);
@@ -62,10 +73,13 @@ export default function EditorModal({
   const savedRef = useRef('');
   const debounce = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  const yaml = path !== null && fileKind(path) === 'yaml';
+  useEffect(() => {
+    setMode(target.mode);
+    setView(md ? 'render' : 'code');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target]);
 
   useEffect(() => {
-    if (!path) return;
     setBusy(true);
     setCommitErr('');
     setConflict('');
@@ -103,7 +117,6 @@ export default function EditorModal({
   }, [path]);
 
   const pushDraft = async (t: string) => {
-    if (!path) return;
     setSaveState('pending');
     try {
       const r = await api<{ draft: Draft }>('/api/v1/fs/draft', {
@@ -129,7 +142,6 @@ export default function EditorModal({
   };
 
   const publish = async () => {
-    if (!path) return;
     if (debounce.current) clearTimeout(debounce.current);
     try {
       if (text !== savedRef.current) await pushDraft(text);
@@ -149,7 +161,6 @@ export default function EditorModal({
   };
 
   const discardDraft = async () => {
-    if (!path) return;
     if (debounce.current) clearTimeout(debounce.current);
     try {
       await api('/api/v1/fs/draft?path=' + encodeURIComponent(path), { method: 'DELETE' });
@@ -164,7 +175,6 @@ export default function EditorModal({
   };
 
   const savePlain = async () => {
-    if (!path) return;
     try {
       const body: Record<string, unknown> = { path, content: text };
       if (mtime !== undefined) body.base_mtime = mtime;
@@ -180,7 +190,7 @@ export default function EditorModal({
       const err = e as Error;
       if ((e as ApiError).status === 409)
         setConflict(
-          'The file changed on disk while you were editing — your text is kept in this box; copy it out, reload the file (close + reopen), then re-apply. (' +
+          'The file changed on disk while you were editing — your text is kept in this pane; copy it out, reload the file, then re-apply. (' +
             err.message +
             ')',
         );
@@ -189,7 +199,8 @@ export default function EditorModal({
   };
 
   const statusTag = () => {
-    if (!yaml || binary) return null;
+    if (binary) return null;
+    if (mode === 'view') return canW ? null : <Tag>view-only</Tag>;
     if (!canW) return <Tag>read-only</Tag>;
     if (saveState === 'pending') return <Tag>auto-saving draft…</Tag>;
     if (saveState === 'error') return <Tag color="red">draft save failed</Tag>;
@@ -198,47 +209,60 @@ export default function EditorModal({
   };
 
   return (
-    <Modal
-      open={path !== null}
-      title={
-        <Space>
-          <Typography.Text className="mono">{path}</Typography.Text>
+    <div data-testid="file-pane">
+      <div className="bar" style={{ marginBottom: 8 }}>
+        <Button icon={<ArrowLeftOutlined />} onClick={onClose} data-testid="pane-back">
+          files
+        </Button>
+        <Space size={6}>
+          <Typography.Text className="mono" strong>
+            {path}
+          </Typography.Text>
           {statusTag()}
         </Space>
-      }
-      width={920}
-      onCancel={onClose}
-      footer={[
-        binary ? (
-          <Button key="dl" href={rawUrl(path ?? '')}>
-            Download
+        <span className="grow" />
+        {md && mode === 'view' && !binary && (
+          <Segmented
+            size="small"
+            data-testid="pane-viewmode"
+            value={view}
+            onChange={(v) => setView(v as 'render' | 'code')}
+            options={[
+              { label: 'Render', value: 'render' },
+              { label: 'Code', value: 'code' },
+            ]}
+          />
+        )}
+        {mode === 'view' && !binary && canW && (
+          <Button type="primary" size="small" icon={<EditOutlined />} onClick={() => setMode('edit')} data-testid="pane-edit">
+            Edit
           </Button>
-        ) : yaml ? (
-          <Button key="discard" danger disabled={!canW || !draft} onClick={discardDraft} data-testid="editor-discard">
-            Discard draft
-          </Button>
-        ) : (
-          <Button key="save" onClick={savePlain} disabled={!canW} data-testid="editor-save">
-            Save
-          </Button>
-        ),
-        yaml && (
-          <Button key="publish" type="primary" disabled={!canW} onClick={publish} data-testid="editor-publish">
-            Publish to file
-          </Button>
-        ),
-        <Button key="close" onClick={onClose}>
-          Close
-        </Button>,
-      ]}
-    >
+        )}
+        <Button size="small" icon={<DownloadOutlined />} href={rawUrl(path)} data-testid="pane-dl" />
+        {mode === 'edit' &&
+          (yaml ? (
+            <>
+              <Button size="small" danger disabled={!canW || !draft} onClick={discardDraft} data-testid="editor-discard">
+                Discard draft
+              </Button>
+              <Button size="small" type="primary" disabled={!canW} onClick={publish} data-testid="editor-publish">
+                Publish to file
+              </Button>
+            </>
+          ) : (
+            <Button size="small" type="primary" onClick={savePlain} disabled={!canW} data-testid="editor-save">
+              Save
+            </Button>
+          ))}
+      </div>
+
       {busy ? (
-        <Spin style={{ display: 'block', margin: '40px auto' }} />
+        <div style={{ textAlign: 'center', margin: '60px auto' }}>loading…</div>
       ) : binary ? (
         <Alert type="info" message="Binary file — use download to fetch it." />
       ) : (
         <>
-          {yaml && draft && (
+          {mode === 'edit' && yaml && draft && (
             <Alert
               type="warning"
               showIcon
@@ -259,7 +283,7 @@ export default function EditorModal({
               }
             />
           )}
-          {yaml && !canW && (
+          {mode === 'edit' && yaml && !canW && (
             <Alert
               type="info"
               showIcon
@@ -267,7 +291,7 @@ export default function EditorModal({
               message="You have r on this file, so it is view-only — drafting needs w."
             />
           )}
-          {commitErr && (
+          {mode === 'edit' && commitErr && (
             <Alert
               type="error"
               showIcon
@@ -279,7 +303,7 @@ export default function EditorModal({
               data-testid="editor-commit-error"
             />
           )}
-          {conflict && (
+          {mode === 'edit' && conflict && (
             <Alert
               type="warning"
               showIcon
@@ -291,21 +315,28 @@ export default function EditorModal({
             />
           )}
           {yaml ? (
-            <YamlEditor text={text} onChange={onTreeChange} readOnly={!canW} onClose={onClose} />
+            <YamlEditor
+              text={text}
+              onChange={onTreeChange}
+              readOnly={!canW || mode === 'view'}
+              onClose={onClose}
+            />
+          ) : md && mode === 'view' && view === 'render' ? (
+            <div className="md-view" data-testid="md-view">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+            </div>
           ) : (
             // keyed by path so each file gets a fresh editor (own undo history)
-            <Suspense fallback={<Spin style={{ display: 'block', margin: '40px auto' }} />}>
-              <DocEditor
-                key={path ?? undefined}
-                path={path ?? ''}
-                value={text}
-                readOnly={!canW}
-                onChange={setText}
-              />
-            </Suspense>
+            <DocEditor
+              key={path}
+              path={path}
+              value={text}
+              readOnly={mode === 'view' || !canW}
+              onChange={setText}
+            />
           )}
         </>
       )}
-    </Modal>
+    </div>
   );
 }

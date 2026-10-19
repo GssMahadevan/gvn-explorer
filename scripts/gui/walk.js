@@ -1,7 +1,8 @@
-// GUI smoke-walk: login -> files table -> sort -> search -> YAML
-// path-stack editor (drill-down + draft autosave + publish) -> document
-// editor (CodeMirror open/edit/save) + download links for binaries ->
-// navigate ->
+// GUI smoke-walk: login -> files table -> sort -> search -> file page
+// (viewer by default: rendered markdown / read-only source / read-only
+// structured YAML; edit mode via the row menu or the pane's Edit button)
+// -> YAML draft autosave + publish, markdown ribbon + save, download
+// links for binaries -> navigate ->
 // perms -> users -> tenants, asserting along the way + screenshots.
 // Covers the modal-based entity forms (create/edit), the per-row action
 // menu (the vertical three-dots on every table row), the active-filter
@@ -159,6 +160,26 @@ fs.mkdirSync(OUT, { recursive: true });
       )
       .catch(() => {});
   };
+  // the file page (not a modal): opens in VIEW mode; edit mode is entered
+  // via the pane's Edit button or the row menu's "edit" action
+  const openPane = () =>
+    page
+      .waitForFunction(() => document.querySelector('[data-testid="file-pane"]') ?? false, {
+        timeout: 6000,
+      })
+      .catch(() => {});
+  const closePane = async () => {
+    await page.evaluate(() => document.querySelector('[data-testid="pane-back"]')?.click());
+    await page
+      .waitForFunction(() => !document.querySelector('[data-testid="file-pane"]'), { timeout: 3000 })
+      .catch(() => {});
+  };
+  const toEditMode = async () => {
+    await page.evaluate(() => document.querySelector('[data-testid="pane-edit"]')?.click());
+    await page
+      .waitForFunction(() => document.querySelector('[data-testid="editor-publish"], [data-testid="editor-save"]') ?? false, { timeout: 3000 })
+      .catch(() => {});
+  };
   const visiblePanelText = () =>
     page.evaluate(() => {
       const vis = [...document.querySelectorAll('main.ant-layout-content > div')].find(
@@ -281,22 +302,21 @@ fs.mkdirSync(OUT, { recursive: true });
     await page.evaluate(() =>
       [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'walk-cfg.yml')?.click(),
     );
-    await waitModal();
+    await openPane();
     await page.waitForFunction(
       () =>
-        [...document.querySelectorAll('.ant-modal')]
-          .find((x) => x.offsetParent !== null)
-          ?.querySelector('[data-testid="yaml-kv-d0"]') ?? false,
+        document.querySelector('[data-testid="file-pane"]')?.querySelector('[data-testid="yaml-kv-d0"]') ?? false,
       { timeout: 5000 },
     ).catch(() => {});
-    check('yaml file opens path-stack editor, not the document editor', await page.evaluate(() => {
-      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+    check('yaml name click opens the structured VIEWER (edit is a button/menu step)', await page.evaluate(() => {
+      const m = document.querySelector('[data-testid="file-pane"]');
       return !!m && !!m.querySelector('[data-testid="yaml-editor"]') &&
         !!m.querySelector('[data-testid="yaml-nav"]') && !!m.querySelector('[data-testid="yaml-kv-d0"]') &&
-        !m.querySelector('[data-testid="doc-editor"]') && !m.querySelector('.cm-editor');
+        !m.querySelector('[data-testid="doc-editor"]') && !m.querySelector('.cm-editor') &&
+        !!m.querySelector('[data-testid="pane-edit"]') && !m.querySelector('[data-testid="editor-publish"]');
     }));
     check('path stack is flat: file + document rows, keys table shows values', await page.evaluate(() => {
-      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+      const m = document.querySelector('[data-testid="file-pane"]');
       if (!m) return false;
       const file = m.querySelector('[data-testid="yaml-crumb-d"]');
       const doc = m.querySelector('[data-testid="yaml-crumb-d0"]');
@@ -309,14 +329,14 @@ fs.mkdirSync(OUT, { recursive: true });
     await mouseClick('[data-testid="yaml-crumb-d"]');
     await sleep(600);
     check('file level switches between documents', await page.evaluate(() => {
-      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+      const m = document.querySelector('[data-testid="file-pane"]');
       const d2 = m?.querySelector('[data-testid="yaml-open-d1"]');
       return !!d2 && /document 2/.test(d2.textContent);
     }));
     await mouseClick('[data-testid="yaml-open-d1"]');
     await sleep(600);
     check('document 2 opens as its own tree', await page.evaluate(() => {
-      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+      const m = document.querySelector('[data-testid="file-pane"]');
       const k = m?.querySelector('[data-testid="yaml-key-d1.0"]');
       return !!m.querySelector('[data-testid="yaml-kv-d1"]') && !!k && k.value === 'agent';
     }));
@@ -324,12 +344,14 @@ fs.mkdirSync(OUT, { recursive: true });
     await sleep(600);
     await mouseClick('[data-testid="yaml-open-d0"]');
     await sleep(600);
+    // editing is the explicit step: the header Edit button enters it
+    await toEditMode();
     // clicking a table row pushes the stack: the leaf screen carries
     // the note above the line and the inline comment
     await mouseClick('[data-testid="yaml-valview-d0.0"]');
     await sleep(600);
     check('row click pushes leaf screen editing note + value + comment', await page.evaluate(() => {
-      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+      const m = document.querySelector('[data-testid="file-pane"]');
       if (!m) return false;
       const note = m.querySelector('[data-testid="yaml-note-d0.0"]');
       const cmt = m.querySelector('[data-testid="yaml-cmt-d0.0"]');
@@ -346,7 +368,7 @@ fs.mkdirSync(OUT, { recursive: true });
     await mouseClick('[data-testid="yaml-valview-d0.3"]');
     await sleep(600);
     check('block scalar gets an in-panel multiline editor', await page.evaluate(() => {
-      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+      const m = document.querySelector('[data-testid="file-pane"]');
       const blk = m?.querySelector('[data-testid="yaml-val-d0.3"]');
       return !!blk && blk.tagName === 'TEXTAREA' && blk.value.includes('why this box exists');
     }));
@@ -364,13 +386,13 @@ fs.mkdirSync(OUT, { recursive: true });
           d.draft.content.includes('# site process config')),
     )));
     check('draft banner shown in editor', await page.evaluate(() => {
-      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+      const m = document.querySelector('[data-testid="file-pane"]');
       return !!m && /Unpublished draft/.test(m.innerText);
     }));
     await mouseClick('[data-testid="editor-publish"]');
     await page
       .waitForFunction(() => {
-        const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+        const m = document.querySelector('[data-testid="file-pane"]');
         return !m || !/Unpublished draft/.test(m.innerText);
       }, { timeout: 6000 })
       .catch(() => {});
@@ -386,7 +408,7 @@ fs.mkdirSync(OUT, { recursive: true });
           body.includes('agent: a1') && !d.draft;
       }),
     );
-    await closeModals();
+    await closePane();
 
     // phone-width regression: at 390px the detail tables must NOT be
     // squeezed (values used to clip to a few characters) — they keep
@@ -397,21 +419,19 @@ fs.mkdirSync(OUT, { recursive: true });
     await page.evaluate(() =>
       [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'walk-cfg.yml')?.click(),
     );
-    await waitModal();
+    await openPane();
     await page.waitForFunction(
       () =>
-        [...document.querySelectorAll('.ant-modal')]
-          .find((x) => x.offsetParent !== null)
-          ?.querySelector('[data-testid="yaml-kv-d0"]') ?? false,
+        document.querySelector('[data-testid="file-pane"]')?.querySelector('[data-testid="yaml-kv-d0"]') ?? false,
       { timeout: 5000 },
     ).catch(() => {});
+    await toEditMode();
     // antd's breakpoint hook flips "narrow" a beat after the emulated
     // viewport change — wait for the mobile toolbar, not a sleep.
     await page.waitForFunction(
       () =>
-        [...document.querySelectorAll('.ant-modal')]
-          .find((x) => x.offsetParent !== null)
-          ?.querySelector('[data-testid="yaml-nav-open"]') ?? false,
+        document.querySelector('[data-testid="file-pane"]')?.querySelector('[data-testid="yaml-nav-open"]') ??
+        false,
       { timeout: 5000 },
     ).catch(() => {});
     // let the resize settle: the table re-lays itself once antd flips to
@@ -419,15 +439,15 @@ fs.mkdirSync(OUT, { recursive: true });
     // column only after it stabilizes — generous budget, returns early
     await page.waitForFunction(
       () => {
-        const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+        const m = document.querySelector('[data-testid="file-pane"]');
         const key = m?.querySelector('[data-testid="yaml-key-d0.0"]');
         return !!key && key.getBoundingClientRect().width >= 140;
       },
       { timeout: 10000 },
     ).catch(() => {});
     const mobileOk = await page.evaluate(() => {
-      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
-      if (!m) return { ok: false, why: 'no modal', modals: document.querySelectorAll('.ant-modal').length };
+      const m = document.querySelector('[data-testid="file-pane"]');
+      if (!m) return { ok: false, why: 'no pane', panes: document.querySelectorAll('[data-testid="file-pane"]').length };
       const key = m.querySelector('[data-testid="yaml-key-d0.0"]');
       const kw = key ? key.getBoundingClientRect().width : 0;
       const box =
@@ -436,7 +456,7 @@ fs.mkdirSync(OUT, { recursive: true });
       const scrolls = !!box && box.scrollWidth > box.clientWidth + 40;
       return {
         ok: !!m.querySelector('[data-testid="yaml-nav-open"]') && kw >= 140 && scrolls,
-        title: m.querySelector('.ant-modal-title, .ant-modal-header')?.innerText?.slice(0, 60) ?? '(none)',
+        title: m.querySelector('[data-testid="file-pane"] .mono')?.innerText?.slice(0, 60) ?? '(none)',
         hasKv: !!m.querySelector('[data-testid="yaml-kv-d0"]'),
         hasEditor: !!m.querySelector('[data-testid="yaml-editor"]'),
         navBtn: !!m.querySelector('[data-testid="yaml-nav-open"]'),
@@ -445,7 +465,7 @@ fs.mkdirSync(OUT, { recursive: true });
     });
     if (!mobileOk.ok) console.log('  dbg mobile:', JSON.stringify(mobileOk));
     check('phone width: path stack in drawer, tables keep width + scroll sideways', mobileOk.ok);
-    await closeModals();
+    await closePane();
     await page.setViewport({ width: 800, height: 600 });
     await new Promise((r) => setTimeout(r, 600));
 
@@ -462,14 +482,16 @@ fs.mkdirSync(OUT, { recursive: true });
       }),
     );
 
-    // file row menu: permissions/download/rename/delete live behind the ⋮
+    // file row menu: permissions/download/rename/delete live behind the ⋮;
+    // "edit" is NOT offered for download-only files (filekind policy)
     check(
-      'file row menu lists permissions/download/rename/delete',
+      'file row menu lists permissions/download/rename/delete, no edit for downloads',
       (await openRowMenu('report-q3')) &&
         (await visibleMenuText()).includes('permissions') &&
         (await visibleMenuText()).includes('download') &&
         (await visibleMenuText()).includes('rename') &&
-        (await visibleMenuText()).includes('delete'),
+        (await visibleMenuText()).includes('delete') &&
+        !(await visibleMenuText()).includes('edit'),
     );
     await closeRowMenu();
 
@@ -482,41 +504,75 @@ fs.mkdirSync(OUT, { recursive: true });
       return !!a && (a.getAttribute('href') || '') === '/api/v1/fs/raw?path=%2Fdeliverables%2Freport-q3.pdf';
     }));
 
-    // plain documents get CodeMirror: open readme.md, assert the editor
-    // surface, type an edit, save (base_mtime-guarded), verify the bytes.
+    // plain documents: the name click opens the VIEWER — markdown renders
+    // like GitHub (Render/Code toggle, source read-only); editing is the
+    // row menu's "edit", which gets a CodeMirror + markdown ribbon; save
+    // is base_mtime-guarded and the bytes land on disk.
     await page.evaluate(() => document.querySelector('.ant-breadcrumb a')?.click());
     await new Promise((r) => setTimeout(r, 1000));
     await page.evaluate(() =>
       [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'readme.md')?.click(),
     );
-    await waitModal();
+    await openPane();
     await page.waitForFunction(
-      () =>
-        [...document.querySelectorAll('.ant-modal')]
-          .find((x) => x.offsetParent !== null)
-          ?.querySelector('.cm-content') ?? false,
+      () => document.querySelector('[data-testid="md-view"]') ?? false,
       { timeout: 8000 },
     ).catch(() => {});
-    check('markdown file opens CodeMirror (not a textarea), content visible', await page.evaluate(() => {
-      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
-      const cm = m?.querySelector('[data-testid="doc-editor"] .cm-editor');
-      return !!cm && /# readme/.test(m.querySelector('.cm-content')?.innerText ?? '');
+    check('markdown name click opens the rendered viewer (no editor)', await page.evaluate(() => {
+      const p = document.querySelector('[data-testid="file-pane"]');
+      const v = p?.querySelector('[data-testid="md-view"]');
+      return !!v && /readme/.test(v.innerText) && !!v.querySelector('h1') && !p.querySelector('.cm-editor') &&
+        !!p.querySelector('[data-testid="pane-edit"]') && !!p.querySelector('[data-testid="pane-viewmode"]');
     }));
-    await mouseClick('.cm-content', 'readme');
+    await page.evaluate(() => {
+      const seg = document.querySelector('[data-testid="pane-viewmode"]');
+      const opt = [...seg.querySelectorAll('.ant-segmented-item')].find((x) => /Code/.test(x.textContent));
+      opt?.click();
+    });
+    await page.waitForFunction(
+      () => document.querySelector('[data-testid="file-pane"] .cm-content') ?? false,
+      { timeout: 5000 },
+    ).catch(() => {});
+    check('viewer Code toggle shows the source (read-only)', await page.evaluate(() => {
+      const p = document.querySelector('[data-testid="file-pane"]');
+      const cm = p?.querySelector('[data-testid="doc-editor"] .cm-editor');
+      return !!cm && /# readme/.test(p.querySelector('.cm-content')?.innerText ?? '') &&
+        !p.querySelector('[data-testid="doc-toolbar"]') && !p.querySelector('[data-testid="editor-save"]');
+    }));
+    await closePane();
+
+    check('text file row menu offers edit', (await openRowMenu('readme')) && (await visibleMenuText()).includes('edit'));
+    await menuClick('edit');
+    await openPane();
+    check('menu edit opens CodeMirror with a markdown ribbon', await page
+      .waitForFunction(
+        () =>
+          document.querySelector('[data-testid="file-pane"]')?.querySelector('[data-testid="doc-toolbar"]') &&
+          document.querySelector('[data-testid="file-pane"] .cm-content') !== null,
+        { timeout: 8000 },
+      )
+      .then(() => true)
+      .catch(() => false));
+    // ribbon sanity: real click on the heading line, click H2 -> the
+    // line prefix lands in the doc (the ribbon edits the markdown source)
+    await mouseClick('.cm-line', '# readme');
+    await page.evaluate(() => document.querySelector('[data-testid="doc-tool-h2"]')?.click());
+    await new Promise((r) => setTimeout(r, 300));
+    check('ribbon button edits the markdown source at the caret', await page.evaluate(() =>
+      /## # readme/.test(document.querySelector('[data-testid="file-pane"] .cm-content')?.innerText ?? ''),
+    ));
     // caret to end of doc without modifier chords: ArrowDown clamps at the
     // last line; a click in the blank area below the text usually does too.
     for (let i = 0; i < 5; i++) await page.keyboard.press('ArrowDown');
     await page.keyboard.type('\nedited via doc editor\n');
-    await page.evaluate(() =>
-      [...document.querySelectorAll('.ant-modal button')].find((b) => b.dataset.testid === 'editor-save')?.click(),
-    );
+    await page.evaluate(() => document.querySelector('[data-testid="editor-save"]')?.click());
     await new Promise((r) => setTimeout(r, 800));
-    check('doc editor save writes to disk (fs/content reflects the edit)', await page.evaluate(() =>
+    check('doc editor save writes to disk (ribbon edit + typed edit both land)', await page.evaluate(() =>
       fetch('/api/v1/fs/content?path=' + encodeURIComponent('/readme.md'))
         .then((r) => r.json())
-        .then((c) => /edited via doc editor/.test(c.content ?? '')),
+        .then((c) => (c.content ?? '').includes('## # readme') && /edited via doc editor/.test(c.content ?? '')),
     ));
-    await closeModals();
+    await closePane();
 
     // perms tab (super admin sees the bypass notice instead of bits)
     await click('[role="tab"]', 'permissions');

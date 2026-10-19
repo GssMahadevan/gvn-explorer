@@ -1,10 +1,10 @@
 // Which action a file row should offer, decided from the name alone so the
 // table works before any content is fetched (same policy GitHub uses):
-//   'yaml'   -> structured YAML editor (draft/publish)
-//   'text'   -> document editor (CodeMirror), extension allowlist
+//   'yaml'   -> structured YAML view; edit mode runs the draft/publish flow
+//   'text'   -> file page: read-only viewer, editing in CodeMirror (FilePane)
 //   'download' -> everything else (binaries, unknown types): stream via /fs/raw
 // Extension-less files (README, Makefile, LICENSE) count as text; if the
-// server still sniffs them as binary (NUL bytes), the editor modal falls
+// server still sniffs them as binary (NUL bytes), the file page falls
 // back to a download prompt — is_binary is the safety net either way.
 
 const TEXT_EXT = new Set([
