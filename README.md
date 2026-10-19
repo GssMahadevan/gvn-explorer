@@ -388,19 +388,28 @@ Clicking a text file opens the editor modal. Plain text gets the code
 textarea, and its Save now sends the `base_mtime` captured on open: if
 the file changed underneath, the server refuses with 409 conflict and the
 text stays in the box to be copied out. **YAML config files** (`.yml`,
-`.yaml`) instead open the structured tree editor (`components/YamlTree`):
-mappings become key/value/comment rows, sequences indexed rows, sections
-collapse, block scalars get an in-node multiline box, and multi-document
-files render as separate document sections — raw text is never
-hand-edited, and anchors/aliases display but stay locked. Every change
-mutates the parsed AST (client-side `yaml`) and re-serializes it, so
-leading notes, inline comments and quoting styles survive the round trip
-— precisely the reason these process configs stay YAML rather than JSON.
+`.yaml`) instead open the structured editor (`components/YamlEditor`),
+laid out like a file explorer: a **left tree** shows how the whole
+document is organized — every key, index and document is one row,
+parents above children, values hinted as truncated text or `{n}`/`[n]` —
+which reads fine at phone widths and auto-expands to whatever node you
+are editing. The **right side** edits the selected node as the shape it
+actually is: mappings as a **K / V / description** table (the description
+column is the entry's inline YAML comment), arrays as a **value /
+comment** table, scalars as a full-width editor where the note above the
+line and multiline block scalars get real text areas; on phone widths
+the detail opens as a drawer over the tree instead. Nested maps/seqs
+open as sub-pages, multi-document files appear as separate documents,
+anchors/aliases display but stay locked — raw text is never hand-edited.
+Every change mutates the parsed AST (client-side `yaml`) and
+re-serializes it, so leading notes, inline comments and quoting styles
+survive the round trip — precisely the reason these process configs stay
+YAML rather than JSON.
 Edits autosave to the server-side draft (a banner names the last writer
 and time); the file on disk changes only on **Publish**, where the server
 re-validates and audits the draft, and a rejected draft surfaces its 422
 inside the modal without losing anything. Drafting requires `w` — with
-plain `r` the same tree renders read-only.
+plain `r` the same editor renders read-only.
 
 ```sh
 cd frontend

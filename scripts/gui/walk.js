@@ -258,10 +258,11 @@ fs.mkdirSync(OUT, { recursive: true });
     });
     await new Promise((r) => setTimeout(r, 1100));
 
-    // ---- YAML structured editor: tree edit -> draft autosave -> publish.
-    // The walk-cfg.yml fixture carries a leading comment, an inline
-    // comment, a block scalar and two documents so the file-content
-    // assertions afterwards prove the AST round-trip kept every one.
+    // ---- YAML structured editor: explorer tree selects nodes, detail
+    // panel edits them; edit -> draft autosave -> publish. The fixture
+    // carries a leading comment, an inline comment, a block scalar and
+    // two documents so the file assertions afterwards prove the AST
+    // round-trip kept every one.
     const setLeaf = (sel, v) =>
       page.evaluate((s, val) => {
         const el = document.querySelector(s);
@@ -270,32 +271,52 @@ fs.mkdirSync(OUT, { recursive: true });
         const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement : window.HTMLInputElement;
         Object.getOwnPropertyDescriptor(proto.prototype, 'value').set.call(el, val);
         el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.blur(); // Leaf commits on blur
+        el.blur(); // YamlLeaf commits on blur
         return true;
       }, sel, v);
     await page.evaluate(() =>
       [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'walk-cfg.yml')?.click(),
     );
     await waitModal();
-    check('yaml file opens structured tree, not a raw textarea', await page.evaluate(() => {
+    check('yaml file opens tree+detail editor, not a raw textarea', await page.evaluate(() => {
       const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
-      return !!m && !!m.querySelector('[data-testid="yaml-tree"]') && !m.querySelector('textarea.code');
+      return !!m && !!m.querySelector('[data-testid="yaml-editor"]') &&
+        !!m.querySelector('[data-testid="yaml-tree-pane"]') && !!m.querySelector('[data-testid="yaml-kv-d0"]') &&
+        !m.querySelector('textarea.code');
     }));
-    check('tree shows notes, comments, block scalar and both documents', await page.evaluate(() => {
+    check('tree shows the document structure incl. both documents', await page.evaluate(() => {
+      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+      if (!m) return false;
+      const t = m.querySelector('[data-testid="yaml-node-d0.1"]');
+      return !!t && /replicas/.test(t.textContent) &&
+        !!m.querySelector('[data-testid="yaml-node-d0.3"]') && /document 2 of 2/.test(m.innerText);
+    }));
+    // selecting the app row puts its note + inline comment in the detail
+    await mouseClick('[data-testid="yaml-node-d0.0"]');
+    await new Promise((r) => setTimeout(r, 600));
+    check('detail panel edits notes and comments of the selected line', await page.evaluate(() => {
       const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
       if (!m) return false;
       const note = m.querySelector('[data-testid="yaml-note-d0.0"]');
       const cmt = m.querySelector('[data-testid="yaml-cmt-d0.0"]');
-      const blk = m.querySelector('[data-testid="yaml-val-d0.3"]');
-      return !!note && note.value.includes('site process config') &&
-        !!cmt && cmt.value.includes('do not touch') &&
-        !!blk && blk.tagName === 'TEXTAREA' && blk.value.includes('why this box exists') &&
-        /document 2 of 2/.test(m.innerText);
+      return /(^|\.)(root|document 1)\.app/.test(m.querySelector('[data-testid="yaml-detail-path"]')?.textContent ?? '') &&
+        !!note && note.value.includes('site process config') &&
+        !!cmt && cmt.value.includes('do not touch');
     }));
-    // edit one scalar through the tree -> debounced autosave pushes a draft
+    // the block-scalar value gets a real multiline editor
+    await mouseClick('[data-testid="yaml-node-d0.3"]');
+    await new Promise((r) => setTimeout(r, 600));
+    check('block scalar gets an in-panel multiline editor', await page.evaluate(() => {
+      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+      const blk = m?.querySelector('[data-testid="yaml-val-d0.3"]');
+      return !!blk && blk.tagName === 'TEXTAREA' && blk.value.includes('why this box exists');
+    }));
+    // edit one scalar through the detail panel -> debounced autosave drafts it
+    await mouseClick('[data-testid="yaml-node-d0.1"]');
+    await new Promise((r) => setTimeout(r, 600));
     const typed = await setLeaf('[data-testid="yaml-val-d0.1"]', '5');
     await new Promise((r) => setTimeout(r, 2500));
-    check('tree edit autosaves a draft server-side', typed && (await page.evaluate(() =>
+    check('detail edit autosaves a draft server-side', typed && (await page.evaluate(() =>
       fetch('/api/v1/fs/draft?path=' + encodeURIComponent('/walk-cfg.yml'))
         .then((r) => r.json())
         .then((d) => !!d.draft && d.draft.content.includes('replicas: 5') &&

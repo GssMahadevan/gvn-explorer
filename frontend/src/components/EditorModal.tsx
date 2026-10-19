@@ -3,7 +3,7 @@ import { Alert, Button, Modal, Space, Spin, Tag, Typography } from 'antd';
 import { ApiError, api } from '../api';
 import { useFlash } from '../flash';
 import type { PermsList } from '../types';
-import YamlTree from './YamlTree';
+import YamlEditor from './YamlEditor';
 
 interface FsContent {
   content?: string;
@@ -24,8 +24,9 @@ const fmtTs = (ts: number) => new Date(ts * 1000).toLocaleString();
 
 // View/edit a text file. Plain text keeps the classic textarea, now with
 // the base_mtime guard so two writers get a 409 instead of clobbering.
-// YAML config files (.yml/.yaml) get the structured tree editor on top of
-// the draft/publish model: every change autosaves to the server-side
+// YAML config files (.yml/.yaml) get the structured editor — an
+// explorer-style tree plus per-node detail tables — on top of the
+// draft/publish model: every change autosaves to the server-side
 // draft, and the file on disk only changes when the draft is published.
 // Drafting needs the w bit; readers can preview the draft but not edit.
 export default function EditorModal({
@@ -282,7 +283,7 @@ export default function EditorModal({
             />
           )}
           {yaml ? (
-            <YamlTree text={text} onChange={onTreeChange} readOnly={!canW} />
+            <YamlEditor text={text} onChange={onTreeChange} readOnly={!canW} />
           ) : (
             <textarea
               className="code"
