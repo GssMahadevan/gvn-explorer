@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/user/llm-crud1/docs"
-	"github.com/user/llm-crud1/internal/acl"
-	"github.com/user/llm-crud1/internal/fsx"
-	"github.com/user/llm-crud1/internal/query"
+	"github.com/GssMahadevan/gvn-explorer/docs"
+	"github.com/GssMahadevan/gvn-explorer/internal/acl"
+	"github.com/GssMahadevan/gvn-explorer/internal/fsx"
+	"github.com/GssMahadevan/gvn-explorer/internal/query"
 )
 
 func (a *API) maxBytes() int64 {

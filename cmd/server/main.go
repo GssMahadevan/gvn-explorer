@@ -14,14 +14,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/user/llm-crud1/frontend"
-	"github.com/user/llm-crud1/internal/acl"
-	"github.com/user/llm-crud1/internal/audit"
-	"github.com/user/llm-crud1/internal/drafts"
-	"github.com/user/llm-crud1/internal/auth"
-	"github.com/user/llm-crud1/internal/db"
-	"github.com/user/llm-crud1/internal/fsx"
-	"github.com/user/llm-crud1/internal/handlers"
+	"github.com/GssMahadevan/gvn-explorer/frontend"
+	"github.com/GssMahadevan/gvn-explorer/internal/acl"
+	"github.com/GssMahadevan/gvn-explorer/internal/audit"
+	"github.com/GssMahadevan/gvn-explorer/internal/drafts"
+	"github.com/GssMahadevan/gvn-explorer/internal/auth"
+	"github.com/GssMahadevan/gvn-explorer/internal/db"
+	"github.com/GssMahadevan/gvn-explorer/internal/fsx"
+	"github.com/GssMahadevan/gvn-explorer/internal/handlers"
 )
 
 // envOr returns the environment value for key when set (an explicitly empty

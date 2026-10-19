@@ -15,12 +15,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/user/llm-crud1/internal/acl"
-	"github.com/user/llm-crud1/internal/audit"
-	"github.com/user/llm-crud1/internal/auth"
-	"github.com/user/llm-crud1/internal/db"
-	"github.com/user/llm-crud1/internal/drafts"
-	"github.com/user/llm-crud1/internal/fsx"
+	"github.com/GssMahadevan/gvn-explorer/internal/acl"
+	"github.com/GssMahadevan/gvn-explorer/internal/audit"
+	"github.com/GssMahadevan/gvn-explorer/internal/auth"
+	"github.com/GssMahadevan/gvn-explorer/internal/db"
+	"github.com/GssMahadevan/gvn-explorer/internal/drafts"
+	"github.com/GssMahadevan/gvn-explorer/internal/fsx"
 )
 
 type env struct {

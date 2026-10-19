@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/user/llm-crud1/internal/db"
+	"github.com/GssMahadevan/gvn-explorer/internal/db"
 )
 
 type Event struct {

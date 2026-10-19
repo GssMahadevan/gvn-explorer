@@ -3,7 +3,7 @@ package handlers
 import (
 	"context"
 
-	"github.com/user/llm-crud1/internal/auth"
+	"github.com/GssMahadevan/gvn-explorer/internal/auth"
 )
 
 func contextWithUser(ctx context.Context, u auth.User) context.Context {

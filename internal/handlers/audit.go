@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/user/llm-crud1/internal/audit"
+	"github.com/GssMahadevan/gvn-explorer/internal/audit"
 )
 
 // audit writes one event, filling actor and source IP from the request.

@@ -1,4 +1,4 @@
-module github.com/user/llm-crud1
+module github.com/GssMahadevan/gvn-explorer
 
 go 1.26.0
 

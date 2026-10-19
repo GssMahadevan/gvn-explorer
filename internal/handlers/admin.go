@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/user/llm-crud1/internal/acl"
-	"github.com/user/llm-crud1/internal/audit"
-	"github.com/user/llm-crud1/internal/auth"
-	"github.com/user/llm-crud1/internal/query"
+	"github.com/GssMahadevan/gvn-explorer/internal/acl"
+	"github.com/GssMahadevan/gvn-explorer/internal/audit"
+	"github.com/GssMahadevan/gvn-explorer/internal/auth"
+	"github.com/GssMahadevan/gvn-explorer/internal/query"
 )
 
 // scopeTenantID returns 0 (see all tenants) for super admins, and the

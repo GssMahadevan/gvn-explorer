@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/user/llm-crud1/internal/query"
+	"github.com/GssMahadevan/gvn-explorer/internal/query"
 )
 
 // ListSpec declares one endpoint's searchable and sortable columns.

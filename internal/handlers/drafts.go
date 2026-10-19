@@ -10,8 +10,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/user/llm-crud1/internal/acl"
-	"github.com/user/llm-crud1/internal/audit"
+	"github.com/GssMahadevan/gvn-explorer/internal/acl"
+	"github.com/GssMahadevan/gvn-explorer/internal/audit"
 )
 
 // Draft/publish endpoints for the config editor. A draft is a server-side

@@ -1,4 +1,4 @@
-# file-explorer (llm-crud1)
+# gvn-explorer — file explorer (Go + React)
 
 Multi-tenant web file explorer with a Go backend. Files live on the real
 filesystem under one **root path**; SQLite stores the platform-independent

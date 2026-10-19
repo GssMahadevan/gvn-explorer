@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/user/llm-crud1/internal/audit"
-	"github.com/user/llm-crud1/internal/auth"
+	"github.com/GssMahadevan/gvn-explorer/internal/audit"
+	"github.com/GssMahadevan/gvn-explorer/internal/auth"
 )
 
 type loginRequest struct {

@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/user/llm-crud1/internal/auth"
-	"github.com/user/llm-crud1/internal/db"
-	"github.com/user/llm-crud1/internal/query"
+	"github.com/GssMahadevan/gvn-explorer/internal/auth"
+	"github.com/GssMahadevan/gvn-explorer/internal/db"
+	"github.com/GssMahadevan/gvn-explorer/internal/query"
 )
 
 type Grant struct {
