@@ -91,8 +91,7 @@ script. The exhaustive machine-verified contract remains the root
 | `build` | golang:1.26-alpine | `CGO_ENABLED=0` server binary (SQLite is `modernc.org/sqlite`, pure Go) |
 | runtime | alpine:3.21 | `/app/server` + `/app/web` (GUI bundle); healthcheck `wget /` |
 
-Total image ~25 MB (~10 MB compressed). The old vanilla `web/`
-fallback is intentionally **not** in the image; the image always ships
+Total image ~25 MB (~10 MB compressed): the image always ships
 the React GUI. No build tools, package managers or shell extras in the
 runtime layer.
 

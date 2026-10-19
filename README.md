@@ -492,9 +492,10 @@ static host works as long as the API is same-origin):
 ./bin/server -web frontend/dist
 ```
 
-`web/` — the hand-written vanilla-JS GUI, zero build toolchain — stays in
-the tree as a fallback and as a compact reference of the API contract;
-`-web web` serves it.
+The old hand-written vanilla-JS GUI (`web/`) has been removed: the
+React console covers everything, from disk in development and from
+inside the binary in release builds. (`docs/gui-survey.md` still
+records the original survey if you want the history.)
 
 ## Schema & migrations
 
@@ -630,5 +631,4 @@ internal/fsx/      sandboxed filesystem ops (list/read/write/mkdir/rename/delete
 internal/handlers/ REST handlers + route table, JSON error envelope, rate limiters
 frontend/          React 19 + Ant Design GUI (Vite; list panels, per-entity form modals, row action menus, file page (FilePane): viewer default - rendered md / read-only CodeMirror / structured YAML, edit via row menu w/ markdown ribbon, YAML structured editor w/ draft+publish, download actions (filekind.ts policy), flash center; `npm run build` -> dist/ static bundle; webfs_disk.go/webfs_embed.go: GUI served from disk by default, embedded into release binaries under -tags embedweb)
 scripts/           test suites: test_files.sh (curl API regression), test_gui.sh + gui/ (puppeteer GUI walk + screenshots), test_dist.sh (release-bundle smoke: unpack-and-run, embedded GUI+/help)
-web/               vanilla-JS GUI fallback (panels per view w/ paging+search+sort, editor, perms, admin)
 ```

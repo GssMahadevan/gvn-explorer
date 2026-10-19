@@ -1,8 +1,10 @@
 # GUI Framework Survey (October 2026)
 
 > **Decision (2026-10-19): migrated to React 19 + Ant Design** — the
-> console now lives in `frontend/` (Vite, MIT stack); the vanilla `web/`
-> GUI is kept as a zero-toolchain fallback. See README "Web GUI".
+> console now lives in `frontend/` (Vite, MIT stack). The vanilla `web/`
+> GUI was kept as a zero-toolchain fallback for a while and has since
+> been removed (it shadowed the real GUI when release binaries were run
+> from a checkout). See README "Web GUI".
 
 Goal: replace the hand-written `web/app.js` (vanilla JS, ~1,100 LOC) with a
 framework + established MIT/Apache-licensed component library, for a
