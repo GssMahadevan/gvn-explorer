@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/user/llm-crud1/frontend"
 	"github.com/user/llm-crud1/internal/acl"
 	"github.com/user/llm-crud1/internal/audit"
 	"github.com/user/llm-crud1/internal/drafts"
@@ -134,6 +135,11 @@ func main() {
 		if info, err := os.Stat(*webDir); err == nil && info.IsDir() {
 			mux.Handle("GET /", cacheStatic(http.FileServer(http.Dir(*webDir))))
 			log.Info("web gui enabled", "dir", *webDir)
+		} else if gui := frontend.BundleFS(); gui != nil {
+			// release build (-tags embedweb): the GUI travels inside the
+			// binary, so an unpacked bundle needs no -web and no web/ dir.
+			mux.Handle("GET /", cacheStatic(http.FileServerFS(gui)))
+			log.Info("web gui enabled", "dir", "(embedded)")
 		} else {
 			log.Warn("web dir missing, GUI disabled", "dir", *webDir)
 		}

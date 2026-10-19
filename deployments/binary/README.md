@@ -2,11 +2,12 @@
 
 This archive contains everything the server needs except your data:
 
-- `gvn-explorer` (or `gvn-explorer.exe`) — one static server binary. The
-  REST API, the built-in help (`/help`) and all accounts/permissions
-  logic live inside it.
-- `web/` — the browser GUI the server serves at `/`.
+- `gvn-explorer` (or `gvn-explorer.exe`) — one static server binary.
+  The browser GUI, the REST API, the built-in help (`/help`) and all
+  accounts/permissions logic are inside it.
 - `README.md` — this file.
+
+That's it: no folders to keep next to the binary, nothing to install.
 
 ## Run it
 
@@ -33,7 +34,7 @@ bootstrap only runs while no users exist).
 | `-root` / `ROOT` | `data` | folder exposed to the explorer |
 | `-db` / `DB_PATH` | `perms.db` | SQLite sidecar (never stores file contents) |
 | `-admin` / `ADMIN` | `system:admin:admin` | bootstrap super admin (first start only) |
-| `-web` / `WEB_DIR` | `web` | GUI bundle directory |
+| `-web` / `WEB_DIR` | `web` | serve the GUI from this on-disk directory instead of the one baked into the binary; point it at your own `frontend/dist` to hot-swap a GUI build (`-web ""` disables the GUI entirely) |
 
 ## Backup & move
 

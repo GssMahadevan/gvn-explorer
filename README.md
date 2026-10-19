@@ -597,21 +597,27 @@ cache, so repeat pushes are fast. Verify with
 `docker buildx imagetools inspect <image>`.
 
 **Bare binaries** — `make dist` cross-builds all six platforms
-(linux/windows/darwin × amd64/arm64). Each `dist/bundles/` archive is
-self-contained: server binary + the `web/` GUI bundle it serves from
-`./web` + `deployments/binary/README.md` (unpack-and-run guide; the
-`/help` docs are inside the binary, nothing else travels). Bare
-binaries also land flat in `dist/`. Artifacts are named with
-`VERSION=` (default: current commit short SHA — override for tags,
+(linux/windows/darwin × amd64/arm64) with `-tags embedweb`, which bakes
+the GUI bundle (see `frontend/webfs_embed.go`) *and* the `/help` docs
+into the binary — each `dist/bundles/` archive is just the binary +
+`deployments/binary/README.md`. Genuinely one file: `make test-dist`
+unpacks this machine's archive, starts it with zero flags and asserts
+the GUI and `/help` come out of the binary (and that no `web/` dir
+ships). Bare binaries also land flat in `dist/`. Artifacts are named
+with `VERSION=` (default: current commit short SHA — override for tags,
 e.g. `make dist VERSION=v0.3.0`), which is what to attach to a GitHub
-Release. A version stamp *inside* the binary (`-ldflags -X main.version`)
-is still on the backlog.
+Release. The plain build (`go build`, dev, tests, the Docker image)
+never embeds — it serves `-web` from disk exactly as before; embedding
+is purely the release-binary mode. Serving precedence either way: an
+existing `-web` directory wins, otherwise the embedded bundle. A version
+stamp *inside* the binary (`-ldflags -X main.version`) is still on the
+backlog.
 
 ## Layout
 
 ```
 Makefile           entry points; includes makefiles/ (same layout as gvndb sample)
-makefiles/         build.mk (server+GUI + `dist` cross-builds), test.mk (go/curl/GUI suites), deploy.mk (docker+compose + multi-arch `docker-push`)
+makefiles/         build.mk (server+GUI + `dist`/`test-dist` cross-builds), test.mk (go/curl/GUI suites), deploy.mk (docker+compose + multi-arch `docker-push`)
 deployments/       docker/ (Dockerfile, compose, README), binary/ (README shipped inside dist archives), k8s/ + swarm/ (planned, README sketches)
 docs/              user guide embedded into the binary at build time (embed.go) and served read-only under /help; guide set in docs/user/
 cmd/server/        main + middleware (JSON logging w/ request ids, panic recovery)
@@ -622,7 +628,7 @@ internal/audit/    append-only forensic event trail (authz/authn DML, fs_commit)
 internal/drafts/   per-path working copies for the draft/publish edit model
 internal/fsx/      sandboxed filesystem ops (list/read/write/mkdir/rename/delete)
 internal/handlers/ REST handlers + route table, JSON error envelope, rate limiters
-frontend/          React 19 + Ant Design GUI (Vite; list panels, per-entity form modals, row action menus, file page (FilePane): viewer default - rendered md / read-only CodeMirror / structured YAML, edit via row menu w/ markdown ribbon, YAML structured editor w/ draft+publish, download actions (filekind.ts policy), flash center; `npm run build` -> dist/ static bundle)
-scripts/           test suites: test_files.sh (curl API regression), test_gui.sh + gui/ (puppeteer GUI walk + screenshots)
+frontend/          React 19 + Ant Design GUI (Vite; list panels, per-entity form modals, row action menus, file page (FilePane): viewer default - rendered md / read-only CodeMirror / structured YAML, edit via row menu w/ markdown ribbon, YAML structured editor w/ draft+publish, download actions (filekind.ts policy), flash center; `npm run build` -> dist/ static bundle; webfs_disk.go/webfs_embed.go: GUI served from disk by default, embedded into release binaries under -tags embedweb)
+scripts/           test suites: test_files.sh (curl API regression), test_gui.sh + gui/ (puppeteer GUI walk + screenshots), test_dist.sh (release-bundle smoke: unpack-and-run, embedded GUI+/help)
 web/               vanilla-JS GUI fallback (panels per view w/ paging+search+sort, editor, perms, admin)
 ```

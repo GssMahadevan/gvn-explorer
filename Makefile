@@ -13,6 +13,7 @@
 help:
 	@echo "build        server binary + GUI bundle"
 	@echo "dist         cross-compiled release bundles (linux/windows/macOS, amd64+arm64) in dist/"
+	@echo "test-dist    build dist + smoke-test this machine's bundle (embedded GUI, zero flags)"
 	@echo "test         go vet/test + curl API suite + GUI walk (needs nothing running)"
 	@echo "docker-build build the container image"
 	@echo "docker-push  publish multi-arch image (IMAGE=<registry>/name:tag)"
