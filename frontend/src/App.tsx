@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Button, Layout, Space, Spin, Tabs, Tag } from 'antd';
+import { ConfigProvider, Layout, Spin, Tabs, theme as antdTheme } from 'antd';
 import type { TabsProps } from 'antd';
 import { api } from './api';
-import { FolderOpenOutlined } from '@ant-design/icons';
 import type { Me } from './types';
 import Login from './components/Login';
+import { BrandMenu, UserMenu } from './components/AppMenus';
 import FilesPanel from './panels/FilesPanel';
 import PermsPanel from './panels/PermsPanel';
 import UsersPanel from './panels/UsersPanel';
@@ -16,6 +16,7 @@ export default function App() {
   const [me, setMe] = useState<Me | null | undefined>(undefined);
   const [cur, setCur] = useState('/'); // current directory, shared: files + perms panels
   const [tab, setTab] = useState('files'); // active tab (hooks: all before early returns)
+  const [dark, setDark] = useState(() => localStorage.getItem('fx.theme') === 'dark');
 
   useEffect(() => {
     api<Me>('/api/v1/auth/me')
@@ -23,12 +24,15 @@ export default function App() {
       .catch(() => setMe(null));
   }, []);
 
+  useEffect(() => {
+    localStorage.setItem('fx.theme', dark ? 'dark' : 'light');
+  }, [dark]);
+
   if (me === undefined)
     return <Spin size="large" style={{ display: 'block', margin: '25vh auto' }} />;
   if (me === null) return <Login onLogin={setMe} />;
 
   const isMgr = me.is_admin || me.is_super;
-  const role = me.is_super ? 'super' : me.is_admin ? 'admin' : '';
 
   const logout = async () => {
     try {
@@ -50,38 +54,31 @@ export default function App() {
   if (me.is_super) items.push({ key: 'tenants', label: 'Tenants', children: <TenantsPanel /> });
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <Layout.Header className="app-header">
-        <span className="app-brand">
-          <FolderOpenOutlined style={{ color: '#1677ff' }} />
-          File Explorer
-        </span>
-        <Tabs
-          activeKey={tab}
-          onChange={setTab}
-          items={items.map(({ key, label }) => ({ key, label }))}
-          style={{ flex: 1, minWidth: 0 }}
-          tabBarStyle={{ margin: 0 }}
-        />
-        <Space>
-          <Tag color={me.is_super ? 'gold' : me.is_admin ? 'blue' : 'default'}>
-            {me.tenant}/{me.username}
-            {role ? ` (${role})` : ''}
-          </Tag>
-          <Button size="small" onClick={logout}>
-            Logout
-          </Button>
-        </Space>
-      </Layout.Header>
-      {/* all panels stay mounted; only the active one is visible —
-          panel state (page, search, sort) survives tab switches */}
-      <Layout.Content style={{ padding: 16 }}>
-        {items.map(({ key, children }) => (
-          <div key={key} style={{ display: tab === key ? undefined : 'none' }}>
-            {children}
-          </div>
-        ))}
-      </Layout.Content>
-    </Layout>
+    <ConfigProvider
+      theme={{ algorithm: dark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm }}
+    >
+      <Layout style={{ minHeight: '100vh' }}>
+        <Layout.Header className="app-header">
+          <BrandMenu />
+          <Tabs
+            activeKey={tab}
+            onChange={setTab}
+            items={items.map(({ key, label }) => ({ key, label }))}
+            style={{ flex: 1, minWidth: 0 }}
+            tabBarStyle={{ margin: 0 }}
+          />
+          <UserMenu me={me} onLogout={logout} dark={dark} setDark={setDark} />
+        </Layout.Header>
+        {/* all panels stay mounted; only the active one is visible —
+            panel state (page, search, sort) survives tab switches */}
+        <Layout.Content style={{ padding: 16 }}>
+          {items.map(({ key, children }) => (
+            <div key={key} style={{ display: tab === key ? undefined : 'none' }}>
+              {children}
+            </div>
+          ))}
+        </Layout.Content>
+      </Layout>
+    </ConfigProvider>
   );
 }

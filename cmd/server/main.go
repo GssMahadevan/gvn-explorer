@@ -101,7 +101,7 @@ func main() {
 
 	if *webDir != "" {
 		if info, err := os.Stat(*webDir); err == nil && info.IsDir() {
-			mux.Handle("GET /", http.FileServer(http.Dir(*webDir)))
+			mux.Handle("GET /", cacheStatic(http.FileServer(http.Dir(*webDir))))
 			log.Info("web gui enabled", "dir", *webDir)
 		} else {
 			log.Warn("web dir missing, GUI disabled", "dir", *webDir)

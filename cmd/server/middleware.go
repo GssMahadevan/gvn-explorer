@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"runtime/debug"
+	"strings"
 	"time"
 )
 
@@ -26,6 +27,21 @@ func (r *statusRecorder) WriteHeader(code int) {
 
 func withMiddleware(log *slog.Logger, next http.Handler) http.Handler {
 	return recoverMW(log, requestIDMW(requestLogMW(log, originMW(csrfGuard(next)))))
+}
+
+// cacheStatic sets sane cache headers on the static GUI: the SPA shell
+// (index.html and anything not content-hashed) must always be revalidated,
+// so a freshly built frontend shows up on a plain reload; Vite's hashed
+// files under /assets/ never change, so they are cached for a year.
+func cacheStatic(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // ---- request correlation id ----
