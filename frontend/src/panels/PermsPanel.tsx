@@ -1,11 +1,12 @@
 import { useState } from 'react';
-import { Alert, Button, Popconfirm, Space, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { api, bits, qs } from '../api';
 import type { Grant, Me, PermsList } from '../types';
 import { useListView } from '../useListView';
 import { useFlash } from '../flash';
 import ListSearch from '../components/ListSearch';
+import RowActions from '../components/RowActions';
 import GrantForm from '../components/forms/GrantForm';
 
 // Permissions panel: grants on a target path (a directory — or one file via
@@ -66,26 +67,30 @@ export default function PermsPanel({ path, me }: { path: string; me: Me }) {
           <Typography.Text type="secondary">never</Typography.Text>
         ),
     },
+
     {
       title: '',
-      width: 100,
+      width: 56,
       render: (_, g) => (
-        <Popconfirm
-          title="revoke this grant?"
-          onConfirm={async () => {
-            try {
-              await api('/api/v1/perms/' + g.id, { method: 'DELETE' });
-              flash.ok('grant revoked');
-              lv.reload();
-            } catch (e) {
-              flash.err((e as Error).message);
-            }
-          }}
-        >
-          <Button size="small" danger>
-            revoke
-          </Button>
-        </Popconfirm>
+        <RowActions
+          actions={[
+            {
+              key: 'revoke',
+              label: 'revoke',
+              danger: true,
+              confirm: { title: 'revoke this grant?' },
+              onClick: async () => {
+                try {
+                  await api('/api/v1/perms/' + g.id, { method: 'DELETE' });
+                  flash.ok('grant revoked');
+                  lv.reload();
+                } catch (e) {
+                  flash.err((e as Error).message);
+                }
+              },
+            },
+          ]}
+        />
       ),
     },
   ];

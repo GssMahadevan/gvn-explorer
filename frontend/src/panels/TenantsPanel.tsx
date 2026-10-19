@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Alert, Button, Popconfirm, Space, Table, Tag } from 'antd';
+import { Alert, Button, Space, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { api, qs } from '../api';
 import type { Me, Tenant } from '../types';
@@ -7,6 +7,7 @@ import { useListView } from '../useListView';
 import { useFlash } from '../flash';
 import ListSearch from '../components/ListSearch';
 import ActiveFilterSelect from '../components/ActiveFilterSelect';
+import RowActions from '../components/RowActions';
 import TenantForm from '../components/forms/TenantForm';
 
 // Tenants panel (super admin only): create/edit (description), the
@@ -75,52 +76,46 @@ export default function TenantsPanel({ me }: { me: Me }) {
       width: 180,
       render: (_, t) => new Date(t.created_at).toLocaleString(),
     },
+
     {
       title: '',
-      width: 250,
+      width: 56,
       render: (_, t) => (
-        <Space>
-          <Button size="small" onClick={() => setFormFor(t)}>
-            edit
-          </Button>
-          {t.active === false ? (
-            <Button size="small" onClick={() => setActive(t, true)}>
-              activate
-            </Button>
-          ) : (
-            <Popconfirm
-              title={`Suspend tenant ${t.name}?`}
-              description="its logins, live sessions and API keys die at once; all rows stay"
-              onConfirm={() => setActive(t, false)}
-              disabled={t.name === me.tenant}
-            >
-              <Button
-                size="small"
-                disabled={t.name === me.tenant}
-                title={t.name === me.tenant ? 'you cannot deactivate your own tenant' : undefined}
-              >
-                suspend
-              </Button>
-            </Popconfirm>
-          )}
-          <Popconfirm
-            title={`delete tenant ${t.name}?`}
-            description="removes its users, groups AND all their ACL grants"
-            onConfirm={async () => {
-              try {
-                await api('/api/v1/tenants/' + t.id, { method: 'DELETE' });
-                flash.ok('tenant deleted');
-                lv.reload();
-              } catch (e) {
-                flash.err((e as Error).message);
-              }
-            }}
-          >
-            <Button size="small" danger>
-              delete
-            </Button>
-          </Popconfirm>
-        </Space>
+        <RowActions
+          actions={[
+            { key: 'edit', label: 'edit', onClick: () => setFormFor(t) },
+            t.active === false
+              ? { key: 'activate', label: 'activate', onClick: () => setActive(t, true) }
+              : {
+                  key: 'suspend',
+                  label: 'suspend',
+                  disabled: t.name === me.tenant,
+                  confirm: {
+                    title: `suspend tenant ${t.name}?`,
+                    description: 'its logins, live sessions and API keys die at once; all rows stay',
+                  },
+                  onClick: () => setActive(t, false),
+                },
+            {
+              key: 'delete',
+              label: 'delete',
+              danger: true,
+              confirm: {
+                title: `delete tenant ${t.name}?`,
+                description: 'removes its users, groups AND all their ACL grants',
+              },
+              onClick: async () => {
+                try {
+                  await api('/api/v1/tenants/' + t.id, { method: 'DELETE' });
+                  flash.ok('tenant deleted');
+                  lv.reload();
+                } catch (e) {
+                  flash.err((e as Error).message);
+                }
+              },
+            },
+          ]}
+        />
       ),
     },
   ];

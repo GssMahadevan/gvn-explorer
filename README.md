@@ -336,8 +336,8 @@ files and never runs any JS itself; every list panel drives the shared
 paging/search/sort contract above, with antd's server-side table paging
 (`X-Total-Count` → last page). `docs/gui-survey.md` records the framework
 survey and the perf data behind this choice. A file or folder row's
-**perms** action points the Permissions panel at that exact path, so
-granting access to one file is one click from the browser.
+**permissions** menu action points the Permissions panel at that exact
+path, so granting access to one file is one click from the browser.
 
 Structure: all panels stay mounted under a tab header and swap instantly;
 entity lists (users, groups, tenants, grants) show `active` and
@@ -348,7 +348,13 @@ grants; edit mode only offers what the API's PUT accepts). API errors and
 confirmations land in a **flash center** under the header: the latest
 error or success shows for 30 seconds, the full history stays behind the
 badge and clears on demand — no modal dialogs standing between you and
-the table.
+the table. Every row's actions live behind one vertical three-dots menu
+(`components/RowActions`): entity operations (edit, set password, new API
+key, suspend/activate, delete), file operations (permissions, rename,
+delete) and grant revoke all occupy the same one-column-wide slot, so
+tables stay usable at phone widths no matter how many actions an entity
+has; destructive items pop a themed confirm dialog whose OK button
+carries the action name.
 
 ```sh
 cd frontend
@@ -404,7 +410,18 @@ shape-identical to the sqlite baseline: BIGINT ids, text/unix timestamps,
 GO111MODULE=on go test ./...                     # httptest API suite
 BASE_URL=http://localhost:8095 ADMIN_TENANT=system ADMIN_PASS=secret \
   ./scripts/test_files.sh                        # curl regression suite
+./scripts/test_gui.sh                            # headless-Chrome GUI walk
 ```
+
+`test_gui.sh` is self-contained: it builds `bin/server` and `frontend/dist`
+when missing, boots a real server against a throwaway sandbox root with
+seeded fixture tenants/users, then drives `scripts/gui/walk.js` — a
+puppeteer-core walk of the live UI (login, file table, the ⋮ row action
+menus, modal forms, the active-filter wire format, flash center,
+per-file grant flow, header menus, dark mode, sign-out) with ~50
+assertions plus a zero-console-error guard. `SHOTS=1` additionally
+writes light/dark screenshots to `$OUT_DIR` (default `/tmp/fx-gui`).
+Needs a local Chrome; `CHROME_PATH` overrides the macOS default.
 
 ## Layout
 
@@ -416,6 +433,7 @@ internal/acl/      grant upsert/list + Effective() inheritance engine
 internal/audit/    append-only forensic event trail (authz/authn DML)
 internal/fsx/      sandboxed filesystem ops (list/read/write/mkdir/rename/delete)
 internal/handlers/ REST handlers + route table, JSON error envelope, rate limiters
-frontend/          React 19 + Ant Design GUI (Vite; list panels, per-entity form modals, flash center; `npm run build` -> dist/ static bundle)
+frontend/          React 19 + Ant Design GUI (Vite; list panels, per-entity form modals, row action menus, flash center; `npm run build` -> dist/ static bundle)
+scripts/           test suites: test_files.sh (curl API regression), test_gui.sh + gui/ (puppeteer GUI walk + screenshots)
 web/               vanilla-JS GUI fallback (panels per view w/ paging+search+sort, editor, perms, admin)
 ```

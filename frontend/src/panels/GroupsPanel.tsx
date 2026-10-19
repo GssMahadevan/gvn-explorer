@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, Form, Input, Popconfirm, Select, Space, Table, Tag, Typography } from 'antd';
+import { Button, Form, Input, Select, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { api, qs } from '../api';
 import type { Group, Me } from '../types';
@@ -7,6 +7,7 @@ import { useListView } from '../useListView';
 import { useFlash } from '../flash';
 import ListSearch from '../components/ListSearch';
 import ActiveFilterSelect from '../components/ActiveFilterSelect';
+import RowActions from '../components/RowActions';
 import GroupForm from '../components/forms/GroupForm';
 
 // Groups panel: search/filter/sort, member management (inline add + tag
@@ -113,43 +114,42 @@ export default function GroupsPanel({ me }: { me: Me }) {
           ))
         ),
     },
+
     {
       title: '',
-      width: 240,
+      width: 56,
       render: (_, g) => (
-        <Space>
-          <Button size="small" onClick={() => setFormFor(g)}>
-            edit
-          </Button>
-          {g.active === false ? (
-            <Button size="small" onClick={() => setActive(g, true)}>
-              activate
-            </Button>
-          ) : (
-            <Popconfirm
-              title="Suspend? grants through this group become inert until reinstated."
-              onConfirm={() => setActive(g, false)}
-            >
-              <Button size="small">suspend</Button>
-            </Popconfirm>
-          )}
-          <Popconfirm
-            title="delete group?"
-            onConfirm={async () => {
-              try {
-                await api('/api/v1/groups/' + g.id, { method: 'DELETE' });
-                flash.ok('group deleted');
-                lv.reload();
-              } catch (e) {
-                flash.err((e as Error).message);
-              }
-            }}
-          >
-            <Button size="small" danger>
-              delete
-            </Button>
-          </Popconfirm>
-        </Space>
+        <RowActions
+          actions={[
+            { key: 'edit', label: 'edit', onClick: () => setFormFor(g) },
+            g.active === false
+              ? { key: 'activate', label: 'activate', onClick: () => setActive(g, true) }
+              : {
+                  key: 'suspend',
+                  label: 'suspend',
+                  confirm: {
+                    title: `suspend ${g.name}?`,
+                    description: 'grants made through this group become inert until it is reinstated',
+                  },
+                  onClick: () => setActive(g, false),
+                },
+            {
+              key: 'delete',
+              label: 'delete',
+              danger: true,
+              confirm: { title: `delete group ${g.name}?` },
+              onClick: async () => {
+                try {
+                  await api('/api/v1/groups/' + g.id, { method: 'DELETE' });
+                  flash.ok('group deleted');
+                  lv.reload();
+                } catch (e) {
+                  flash.err((e as Error).message);
+                }
+              },
+            },
+          ]}
+        />
       ),
     },
   ];

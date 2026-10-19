@@ -1,0 +1,13 @@
+{
+  "name": "fx-gui-tests",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Headless GUI integration tests for the file-explorer web UI (puppeteer-core + local Chrome). Run via ../test_gui.sh",
+  "scripts": {
+    "walk": "node walk.js",
+    "shot": "node shot.js"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.14.0"
+  }
+}

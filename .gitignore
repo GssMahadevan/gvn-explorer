@@ -2,3 +2,4 @@ bin/
 *.log
 *.db
 data/
+scripts/gui/node_modules/

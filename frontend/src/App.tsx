@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ConfigProvider, Layout, Spin, Tabs, theme as antdTheme } from 'antd';
+import { App as AntApp, ConfigProvider, Layout, Spin, Tabs, theme as antdTheme } from 'antd';
 import type { TabsProps } from 'antd';
 import { api } from './api';
 import type { Me } from './types';
@@ -90,6 +90,7 @@ export default function App() {
           },
         }}
       >
+        <AntApp component={false}>
         <Layout style={{ minHeight: '100vh' }}>
           <Layout.Header className="app-header">
             <BrandMenu />
@@ -113,6 +114,7 @@ export default function App() {
             ))}
           </Layout.Content>
         </Layout>
+        </AntApp>
       </ConfigProvider>
     </FlashProvider>
   );

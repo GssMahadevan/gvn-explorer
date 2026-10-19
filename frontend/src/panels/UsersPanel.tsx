@@ -4,7 +4,6 @@ import {
   Button,
   Input,
   Modal,
-  Popconfirm,
   Space,
   Table,
   Tag,
@@ -17,6 +16,7 @@ import { useListView } from '../useListView';
 import { useFlash } from '../flash';
 import ListSearch from '../components/ListSearch';
 import ActiveFilterSelect from '../components/ActiveFilterSelect';
+import RowActions from '../components/RowActions';
 import UserForm from '../components/forms/UserForm';
 
 // Users panel: search/filter/sort, api-key provisioning (shown once),
@@ -132,49 +132,45 @@ export default function UsersPanel({ me }: { me: Me }) {
       width: 110,
       render: (_, u) => new Date(u.created_at).toLocaleDateString(),
     },
+
     {
       title: '',
-      width: 400,
+      width: 56,
       render: (_, u) => (
-        <Space>
-          <Button size="small" onClick={() => setFormFor(u)}>
-            edit
-          </Button>
-          <Button size="small" title="manage API keys for headless devices" onClick={() => provisionKey(u)}>
-            apikey
-          </Button>
-          <Button size="small" title="set a new password" onClick={() => setPwFor(u)}>
-            password
-          </Button>
-          {u.active === false ? (
-            <Button size="small" onClick={() => setActive(u, true)}>
-              activate
-            </Button>
-          ) : (
-            <Popconfirm
-              title="Suspend? live sessions and API keys die immediately; the row and history stay."
-              onConfirm={() => setActive(u, false)}
-            >
-              <Button size="small">suspend</Button>
-            </Popconfirm>
-          )}
-          <Popconfirm
-            title={`delete user ${u.username}?`}
-            onConfirm={async () => {
-              try {
-                await api('/api/v1/users/' + u.id, { method: 'DELETE' });
-                flash.ok('user deleted');
-                lv.reload();
-              } catch (e) {
-                flash.err((e as Error).message);
-              }
-            }}
-          >
-            <Button size="small" danger>
-              delete
-            </Button>
-          </Popconfirm>
-        </Space>
+        <RowActions
+          actions={[
+            { key: 'edit', label: 'edit', onClick: () => setFormFor(u) },
+            { key: 'apikey', label: 'new API key', onClick: () => provisionKey(u) },
+            { key: 'password', label: 'set password', onClick: () => setPwFor(u) },
+            u.active === false
+              ? { key: 'activate', label: 'activate', onClick: () => setActive(u, true) }
+              : {
+                  key: 'suspend',
+                  label: 'suspend',
+                  confirm: {
+                    title: `suspend ${u.username}?`,
+                    description:
+                      'live sessions and API keys die immediately; the row and its history stay',
+                  },
+                  onClick: () => setActive(u, false),
+                },
+            {
+              key: 'delete',
+              label: 'delete',
+              danger: true,
+              confirm: { title: `delete user ${u.username}?` },
+              onClick: async () => {
+                try {
+                  await api('/api/v1/users/' + u.id, { method: 'DELETE' });
+                  flash.ok('user deleted');
+                  lv.reload();
+                } catch (e) {
+                  flash.err((e as Error).message);
+                }
+              },
+            },
+          ]}
+        />
       ),
     },
   ];

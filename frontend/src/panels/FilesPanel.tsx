@@ -4,7 +4,6 @@ import {
   Button,
   Input,
   Modal,
-  Popconfirm,
   Space,
   Table,
   Tag,
@@ -18,6 +17,7 @@ import { useFlash } from '../flash';
 import type { EntryView, FsList } from '../types';
 import { useListView } from '../useListView';
 import ListSearch from '../components/ListSearch';
+import RowActions from '../components/RowActions';
 import EditorModal from '../components/EditorModal';
 
 // Files panel: breadcrumb browser + server-paged entry table (dirs first
@@ -133,34 +133,38 @@ export default function FilesPanel({
         </Space>
       ),
     },
+
     {
       title: '',
-      width: 240,
+      width: 56,
       render: (_, x) => (
-        <Space>
-          <Button size="small" onClick={() => showPerms(x.entry.path)}>
-            perms
-          </Button>
-          <Button size="small" onClick={() => setRename({ from: x.entry.path, to: x.entry.path })}>
-            rename
-          </Button>
-          <Popconfirm
-            title={`delete ${x.entry.path}?`}
-            onConfirm={async () => {
-              try {
-                await api('/api/v1/fs?path=' + encodeURIComponent(x.entry.path), { method: 'DELETE' });
-                flash.ok('deleted ' + x.entry.path);
-                lv.reload();
-              } catch (e) {
-                flash.err((e as Error).message);
-              }
-            }}
-          >
-            <Button size="small" danger>
-              delete
-            </Button>
-          </Popconfirm>
-        </Space>
+        <RowActions
+          actions={[
+            { key: 'perms', label: 'permissions', onClick: () => showPerms(x.entry.path) },
+            {
+              key: 'rename',
+              label: 'rename',
+              onClick: () => setRename({ from: x.entry.path, to: x.entry.path }),
+            },
+            {
+              key: 'delete',
+              label: 'delete',
+              danger: true,
+              confirm: { title: `delete ${x.entry.path}?` },
+              onClick: async () => {
+                try {
+                  await api('/api/v1/fs?path=' + encodeURIComponent(x.entry.path), {
+                    method: 'DELETE',
+                  });
+                  flash.ok('deleted ' + x.entry.path);
+                  lv.reload();
+                } catch (e) {
+                  flash.err((e as Error).message);
+                }
+              },
+            },
+          ]}
+        />
       ),
     },
   ];
