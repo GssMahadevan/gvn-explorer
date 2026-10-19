@@ -52,6 +52,25 @@ the `ADMIN` env var, and **only honored while the database has no
 users**. Change it (or add tenants/users) in the Users panel, or
 override `ADMIN` before the very first start.
 
+## End-user guides
+
+Once the container runs, the app itself is documented under
+[`docs/`](docs/) — written for the people who *use* a deployment, not
+the people who build it. Every example is plain `curl` against
+`http://localhost:8080`, so it runs as-is against a running container:
+
+| doc | covers |
+|---|---|
+| [docs/tenants-users-groups.md](docs/tenants-users-groups.md) | organizations (tenants), accounts, device users, groups; suspending vs expiring vs deleting |
+| [docs/permissions.md](docs/permissions.md) | grants, inheritance rules, zero-grant subtree exclusion, expiring customer shares, checking effective access |
+| [docs/api-keys.md](docs/api-keys.md) | devices & CI: key provisioning, labels/rotation, revocation, `last_used_at` fleet health, ETag/304 firmware polling, device writes/uploads |
+| [docs/api.md](docs/api.md) | the REST API for non-browser clients: both auth modes, CSRF rules, error envelope, the shared list/paging/search/sort contract, full file & admin endpoint tables |
+
+The GUI follows these same concepts 1:1 (Tenants / Users / Groups /
+Permissions / Events panels), so the guides apply whether you click or
+script. The exhaustive machine-verified contract remains the root
+`README.md` plus the curl suite in `scripts/test_files.sh`.
+
 ## Image layout (built by Dockerfile, 3 stages)
 
 | stage | base | produces |
