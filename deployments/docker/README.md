@@ -58,7 +58,8 @@ docker run -d --name fx -p 8080:8080 \
 ## Configuration (env → flags)
 
 All flags have env defaults; `docker run -e` or compose `environment` is
-enough (see `cmd/server/main.go` for the full list):
+enough (see `cmd/server/main.go` for the full list). Bad numeric env
+values fail at startup instead of falling back silently.
 
 | env | default in image | meaning |
 |---|---|---|
@@ -67,7 +68,15 @@ enough (see `cmd/server/main.go` for the full list):
 | `DB_PATH` | `/data/perms.db` | SQLite file |
 | `ADMIN` | `system:admin:admin` | bootstrap super admin `tenant:user:pass`, first start only |
 | `WEB_DIR` | `/app/web` | static GUI dir (`""` disables GUI) |
+| `MAX_MB` | `10` | max file size for read/write/edit |
+| `RPS` / `R_BURST` | `20` / `60` | per-principal API rate limit (`RPS=0` disables) |
+| `AUTH_RPS` / `AUTH_BURST` | `3` / `10` | per-IP login rate limit (`AUTH_RPS=0` disables) |
 | `LOG_LEVEL` / `LOG_JSON` | `info` / `true` | structured logging |
+
+`HUB.md` in this directory is the README published with the image to
+Docker Hub (end-user view: pull + run + configure); this file is the
+repo-side view (build + develop + deploy locally). Keep the two config
+tables in sync when adding flags.
 
 ## Postgres (future) and k8s
 

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -31,18 +32,46 @@ func envOr(key, def string) string {
 	return def
 }
 
+// envIntOr / envFloatOr are the numeric variants: an env value that fails to
+// parse is a hard startup error, never a silent fall back to the default —
+// a typo in compose config must not hide a limit the operator set.
+func envIntOr(key string, def int) int {
+	if v, ok := os.LookupEnv(key); ok {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s: invalid integer %q\n", key, v)
+			os.Exit(2)
+		}
+		return n
+	}
+	return def
+}
+
+func envFloatOr(key string, def float64) float64 {
+	if v, ok := os.LookupEnv(key); ok {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s: invalid number %q\n", key, v)
+			os.Exit(2)
+		}
+		return f
+	}
+	return def
+}
+
 func main() {
-	// Flags win over env vars (ADDR, ROOT, DB_PATH, ADMIN, WEB_DIR).
+	// Flags win over env vars; every knob is env-settable so the Docker
+	// image needs nothing but -e (see deployments/docker/README.md).
 	addr := flag.String("addr", envOr("ADDR", ":8080"), "listen address")
 	root := flag.String("root", envOr("ROOT", "data"), "root directory exposed to the file explorer")
 	dbPath := flag.String("db", envOr("DB_PATH", "perms.db"), "SQLite database for users/groups/ACLs/sessions")
 	adminFlag := flag.String("admin", envOr("ADMIN", "system:admin:admin"), "bootstrap super admin as tenant:user:pass (used only when no users exist)")
 	webDir := flag.String("web", envOr("WEB_DIR", "web"), "static GUI directory (empty to disable)")
-	maxMB := flag.Int("max-mb", 10, "max file size for read/write/edit in MB")
-	rps := flag.Float64("rps", 20, "requests/sec per principal on API endpoints (0 disables rate limiting)")
-	rburst := flag.Int("rburst", 60, "burst allowance for -rps")
-	authRPS := flag.Float64("auth-rps", 3, "login requests/sec per source IP (0 disables)")
-	authBurst := flag.Int("auth-burst", 10, "burst allowance for -auth-rps")
+	maxMB := flag.Int("max-mb", envIntOr("MAX_MB", 10), "max file size for read/write/edit in MB")
+	rps := flag.Float64("rps", envFloatOr("RPS", 20), "requests/sec per principal on API endpoints (0 disables rate limiting)")
+	rburst := flag.Int("rburst", envIntOr("R_BURST", 60), "burst allowance for -rps")
+	authRPS := flag.Float64("auth-rps", envFloatOr("AUTH_RPS", 3), "login requests/sec per source IP (0 disables)")
+	authBurst := flag.Int("auth-burst", envIntOr("AUTH_BURST", 10), "burst allowance for -auth-rps")
 	logLevel := flag.String("log-level", envOr("LOG_LEVEL", "info"), "log level: debug|info|warn|error")
 	logJSON := flag.Bool("log-json", envOr("LOG_JSON", "true") == "true", "emit JSON logs (false = human-readable text)")
 	flag.Parse()
