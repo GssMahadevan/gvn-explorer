@@ -35,7 +35,10 @@ export default function GroupsPanel({ me }: { me: Me }) {
         method: 'POST',
         body: JSON.stringify({ username: v.username.trim() }),
       });
-      flash.ok('member added');
+      const g = (lv.payload ?? []).find((x) => x.id === v.gid);
+      flash.ok(
+        `added member ${v.username.trim()} to group ${g ? g.tenant + '/' + g.name : '#' + v.gid}`,
+      );
       memberForm.setFieldValue('username', '');
       lv.reload();
     } catch (e) {
@@ -49,7 +52,7 @@ export default function GroupsPanel({ me }: { me: Me }) {
         method: 'POST',
         body: JSON.stringify({ active }),
       });
-      flash.ok(active ? 'group activated' : 'group suspended');
+      flash.ok(`${active ? 'activated' : 'suspended'} group ${g.tenant}/${g.name}`);
       lv.reload();
     } catch (e) {
       flash.err((e as Error).message);
@@ -107,7 +110,7 @@ export default function GroupsPanel({ me }: { me: Me }) {
                 e.preventDefault();
                 try {
                   await api(`/api/v1/groups/${g.id}/members/${m.id}`, { method: 'DELETE' });
-                  flash.ok('member removed');
+                  flash.ok(`removed ${m.username} from group ${g.tenant}/${g.name}`);
                   lv.reload();
                 } catch (err) {
                   flash.err((err as Error).message);
@@ -146,7 +149,7 @@ export default function GroupsPanel({ me }: { me: Me }) {
               onClick: async () => {
                 try {
                   await api('/api/v1/groups/' + g.id, { method: 'DELETE' });
-                  flash.ok('group deleted');
+                  flash.ok(`deleted group ${g.tenant}/${g.name}`);
                   lv.reload();
                 } catch (e) {
                   flash.err((e as Error).message);

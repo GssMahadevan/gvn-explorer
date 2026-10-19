@@ -90,7 +90,7 @@ export default function FilesPanel({
     }
     try {
       await api('/api/v1/fs/rename', { method: 'POST', body: JSON.stringify({ from: rename.from, to: rename.to }) });
-      flash.ok('renamed');
+      flash.ok(`renamed ${rename.from} → ${rename.to}`);
       setRename(null);
       lv.reload();
     } catch (e) {

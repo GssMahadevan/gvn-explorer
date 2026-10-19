@@ -36,13 +36,13 @@ export default function TenantForm({
           method: 'POST',
           body: JSON.stringify({ name: v.name.trim(), description: v.description ?? '' }),
         });
-        flash.ok('tenant created');
+        flash.ok(`created tenant ${v.name.trim()}`);
       } else {
         await api('/api/v1/tenants/' + editing.id, {
           method: 'PUT',
           body: JSON.stringify({ description: v.description ?? '' }),
         });
-        flash.ok('tenant updated');
+        flash.ok(`updated tenant ${editing.name}`);
       }
       onSaved();
     } catch (e) {

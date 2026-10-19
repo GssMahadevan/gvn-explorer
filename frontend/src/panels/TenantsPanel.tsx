@@ -27,7 +27,7 @@ export default function TenantsPanel({ me }: { me: Me }) {
         method: 'POST',
         body: JSON.stringify({ active }),
       });
-      flash.ok(active ? 'tenant activated' : 'tenant suspended');
+      flash.ok(`${active ? 'activated' : 'suspended'} tenant ${t.name}`);
       lv.reload();
     } catch (e) {
       flash.err((e as Error).message);
@@ -107,7 +107,7 @@ export default function TenantsPanel({ me }: { me: Me }) {
               onClick: async () => {
                 try {
                   await api('/api/v1/tenants/' + t.id, { method: 'DELETE' });
-                  flash.ok('tenant deleted');
+                  flash.ok(`deleted tenant ${t.name}`);
                   lv.reload();
                 } catch (e) {
                   flash.err((e as Error).message);

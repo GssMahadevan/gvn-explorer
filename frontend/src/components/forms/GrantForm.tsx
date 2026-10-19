@@ -1,8 +1,8 @@
 import { useEffect } from 'react';
 import { Checkbox, Form, InputNumber, Modal, Select, Space, Typography } from 'antd';
-import { api } from '../../api';
+import { api, bits } from '../../api';
 import { useFlash } from '../../flash';
-import type { Me } from '../../types';
+import type { Grant, Me } from '../../types';
 import PrincipalSelect from '../PrincipalSelect';
 import TenantSelect from '../TenantSelect';
 
@@ -62,8 +62,10 @@ export default function GrantForm({
     };
     if (v.exp) body.expires_days = v.exp;
     try {
-      await api('/api/v1/perms', { method: 'PUT', body: JSON.stringify(body) });
-      flash.ok('grant saved');
+      const g = await api<Grant>('/api/v1/perms', { method: 'PUT', body: JSON.stringify(body) });
+      flash.ok(
+        `grant saved: ${g.principal_tenant}/${g.principal_name} on ${g.path} → ${bits(g)}`,
+      );
       onSaved();
     } catch (e) {
       flash.err((e as Error).message);

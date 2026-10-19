@@ -53,12 +53,24 @@ body {
   min-width: 0;
 }
 
-.flash-item .flash-text,
-.flash-row .flash-text {
+.flash-item .flash-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+}
+
+/* the log popover shows the full message: wrap instead of ellipsis, so
+   the named subject (who/what/which bits/where) is actually readable */
+.flash-row {
+  align-items: flex-start;
+}
+.flash-row .flash-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.flash-row > span:first-child {
+  margin-top: 6px; /* keep the kind dot on the first text line */
 }
 
 .flash-row {

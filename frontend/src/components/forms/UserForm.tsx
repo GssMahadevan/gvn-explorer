@@ -60,13 +60,13 @@ export default function UserForm({
         };
         if (v.exp) body.expires_days = v.exp;
         await api('/api/v1/users', { method: 'POST', body: JSON.stringify(body) });
-        flash.ok('user created');
+        flash.ok(`created user ${(v.tenant?.trim() || me.tenant) + '/' + v.username.trim()}`);
       } else {
         await api('/api/v1/users/' + editing.id, {
           method: 'PUT',
           body: JSON.stringify({ description: v.description ?? '' }),
         });
-        flash.ok('user updated');
+        flash.ok(`updated user ${editing.tenant}/${editing.username}`);
       }
       onSaved();
     } catch (e) {

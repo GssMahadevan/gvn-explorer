@@ -82,7 +82,9 @@ export default function PermsPanel({ path, me }: { path: string; me: Me }) {
               onClick: async () => {
                 try {
                   await api('/api/v1/perms/' + g.id, { method: 'DELETE' });
-                  flash.ok('grant revoked');
+                  flash.ok(
+                    `revoked ${g.principal_type} ${g.principal_tenant}/${g.principal_name} (${bits(g)}) on ${path}`,
+                  );
                   lv.reload();
                 } catch (e) {
                   flash.err((e as Error).message);

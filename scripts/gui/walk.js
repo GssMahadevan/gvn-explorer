@@ -853,7 +853,7 @@ fs.mkdirSync(OUT, { recursive: true });
     check('grant on the file appears in grants table', (await visiblePanelText()).includes('acme/alice'));
     check('flash bar confirms grant saved', await page.evaluate(() => {
       const b = document.querySelector('[data-testid="flash-bar"]');
-      return !!b && /grant saved/.test(b.innerText);
+      return !!b && /grant saved: acme\/alice/.test(b.innerText);
     }));
     // …and revoke it again so the demo data stays tidy (row menu ->
     // themed confirm dialog whose OK button carries the action name)

@@ -34,6 +34,7 @@ export interface FsList {
 
 export interface Grant {
   id: number;
+  path: string;
   principal_type: 'user' | 'group';
   principal_tenant: string;
   principal_name: string;

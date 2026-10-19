@@ -50,7 +50,7 @@ export default function UsersPanel({ me }: { me: Me }) {
         method: 'POST',
         body: JSON.stringify({ active }),
       });
-      flash.ok(active ? 'user activated' : 'user suspended');
+      flash.ok(`${active ? 'activated' : 'suspended'} user ${u.tenant}/${u.username}`);
       lv.reload();
     } catch (e) {
       flash.err((e as Error).message);
@@ -64,7 +64,7 @@ export default function UsersPanel({ me }: { me: Me }) {
         method: 'POST',
         body: JSON.stringify({ password: pw }),
       });
-      flash.ok('password updated');
+      flash.ok(`password set for ${pwFor.tenant}/${pwFor.username}`);
       setPwFor(null);
       setPw('');
     } catch (e) {
@@ -162,7 +162,7 @@ export default function UsersPanel({ me }: { me: Me }) {
               onClick: async () => {
                 try {
                   await api('/api/v1/users/' + u.id, { method: 'DELETE' });
-                  flash.ok('user deleted');
+                  flash.ok(`deleted user ${u.tenant}/${u.username}`);
                   lv.reload();
                 } catch (e) {
                   flash.err((e as Error).message);

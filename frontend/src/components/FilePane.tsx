@@ -168,7 +168,7 @@ export default function FilePane({
       setText(fileText);
       savedRef.current = fileText;
       setSaveState('clean');
-      flash.ok('draft discarded, showing file contents');
+      flash.ok(`discarded draft for ${path}, showing file contents`);
     } catch (e) {
       flash.err((e as Error).message);
     }

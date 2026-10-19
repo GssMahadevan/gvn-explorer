@@ -378,7 +378,10 @@ own fixed. API errors and
 confirmations land in a **flash center** under the header: the latest
 error or success shows for 30 seconds, the full history stays behind the
 badge and clears on demand — no modal dialogs standing between you and
-the table. Every row's actions live behind one vertical three-dots menu
+the table. Confirmations name their subject instead of just the verb —
+`grant saved: acme/alice on /reports/q3.md → r-w-`, `suspended user
+acme/bob`, `renamed /a → /b` — so the msg log doubles as a "what did I
+just change" trail; cross-session forensics is the Events tab. Every row's actions live behind one vertical three-dots menu
 (`components/RowActions`): entity operations (edit, set password, new API
 key, suspend/activate, delete), file operations (permissions, rename,
 delete) and grant revoke all occupy the same one-column-wide slot, so

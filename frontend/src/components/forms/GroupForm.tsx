@@ -46,13 +46,13 @@ export default function GroupForm({
             description: v.description ?? '',
           }),
         });
-        flash.ok('group created');
+        flash.ok(`created group ${(v.tenant?.trim() || me.tenant) + '/' + v.name.trim()}`);
       } else {
         await api('/api/v1/groups/' + editing.id, {
           method: 'PUT',
           body: JSON.stringify({ description: v.description ?? '' }),
         });
-        flash.ok('group updated');
+        flash.ok(`updated group ${editing.tenant}/${editing.name}`);
       }
       onSaved();
     } catch (e) {
