@@ -296,10 +296,31 @@ directories always sort first regardless of `dir`.
 | GET    | /api/v1/fs/content?path=| JSON text view                        | r            |
 | GET    | /api/v1/fs/raw?path=    | download bytes                        | r            |
 | POST   | /api/v1/fs/mkdir        | `{"path"}`                            | w on path    |
-| POST   | /api/v1/fs/write        | `{"path","content"}`                  | w on path    |
+| POST   | /api/v1/fs/write        | `{"path","content"}` (+ optional `"base_mtime":<unix>`) | w on path |
 | POST   | /api/v1/fs/rename       | `{"from","to"}`                       | d on from, w on to |
 | POST   | /api/v1/fs/upload       | multipart `path=<dir>, file=<f>`      | w on target  |
 | DELETE | /api/v1/fs?path=        | file, or empty dir                    | d on path    |
+| GET    | /api/v1/fs/draft?path=  | working copy, `draft:null` if none    | r on path    |
+| PUT    | /api/v1/fs/draft        | `{"path","content"}` (upsert)         | w on path    |
+| DELETE | /api/v1/fs/draft?path=  | discard the working copy              | w on path    |
+| POST   | /api/v1/fs/draft/commit | `{"path"}` — publish                  | w on path    |
+
+`/fs/write` accepts an optional `base_mtime` (the mtime `/fs/content`
+reports): if the file has changed since, the write is refused with
+`409 conflict` instead of clobbering newer bytes — the GUI uses this to
+keep two writers from silently overwriting each other's plain-text edits.
+
+**Draft/publish** backs the YAML config editor: GUI edits autosave to a
+per-path working copy, and the file on disk changes only when the draft
+is *committed* — which re-validates the YAML server-side (parse-only,
+multi-document aware), writes the file, drops the draft and records an
+`fs_commit` audit event. A refused validation leaves both draft and file
+untouched. One draft per path is the concurrency model: two admins
+editing the same config share one draft, last writer wins. Reading a
+draft needs `r`; saving, discarding and committing all need `w` —
+drafting itself is a write action on the file. The working copy lives in
+a `file_drafts` SQLite table: the **only** place the server ever stores
+file content, a deliberate exception to the "permissions only" rule.
 
 ## Admin API
 
@@ -434,10 +455,11 @@ Needs a local Chrome; `CHROME_PATH` overrides the macOS default.
 
 ```
 cmd/server/        main + middleware (JSON logging w/ request ids, panic recovery)
-internal/db/       SQL layer: dialect-aware DB wrapper + embedded versioned migrations (tenants/users/groups/members/perms/auth_factors/sessions/events)
+internal/db/       SQL layer: dialect-aware DB wrapper + embedded versioned migrations (tenants/users/groups/members/perms/auth_factors/sessions/events/file_drafts)
 internal/auth/     tenants, users, groups, bcrypt, sessions, API-key factors, active flag
 internal/acl/      grant upsert/list + Effective() inheritance engine
-internal/audit/    append-only forensic event trail (authz/authn DML)
+internal/audit/    append-only forensic event trail (authz/authn DML, fs_commit)
+internal/drafts/   per-path working copies for the draft/publish edit model
 internal/fsx/      sandboxed filesystem ops (list/read/write/mkdir/rename/delete)
 internal/handlers/ REST handlers + route table, JSON error envelope, rate limiters
 frontend/          React 19 + Ant Design GUI (Vite; list panels, per-entity form modals, row action menus, flash center; `npm run build` -> dist/ static bundle)

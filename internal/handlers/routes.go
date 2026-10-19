@@ -35,6 +35,14 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/fs/upload", a.requireAuth(a.handleUpload))
 	mux.HandleFunc("DELETE /api/v1/fs", a.requireAuth(a.handleDelete))
 
+	// draft/publish working copies (config editor): reading a draft takes
+	// the r bit; saving, discarding and committing take the w bit, since
+	// even drafting is a write action on the file
+	mux.HandleFunc("GET /api/v1/fs/draft", a.requireAuth(a.handleDraftGet))
+	mux.HandleFunc("PUT /api/v1/fs/draft", a.requireAuth(a.handleDraftPut))
+	mux.HandleFunc("DELETE /api/v1/fs/draft", a.requireAuth(a.handleDraftDelete))
+	mux.HandleFunc("POST /api/v1/fs/draft/commit", a.requireAuth(a.handleDraftCommit))
+
 	// tenants (platform super admin only)
 	mux.HandleFunc("GET /api/v1/tenants", a.requireSuper(a.handleTenantsList))
 	mux.HandleFunc("POST /api/v1/tenants", a.requireSuper(a.handleTenantsCreate))

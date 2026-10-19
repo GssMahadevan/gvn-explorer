@@ -15,6 +15,7 @@ import (
 	"github.com/user/llm-crud1/internal/acl"
 	"github.com/user/llm-crud1/internal/audit"
 	"github.com/user/llm-crud1/internal/auth"
+	"github.com/user/llm-crud1/internal/drafts"
 	"github.com/user/llm-crud1/internal/fsx"
 )
 
@@ -25,6 +26,7 @@ type API struct {
 	ACL        *acl.Store
 	FS         *fsx.Tree
 	Events     *audit.Store // forensic trail for authz/authn DML
+	Drafts     *drafts.Store // working copies for the draft/publish edit model
 	SessionTTL time.Duration
 	MaxFileMB  int // read/write size limit
 

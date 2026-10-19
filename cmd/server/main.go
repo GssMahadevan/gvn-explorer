@@ -15,6 +15,7 @@ import (
 
 	"github.com/user/llm-crud1/internal/acl"
 	"github.com/user/llm-crud1/internal/audit"
+	"github.com/user/llm-crud1/internal/drafts"
 	"github.com/user/llm-crud1/internal/auth"
 	"github.com/user/llm-crud1/internal/db"
 	"github.com/user/llm-crud1/internal/fsx"
@@ -88,6 +89,7 @@ func main() {
 		Auth:       authStore,
 		ACL:        acl.NewStore(conn),
 		Events:     audit.NewStore(conn),
+		Drafts:     drafts.NewStore(conn),
 		FS:         tree,
 		SessionTTL: 24 * time.Hour,
 		MaxFileMB:  *maxMB,

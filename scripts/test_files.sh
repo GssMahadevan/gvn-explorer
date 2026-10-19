@@ -248,12 +248,54 @@ t "$TAJ" "suspended admin: admin API dead" 401 GET /api/v1/users
 t "$AJ" "reinstate tenant admin" 200 POST "/api/v1/users/$TAID/active" '{"active":true}'
 t "$TAJ" "re-login after reinstate" 200 POST /api/v1/auth/login "{\"tenant\":\"$T\",\"username\":\"ta$SFX\",\"password\":\"pw-$SFX\"}"
 
+echo "== draft/publish working copies (config editor) =="
+t "$AJ" "mkdir cfg dir" 201 POST /api/v1/fs/mkdir "{\"path\":\"$D/cfg\"}"
+t "$AJ" "write app.yml" 200 POST /api/v1/fs/write "{\"path\":\"$D/cfg/app.yml\",\"content\":\"a: 1\n\"}"
+t "$AJ" "draft none" 200 GET "/api/v1/fs/draft?path=$D/cfg/app.yml"
+check "draft null before any save" "$(jq -e '.draft==null' /tmp/resp.json >/dev/null; echo $?)"
+t "$UJ" "draft view allowed with r" 200 GET "/api/v1/fs/draft?path=$D/cfg/app.yml"
+t "$UJ" "draft save denied without w" 403 PUT /api/v1/fs/draft "{\"path\":\"$D/cfg/app.yml\",\"content\":\"a: 2\n\"}"
+t "$UJ" "draft commit denied without w" 403 POST /api/v1/fs/draft/commit "{\"path\":\"$D/cfg/app.yml\"}"
+t "$UJ" "draft discard denied without w" 403 DELETE "/api/v1/fs/draft?path=$D/cfg/app.yml"
+t "$AJ" "draft save" 200 PUT /api/v1/fs/draft "{\"path\":\"$D/cfg/app.yml\",\"content\":\"a: 2\n\"}"
+t "$AJ" "draft save again" 200 PUT /api/v1/fs/draft "{\"path\":\"$D/cfg/app.yml\",\"content\":\"a: 3\n\"}"
+t "$AJ" "draft read" 200 GET "/api/v1/fs/draft?path=$D/cfg/app.yml"
+check "draft holds latest save (last writer wins)" "$(jq -e '.draft.content=="a: 3\n"' /tmp/resp.json >/dev/null; echo $?)"
+check "draft names the last writer" "$(jq -e --arg b "$ADMIN_TENANT/$ADMIN_USER" '.draft.updated_by==$b' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "save invalid yaml draft" 200 PUT /api/v1/fs/draft "{\"path\":\"$D/cfg/app.yml\",\"content\":\"a: [1,\n\"}"
+t "$AJ" "commit invalid yaml refused" 422 POST /api/v1/fs/draft/commit "{\"path\":\"$D/cfg/app.yml\"}"
+t "$AJ" "file read after refused commit" 200 GET "/api/v1/fs/content?path=$D/cfg/app.yml"
+check "refused commit did not touch the file" "$(jq -e '.content=="a: 1\n"' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "draft read after refused commit" 200 GET "/api/v1/fs/draft?path=$D/cfg/app.yml"
+check "refused commit kept the draft" "$(jq -e '.draft.content=="a: [1,\n"' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "save valid multi-doc draft" 200 PUT /api/v1/fs/draft "{\"path\":\"$D/cfg/app.yml\",\"content\":\"a: 2 # keep\n---\nb: [1, 2]\n\"}"
+t "$AJ" "commit draft" 200 POST /api/v1/fs/draft/commit "{\"path\":\"$D/cfg/app.yml\"}"
+t "$AJ" "file read after commit" 200 GET "/api/v1/fs/content?path=$D/cfg/app.yml"
+check "committed bytes landed" "$(jq -e '.content=="a: 2 # keep\n---\nb: [1, 2]\n"' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "draft gone after commit" 200 GET "/api/v1/fs/draft?path=$D/cfg/app.yml"
+check "commit dropped the draft" "$(jq -e '.draft==null' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "commit without draft conflicts" 409 POST /api/v1/fs/draft/commit "{\"path\":\"$D/cfg/app.yml\"}"
+t "$AJ" "save again for discard" 200 PUT /api/v1/fs/draft "{\"path\":\"$D/cfg/app.yml\",\"content\":\"a: 9\n\"}"
+t "$AJ" "discard draft" 204 DELETE "/api/v1/fs/draft?path=$D/cfg/app.yml"
+t "$AJ" "discard is idempotent" 204 DELETE "/api/v1/fs/draft?path=$D/cfg/app.yml"
+
+echo "== base_mtime optimistic guard on /fs/write =="
+t "$AJ" "content exposes mtime" 200 GET "/api/v1/fs/content?path=$D/cfg/app.yml"
+MT=$(jq -r '.mtime // 0' /tmp/resp.json)
+check "mtime is a plausible unix ts" "$([ "${MT:-0}" -gt 1500000000 ]; echo $?)" "mtime=$MT"
+t "$AJ" "write with matching base_mtime" 200 POST /api/v1/fs/write "{\"path\":\"$D/cfg/app.yml\",\"content\":\"guarded\",\"base_mtime\":$MT}"
+t "$AJ" "write with stale base_mtime" 409 POST /api/v1/fs/write "{\"path\":\"$D/cfg/app.yml\",\"content\":\"clobber\",\"base_mtime\":$((MT-1))}"
+t "$AJ" "read after conflict" 200 GET "/api/v1/fs/content?path=$D/cfg/app.yml"
+check "stale write did not clobber" "$(jq -e '.content=="guarded"' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "base_mtime on missing file conflicts" 409 POST /api/v1/fs/write "{\"path\":\"$D/cfg/gone.yml\",\"content\":\"x\",\"base_mtime\":1}"
+t "$AJ" "explicit null base_mtime behaves as before" 200 POST /api/v1/fs/write "{\"path\":\"$D/cfg/plain.txt\",\"content\":\"old contract\",\"base_mtime\":null}"
+
 echo "== forensic event trail =="
 t "$AJ" "grant list for revoke" 200 GET "/api/v1/perms?path=/hide-$SFX"
 GPID=$(jq -r '.grants[0].id' /tmp/resp.json)
 t "$AJ" "revoke grant (DML to record)" 204 DELETE "/api/v1/perms/$GPID"
 t "$AJ" "events listed" 200 GET "/api/v1/events?limit=500"
-for a in tenant_create tenant_delete user_create group_create member_add perm_set perm_delete factor_create factor_delete user_active login_failed; do
+for a in tenant_create tenant_delete user_create group_create member_add perm_set perm_delete factor_create factor_delete user_active login_failed fs_commit; do
   CNT=$(jq --arg a "$a" 'map(select(.action==$a)) | length' /tmp/resp.json)
   check "event $a recorded" "$([ "${CNT:-0}" -gt 0 ]; echo $?)" "cnt=$CNT"
 done

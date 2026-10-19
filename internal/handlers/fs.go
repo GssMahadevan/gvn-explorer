@@ -159,10 +159,10 @@ func (a *API) handleContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if bytes.IndexByte(data, 0) >= 0 {
-		writeJSON(w, http.StatusOK, map[string]any{"path": p, "size": st.Size, "is_binary": true, "content": ""})
+		writeJSON(w, http.StatusOK, map[string]any{"path": p, "size": st.Size, "mtime": st.ModTime.Unix(), "is_binary": true, "content": ""})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"path": p, "size": st.Size, "is_binary": false, "content": string(data)})
+	writeJSON(w, http.StatusOK, map[string]any{"path": p, "size": st.Size, "mtime": st.ModTime.Unix(), "is_binary": false, "content": string(data)})
 }
 
 // handleRaw: GET /api/v1/fs/raw?path=/f.bin — stream bytes for download.
@@ -223,6 +223,10 @@ func (a *API) handleMkdir(w http.ResponseWriter, r *http.Request) {
 type writeBody struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
+	// optional optimistic-concurrency guard: the mtime (unix seconds) the
+	// caller read. If the file has changed since, the write is refused
+	// with 409 conflict instead of silently clobbering newer bytes.
+	BaseMtime *int64 `json:"base_mtime"`
 }
 
 // handleWrite: POST /api/v1/fs/write {"path":"/f.txt","content":"..."}
@@ -243,9 +247,20 @@ func (a *API) handleWrite(w http.ResponseWriter, r *http.Request) {
 	if !a.check(w, r, p, false, true, false) {
 		return
 	}
-	if st, err := a.FS.Stat(p); err == nil && st.IsDir {
+	st, stErr := a.FS.Stat(p)
+	if stErr == nil && st.IsDir {
 		writeError(w, http.StatusConflict, "exists", "path is a directory")
 		return
+	}
+	if b.BaseMtime != nil {
+		if stErr != nil {
+			writeError(w, http.StatusConflict, "conflict", "file does not exist, but base_mtime was supplied")
+			return
+		}
+		if cur := st.ModTime.Unix(); cur != *b.BaseMtime {
+			writeError(w, http.StatusConflict, "conflict", conflictMsg(*b.BaseMtime, cur))
+			return
+		}
 	}
 	if err := a.FS.Write(p, []byte(b.Content)); err != nil {
 		if !mapFsErr(w, err) {

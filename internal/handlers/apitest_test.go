@@ -19,6 +19,7 @@ import (
 	"github.com/user/llm-crud1/internal/audit"
 	"github.com/user/llm-crud1/internal/auth"
 	"github.com/user/llm-crud1/internal/db"
+	"github.com/user/llm-crud1/internal/drafts"
 	"github.com/user/llm-crud1/internal/fsx"
 )
 
@@ -51,7 +52,8 @@ func newEnvLimits(t *testing.T, rps float64, rburst int, authRPS float64, authBu
 		t.Fatalf("bootstrap admin: %v", err)
 	}
 	api := API{Auth: as, ACL: acl.NewStore(conn), Events: audit.NewStore(conn),
-		FS: tree, SessionTTL: time.Hour, MaxFileMB: 1,
+		Drafts: drafts.NewStore(conn),
+		FS:     tree, SessionTTL: time.Hour, MaxFileMB: 1,
 		RPS: rps, RBurst: rburst, AuthRPS: authRPS, AuthBurst: authBurst}
 	mux := http.NewServeMux()
 	api.Register(mux)
@@ -1132,4 +1134,107 @@ func TestTenantSuspend(t *testing.T) {
 	must(t, u, "POST", base+"/tenants/"+strconv.FormatInt(tid, 10)+"/active", `{"active":true}`, http.StatusNoContent)
 	c2 := login(t, e.srv, "offgrid", "cust", "pw123456")
 	must(t, c2, "GET", base+"/auth/me", "", http.StatusOK)
+}
+
+// TestDrafts: the draft/publish lifecycle. Drafting takes the w bit (an
+// r-only caller can view but not save); last writer wins; publish refuses
+// invalid YAML without touching file or draft, and on success writes the
+// file, drops the draft and leaves an fs_commit event behind.
+func TestDrafts(t *testing.T) {
+	e := newEnv(t)
+	u := e.srv.URL
+	must(t, e.admin, "POST", u+"/api/v1/fs/mkdir", `{"path":"/cfg"}`, 201)
+	must(t, e.admin, "POST", u+"/api/v1/fs/write", `{"path":"/cfg/app.yml","content":"a: 1\n"}`, 200)
+	must(t, e.admin, "POST", u+"/api/v1/users", `{"username":"ro","password":"pw"}`, 201)
+	must(t, e.admin, "PUT", u+"/api/v1/perms", `{"path":"/cfg","principal_type":"user","principal":"ro","read":true}`, 200)
+	ro := login(t, e.srv, "acme", "ro", "pw")
+
+	// no draft yet
+	if got := must(t, e.admin, "GET", u+"/api/v1/fs/draft?path=/cfg/app.yml", "", 200); got["draft"] != nil {
+		t.Fatalf("expected draft null, got %v", got["draft"])
+	}
+	// r-only: may view a draft, may not create, commit or discard one
+	must(t, ro, "GET", u+"/api/v1/fs/draft?path=/cfg/app.yml", "", 200)
+	must(t, ro, "PUT", u+"/api/v1/fs/draft", `{"path":"/cfg/app.yml","content":"a: 2\n"}`, 403)
+	must(t, ro, "POST", u+"/api/v1/fs/draft/commit", `{"path":"/cfg/app.yml"}`, 403)
+	must(t, ro, "DELETE", u+"/api/v1/fs/draft?path=/cfg/app.yml", "", 403)
+
+	// save, then last writer wins
+	must(t, e.admin, "PUT", u+"/api/v1/fs/draft", `{"path":"/cfg/app.yml","content":"a: 2\n"}`, 200)
+	must(t, e.admin, "PUT", u+"/api/v1/fs/draft", `{"path":"/cfg/app.yml","content":"a: [1,\n"}`, 200)
+	got := must(t, e.admin, "GET", u+"/api/v1/fs/draft?path=/cfg/app.yml", "", 200)
+	d, ok := got["draft"].(map[string]any)
+	if !ok || d["content"] != "a: [1,\n" || d["updated_by"] != "acme/admin" {
+		t.Fatalf("last writer did not win: %v", got["draft"])
+	}
+
+	// invalid YAML: commit is refused, file and draft untouched
+	must(t, e.admin, "POST", u+"/api/v1/fs/draft/commit", `{"path":"/cfg/app.yml"}`, 422)
+	if body := must(t, e.admin, "GET", u+"/api/v1/fs/content?path=/cfg/app.yml", "", 200); body["content"] != "a: 1\n" {
+		t.Fatalf("commit changed the file despite invalid YAML: %q", body["content"])
+	}
+
+	// publish a valid multi-document draft
+	const published = "a: 2 # keep comments\n---\nb: [1, 2]\n"
+	must(t, e.admin, "PUT", u+"/api/v1/fs/draft", `{"path":"/cfg/app.yml","content":`+`"`+escapeJSON(published)+`"}`, 200)
+	must(t, e.admin, "POST", u+"/api/v1/fs/draft/commit", `{"path":"/cfg/app.yml"}`, 200)
+	if body := must(t, e.admin, "GET", u+"/api/v1/fs/content?path=/cfg/app.yml", "", 200); body["content"] != published {
+		t.Fatalf("file not updated: %q", body["content"])
+	}
+	// the draft is gone once published
+	if got := must(t, e.admin, "GET", u+"/api/v1/fs/draft?path=/cfg/app.yml", "", 200); got["draft"] != nil {
+		t.Fatalf("draft survived commit: %v", got["draft"])
+	}
+
+	// committing nothing is a conflict; discarding is idempotent
+	must(t, e.admin, "POST", u+"/api/v1/fs/draft/commit", `{"path":"/cfg/app.yml"}`, 409)
+	must(t, e.admin, "PUT", u+"/api/v1/fs/draft", `{"path":"/cfg/app.yml","content":"a: 9\n"}`, 200)
+	must(t, e.admin, "DELETE", u+"/api/v1/fs/draft?path=/cfg/app.yml", "", 204)
+	must(t, e.admin, "DELETE", u+"/api/v1/fs/draft?path=/cfg/app.yml", "", 204)
+
+	// the publish left a forensic trail
+	var found bool
+	for _, ev := range mustList(t, e.admin, "GET", u+"/api/v1/events?action=fs_commit", 200) {
+		if m := ev.(map[string]any); m["path"] == "/cfg/app.yml" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no fs_commit event recorded")
+	}
+}
+
+// TestBaseMtimeGuard: /fs/write may be conditional on the mtime the caller
+// read; a stale base_mtime yields 409 and leaves the file alone.
+func TestBaseMtimeGuard(t *testing.T) {
+	e := newEnv(t)
+	u := e.srv.URL
+	must(t, e.admin, "POST", u+"/api/v1/fs/write", `{"path":"/g.txt","content":"v1"}`, 200)
+	content := must(t, e.admin, "GET", u+"/api/v1/fs/content?path=/g.txt", "", 200)
+	mt, ok := content["mtime"].(float64)
+	if !ok || mt == 0 {
+		t.Fatalf("content response missing mtime: %v", content)
+	}
+	// matching base_mtime goes through
+	must(t, e.admin, "POST", u+"/api/v1/fs/write",
+		`{"path":"/g.txt","content":"v2","base_mtime":`+strconv.FormatInt(int64(mt), 10)+`}`, 200)
+	// a stale value conflicts instead of clobbering (mtime granularity is
+	// one second, so compare against mt-1 rather than timing a re-write)
+	must(t, e.admin, "POST", u+"/api/v1/fs/write",
+		`{"path":"/g.txt","content":"v3","base_mtime":`+strconv.FormatInt(int64(mt)-1, 10)+`}`, 409)
+	if body := must(t, e.admin, "GET", u+"/api/v1/fs/content?path=/g.txt", "", 200); body["content"] != "v2" {
+		t.Fatalf("conflict did not preserve the file: %v", body["content"])
+	}
+	// base_mtime against a missing path is a conflict, not a create
+	must(t, e.admin, "POST", u+"/api/v1/fs/write", `{"path":"/gone.txt","content":"x","base_mtime":1}`, 409)
+	// without the field the endpoint behaves exactly as before
+	must(t, e.admin, "POST", u+"/api/v1/fs/write", `{"path":"/g.txt","content":"v4"}`, 200)
+}
+
+func escapeJSON(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(b[1 : len(b)-1])
 }
