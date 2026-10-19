@@ -43,6 +43,10 @@ password `change-me`.
   anywhere. Server logs are structured JSON with a request id per line.
 - **API-first** — the whole GUI is a thin client over a documented REST
   API; API keys give headless devices the same permissions model.
+- **Built-in documentation** — the user guide (accounts, permissions,
+  API keys, the REST API for scripts) ships inside the image: every
+  user opens it from the app menu (Help) or browses the read-only
+  `help/` folder in the file explorer.
 
 ## Docker Compose
 

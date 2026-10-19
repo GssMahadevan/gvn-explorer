@@ -2,9 +2,10 @@
 
 Everything the GUI does is a documented HTTP call — scripts, CI jobs,
 devices and other services use the same contract, no HTML anywhere.
-This is the practical reference; the exhaustive contract (and the
-300-case curl regression suite that tests it) lives in the repo:
-`README.md` ("API" sections) and `scripts/test_files.sh`.
+This is the practical reference — everything you need while reading it
+here is in this guide. The exhaustive contract, plus the ~350-case curl
+regression suite that tests it, lives in the project's source repo
+(root `README.md` and `scripts/test_files.sh`).
 
 Base URL: `http://<host>:8080/api/v1`. JSON in, JSON out. Every
 response carries `X-Request-Id` (echo yours to correlate logs).
@@ -135,8 +136,8 @@ create and `?tenant=` on lists.
 
 ## The contract is tested, not folklore
 
-`scripts/test_files.sh` runs ~300 curl assertions against a live
+The server's regression suite (in the source repo:
+`scripts/test_files.sh`) runs ~350 curl assertions against a live
 server — auth, expiry, suspension, CSRF, ACL inheritance, pagination,
-rate limits. Grepping it is the fastest way to see any call's exact
-request/response, and `make docker-test` runs the whole suite against
-your running container.
+rate limits. If you have the checkout, grepping that file is the
+fastest way to see any call's exact request/response.

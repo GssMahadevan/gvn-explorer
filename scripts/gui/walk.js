@@ -234,16 +234,24 @@ fs.mkdirSync(OUT, { recursive: true });
     }));
     check('breadcrumb root', await page.evaluate(() => document.body.innerText.includes('root')));
     // every file row carries exactly one ⋮ trigger instead of a button row
-    check('file rows expose a single row-actions menu button', await page.evaluate(() => {
-      const tr = [...document.querySelectorAll('tbody tr.ant-table-row')].find(
+    // (the pinned built-in help row is the one deliberate exception: no menu)
+    check('file rows expose a single row-actions menu button; help row none', await page.evaluate(() => {
+      const trs = [...document.querySelectorAll('tbody tr.ant-table-row')].filter(
         (x) => x.offsetParent !== null,
       );
-      if (!tr) return false;
-      return (
-        tr.querySelectorAll('[data-testid="row-actions"]').length === 1 &&
-        !!tr.querySelector('[data-testid="row-actions"] .anticon') &&
-        ![...tr.querySelectorAll('button')].some((b) => /^(perms|rename|delete)$/.test(b.textContent.trim()))
-      );
+      if (!trs.length) return false;
+      for (const tr of trs) {
+        const n = tr.querySelectorAll('[data-testid="row-actions"]').length;
+        if (tr.innerText.includes('built-in')) {
+          if (n !== 0) return false;
+          continue;
+        }
+        if (n !== 1) return false;
+        if (!tr.querySelector('[data-testid="row-actions"] .anticon')) return false;
+        if ([...tr.querySelectorAll('button')].some((b) => /^(perms|rename|delete)$/.test(b.textContent.trim())))
+          return false;
+      }
+      return true;
     }));
     // flash centre: no history yet -> no strip at all
     check('flash bar hidden with empty history', await page.evaluate(
@@ -1013,6 +1021,90 @@ fs.mkdirSync(OUT, { recursive: true });
     await waitModal();
     check('about modal names the stack', /Ant Design/.test(await modalText()));
     await closeModals();
+
+    // ---- built-in user guide: embedded in the binary, /help tree ----
+    // brand-menu Help opens the guide hub rendered in the file page;
+    // links between guides navigate the pane in-app; the pane is
+    // read-only for everyone (no Edit). The same tree is pinned in the
+    // Files panel as a read-only help/ folder at root.
+    await openMenu('.app-brand');
+    await clickMenuItem('Help');
+    await openPane();
+    await page.waitForFunction(
+      () => document.querySelector('[data-testid="file-pane"] [data-testid="md-view"]') ?? false,
+      { timeout: 8000 },
+    ).catch(() => {});
+    check('help menu opens the built-in guide hub (rendered, no Edit)', await page.evaluate(() => {
+      const p = document.querySelector('[data-testid="file-pane"]');
+      const v = p?.querySelector('[data-testid="md-view"]');
+      return !!v && /user guide/i.test(v.innerText) &&
+        (p.querySelector('.mono')?.innerText ?? '').includes('/help/README.md') &&
+        !p.querySelector('[data-testid="pane-edit"]') && !!p.querySelector('[data-testid="pane-dl"]');
+    }));
+    await page.evaluate(() => {
+      const a = [...document.querySelectorAll('[data-testid="md-doclink"]')].find((x) =>
+        /\/help\/permissions\.md/.test(x.getAttribute('href') || ''));
+      a?.click();
+    });
+    await page.waitForFunction(
+      () => (document.querySelector('[data-testid="file-pane"] .mono')?.innerText ?? '').includes('/help/permissions.md'),
+      { timeout: 8000 },
+    ).catch(() => {});
+    check('guide cross-links navigate the pane in-app', await page.evaluate(() => {
+      const v = document.querySelector('[data-testid="file-pane"] [data-testid="md-view"]');
+      return !!v && /Expiring shares/i.test(v.innerText);
+    }));
+    await closePane();
+
+    await click('[role="tab"]', 'files');
+    await page.evaluate(() => {
+      const el = document.querySelector('input[placeholder="search name"]');
+      if (!el) return;
+      const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      set.call(el, '');
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await page.evaluate(() => document.querySelector('.ant-breadcrumb a')?.click());
+    await new Promise((r) => setTimeout(r, 1000));
+    check('file explorer pins the read-only help folder at root', await page.evaluate(() => {
+      const tr = [...document.querySelectorAll('tbody tr.ant-table-row')].filter((x) => x.offsetParent !== null);
+      const help = tr.find((x) => /help\//.test(x.innerText));
+      return !!help && /built-in/i.test(help.innerText) &&
+        !help.querySelector('[data-testid="row-actions"]');
+    }));
+    await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'help/')?.click(),
+    );
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('tbody tr.ant-table-row')].some(
+        (x) => x.offsetParent !== null && /api-keys\.md/.test(x.innerText),
+      ),
+      { timeout: 8000 },
+    ).catch(() => {});
+    check('help/ browses the embedded guide listing', await page.evaluate(() => {
+      const rows = [...document.querySelectorAll('tbody tr.ant-table-row')].filter((x) => x.offsetParent !== null);
+      return rows.some((x) => /README\.md/.test(x.innerText)) &&
+        rows.some((x) => /api-keys\.md/.test(x.innerText));
+    }));
+    check('inside /help: folder/file/upload actions are gone', await page.evaluate(() => {
+      const labels = [...document.querySelectorAll('button')]
+        .filter((b) => b.offsetParent !== null)
+        .map((b) => b.textContent.trim());
+      return !labels.includes('Folder') && !labels.includes('File') && !labels.includes('Upload');
+    }));
+    await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'api.md')?.click(),
+    );
+    await openPane();
+    check('embedded docs open rendered and read-only from the listing', await page.evaluate(() => {
+      const p = document.querySelector('[data-testid="file-pane"]');
+      const v = p?.querySelector('[data-testid="md-view"]');
+      return !!v && /REST API for non-browser clients/i.test(v.innerText) &&
+        !p.querySelector('[data-testid="pane-edit"]');
+    }));
+    await closePane();
+    await page.evaluate(() => document.querySelector('.ant-breadcrumb a')?.click());
+    await new Promise((r) => setTimeout(r, 600));
 
     // settings modal: dark mode toggle applies and persists
     await openMenu('.app-user');

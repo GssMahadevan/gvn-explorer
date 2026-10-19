@@ -37,9 +37,11 @@ const FEEDBACK_MAILTO =
   'mailto:sgorti@gmail.com?subject=' + encodeURIComponent('[file-explorer] feedback');
 
 // BrandMenu replaces the old static header wordmark: clicking it opens
-// the usual About/Help/Feedback application menu.
-export function BrandMenu() {
-  const [modal, setModal] = useState<'about' | 'help' | null>(null);
+// the usual About/Help/Feedback application menu. "Help" now opens the
+// user guide that ships embedded in the server binary (/help/README.md,
+// rendered by the file page) — the real docs, not a summarized modal.
+export function BrandMenu({ onHelp }: { onHelp: () => void }) {
+  const [modal, setModal] = useState<'about' | null>(null);
 
   const items: MenuProps['items'] = [
     { key: 'help', icon: <QuestionCircleOutlined />, label: 'Help' },
@@ -47,7 +49,8 @@ export function BrandMenu() {
     { key: 'feedback', icon: <MailOutlined />, label: 'Feedback' },
   ];
   const onClick: MenuProps['onClick'] = ({ key }) => {
-    if (key === 'about' || key === 'help') setModal(key);
+    if (key === 'help') onHelp();
+    else if (key === 'about') setModal('about');
     else if (key === 'feedback') location.href = FEEDBACK_MAILTO;
   };
 
@@ -90,43 +93,6 @@ export function BrandMenu() {
             },
           ]}
         />
-      </Modal>
-
-      <Modal
-        title="Help"
-        open={modal === 'help'}
-        onCancel={() => setModal(null)}
-        footer={null}
-        width={560}
-      >
-        <Typography>
-          <Typography.Paragraph>
-            <ul>
-              <li>
-                <b>Files</b>: browse the server-root sandbox; open, edit, create, upload, rename
-                and delete anything your permissions allow.
-              </li>
-              <li>
-                <b>Permissions</b>: grants are per path with user/group inheritance (nearest
-                ancestor wins, user beats group, deny by default). Use a row's <b>perms</b> action
-                to set access on a single file or folder. A grant may expire on a date — expired
-                grants simply disappear.
-              </li>
-              <li>
-                <b>Users</b>: accounts, including “device” users for IoT firmware pulls — those get
-                a one-time API key instead of a password (shown once at creation).
-              </li>
-              <li>
-                <b>Groups</b> and <b>Tenants</b>: group members share grants; tenants namespace
-                usernames and group names.
-              </li>
-              <li>
-                Every list supports search, column sorting and paging. Suspended or expired
-                principals are blocked everywhere but never deleted.
-              </li>
-            </ul>
-          </Typography.Paragraph>
-        </Typography>
       </Modal>
     </>
   );

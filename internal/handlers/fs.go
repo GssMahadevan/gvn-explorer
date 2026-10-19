@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -10,9 +11,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/user/llm-crud1/docs"
 	"github.com/user/llm-crud1/internal/acl"
 	"github.com/user/llm-crud1/internal/fsx"
+	"github.com/user/llm-crud1/internal/query"
 )
 
 func (a *API) maxBytes() int64 {
@@ -49,6 +53,10 @@ func (a *API) handleList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if sub, ok := helpSub(p); ok {
+		a.listHelp(w, r, p, sub, o)
+		return
+	}
 	if !a.check(w, r, p, true, false, false) {
 		return
 	}
@@ -73,6 +81,38 @@ func (a *API) handleList(w http.ResponseWriter, r *http.Request) {
 		}
 		visible = append(visible, entryView{Entry: e, Perms: bits})
 	}
+	self, _ := a.ACL.Effective(r.Context(), a.Auth, p, u)
+	a.finishList(w, r, p, self, visible, o)
+}
+
+// listHelp: a GET on /help or below — the user-guide tree embedded in
+// the binary (docs/embed.go). Every logged-in caller may read it
+// without any grant; it is always read-only. Search, sort and paging
+// are identical to a disk listing via finishList.
+func (a *API) listHelp(w http.ResponseWriter, r *http.Request, p, sub string, o query.List) {
+	items, err := fs.ReadDir(docs.FS(), sub)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "path does not exist")
+		return
+	}
+	visible := make([]entryView, 0, len(items))
+	for _, d := range items {
+		info, err := d.Info()
+		if err != nil {
+			continue
+		}
+		visible = append(visible, entryView{
+			Entry: fsx.Entry{Name: d.Name(), Path: path.Join(helpPrefix, sub, d.Name()),
+				IsDir: d.IsDir(), Size: info.Size(), ModTime: info.ModTime()},
+			Perms: acl.Bits{Read: true},
+		})
+	}
+	a.finishList(w, r, p, acl.Bits{Read: true}, visible, o)
+}
+
+// finishList applies the shared search/sort/paging contract to an entry
+// list (from disk or embedded) and writes the list response.
+func (a *API) finishList(w http.ResponseWriter, r *http.Request, p string, self acl.Bits, visible []entryView, o query.List) {
 	// Search on entry name.
 	if o.Q != "" {
 		ql := strings.ToLower(o.Q)
@@ -122,7 +162,6 @@ func (a *API) handleList(w http.ResponseWriter, r *http.Request) {
 		visible = visible[off:end]
 	}
 	setTotal(w, total)
-	self, _ := a.ACL.Effective(r.Context(), a.Auth, p, u)
 	writeJSON(w, http.StatusOK, map[string]any{"path": p, "perms": self, "entries": visible})
 }
 
@@ -131,6 +170,10 @@ func (a *API) handleContent(w http.ResponseWriter, r *http.Request) {
 	p, err := logicalPath(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad_path", err.Error())
+		return
+	}
+	if sub, ok := helpSub(p); ok {
+		a.helpContent(w, r, p, sub)
 		return
 	}
 	if !a.check(w, r, p, true, false, false) {
@@ -172,6 +215,10 @@ func (a *API) handleRaw(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_path", err.Error())
 		return
 	}
+	if sub, ok := helpSub(p); ok {
+		a.helpRaw(w, r, p, sub)
+		return
+	}
 	if !a.check(w, r, p, true, false, false) {
 		return
 	}
@@ -187,6 +234,47 @@ func (a *API) handleRaw(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("ETag", strconv.Quote(strconv.FormatInt(info.Size(), 10)+"-"+strconv.FormatInt(info.ModTime().Unix(), 10)))
 	}
 	http.ServeFile(w, r, abs)
+}
+
+// helpContent: text view for an embedded doc under /help. The mtime in
+// the response is 0 — the bytes come from the binary, not from disk.
+func (a *API) helpContent(w http.ResponseWriter, _ *http.Request, p, sub string) {
+	info, err := fs.Stat(docs.FS(), sub)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "path does not exist")
+		return
+	}
+	if info.IsDir() {
+		writeError(w, http.StatusBadRequest, "is_a_dir", "use /api/v1/fs to list directories")
+		return
+	}
+	data, err := fs.ReadFile(docs.FS(), sub)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "path does not exist")
+		return
+	}
+	if int64(len(data)) > a.maxBytes() {
+		writeError(w, http.StatusRequestEntityTooLarge, "too_large", "file exceeds limit; download via /api/v1/fs/raw")
+		return
+	}
+	if bytes.IndexByte(data, 0) >= 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"path": p, "size": len(data), "mtime": 0, "is_binary": true, "content": ""})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"path": p, "size": len(data), "mtime": 0, "is_binary": false, "content": string(data)})
+}
+
+// helpRaw: download for an embedded doc. Static ETag (size-0) so device
+// polls get a deterministic 304.
+func (a *API) helpRaw(w http.ResponseWriter, r *http.Request, p, sub string) {
+	data, err := fs.ReadFile(docs.FS(), sub)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "path does not exist")
+		return
+	}
+	w.Header().Set("Content-Disposition", "attachment; filename="+strconvQuote(path.Base(p)))
+	w.Header().Set("ETag", strconv.Quote(strconv.FormatInt(int64(len(data)), 10)+"-0"))
+	http.ServeContent(w, r, path.Base(p), time.Time{}, bytes.NewReader(data))
 }
 
 type pathBody struct {
@@ -206,6 +294,10 @@ func (a *API) handleMkdir(w http.ResponseWriter, r *http.Request) {
 	}
 	if p == "/" {
 		writeError(w, http.StatusBadRequest, "bad_path", "cannot mkdir root")
+		return
+	}
+	if isHelpPath(p) {
+		helpReadOnly(w)
 		return
 	}
 	if !a.check(w, r, p, false, true, false) {
@@ -242,6 +334,10 @@ func (a *API) handleWrite(w http.ResponseWriter, r *http.Request) {
 	}
 	if p == "/" {
 		writeError(w, http.StatusBadRequest, "bad_path", "cannot write root as file")
+		return
+	}
+	if isHelpPath(p) {
+		helpReadOnly(w)
 		return
 	}
 	if !a.check(w, r, p, false, true, false) {
@@ -296,6 +392,10 @@ func (a *API) handleRename(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_path", "cannot rename root")
 		return
 	}
+	if isHelpPath(from) || isHelpPath(to) {
+		helpReadOnly(w)
+		return
+	}
 	if !a.check(w, r, from, false, false, true) || !a.check(w, r, to, false, true, false) {
 		return
 	}
@@ -317,6 +417,10 @@ func (a *API) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	if p == "/" {
 		writeError(w, http.StatusBadRequest, "bad_path", "cannot delete root")
+		return
+	}
+	if isHelpPath(p) {
+		helpReadOnly(w)
 		return
 	}
 	if !a.check(w, r, p, false, false, true) {
@@ -359,6 +463,10 @@ func (a *API) handleUpload(w http.ResponseWriter, r *http.Request) {
 		target = "/" + name
 	} else {
 		target = dir + "/" + name
+	}
+	if isHelpPath(target) {
+		helpReadOnly(w)
+		return
 	}
 	if !a.check(w, r, target, false, true, false) {
 		return

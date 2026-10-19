@@ -507,6 +507,37 @@ check "tenant_active event recorded" "$(jq -e --argjson t "$MTID" 'any(.[]; .tar
 
 t "$AJ" "delete meta tenant" 204 DELETE "/api/v1/tenants/$MTID"
 
+echo "== built-in /help docs tree (user guide embedded in the binary) =="
+t "$AJ" "list /help" 200 GET "/api/v1/fs?path=/help"
+check "help lists the hub" "$(jq -e 'any(.entries[]; .entry.name=="README.md")' /tmp/resp.json >/dev/null; echo $?)"
+check "help lists the guides" "$(jq -e 'any(.entries[]; .entry.name=="api.md") and any(.entries[]; .entry.name=="permissions.md")' /tmp/resp.json >/dev/null; echo $?)"
+check "help entries are read-only bits" "$(jq -e 'all(.entries[]; .perms.read==true and .perms.write==false and .perms.delete==false)' /tmp/resp.json >/dev/null; echo $?)"
+t "$UJ" "plain user lists /help too" 200 GET "/api/v1/fs?path=/help"
+t "$AJ" "read help hub" 200 GET "/api/v1/fs/content?path=/help/README.md"
+check "help hub is non-empty text" "$(jq -e '(.content|length) > 100 and .is_binary==false' /tmp/resp.json >/dev/null; echo $?)"
+t "$UJ" "plain user reads a guide" 200 GET "/api/v1/fs/content?path=/help/permissions.md"
+t "$AJ" "help raw download" 200 GET "/api/v1/fs/raw?path=/help/api-keys.md"
+t "$AJ" "help missing doc" 404 GET "/api/v1/fs/content?path=/help/nope-$SFX.md"
+t "$AJ" "help missing dir" 404 GET "/api/v1/fs?path=/help/nope-$SFX"
+t "$AJ" "help search finds api.md" 200 GET "/api/v1/fs?path=/help&q=api"
+check "help search filtered" "$(jq -e 'all(.entries[]; (.entry.name|ascii_downcase)|contains("api"))' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "help mkdir refused" 403 POST /api/v1/fs/mkdir '{"path":"/help/sub"}'
+t "$AJ" "help write refused" 403 POST /api/v1/fs/write '{"path":"/help/README.md","content":"x"}'
+t "$AJ" "help delete refused" 403 DELETE "/api/v1/fs?path=/help/README.md"
+t "$AJ" "help rename refused" 403 POST /api/v1/fs/rename '{"from":"/help/README.md","to":"/README.md"}'
+GOT=$(curl -s -o /dev/null -w '%{http_code}' -b "$AJ" -X POST -F "path=/help" -F "file=@/dev/null" "$BASE_URL/api/v1/fs/upload")
+check "help upload refused (403)" "$([ "$GOT" = "403" ]; echo $?)"
+t "$AJ" "help grant refused" 403 PUT /api/v1/perms '{"path":"/help","principal_type":"user","principal":"nobody","read":true}'
+t "$AJ" "help perms show" 200 GET "/api/v1/perms?path=/help/README.md"
+check "help perms: read-only, no grants" "$(jq -e '.effective.read==true and .effective.write==false and (.grants|length)==0' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "help draft get is null" 200 GET "/api/v1/fs/draft?path=/help/README.md"
+check "no draft for help docs" "$(jq -e '.draft==null' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "help draft save refused" 403 PUT /api/v1/fs/draft '{"path":"/help/README.md","content":"x"}'
+t "$AJ" "help draft discard refused" 403 DELETE "/api/v1/fs/draft?path=/help/README.md"
+# only the exact /help prefix is special; look-alike names stay on disk
+t "$AJ" "helpshadow mkdir ok" 201 POST /api/v1/fs/mkdir "{\"path\":\"/helpshadow-$SFX\"}"
+t "$AJ" "helpshadow delete ok" 204 DELETE "/api/v1/fs?path=/helpshadow-$SFX"
+
 echo "== session lifecycle =="
 t "$UJ" "logout" 204 POST /api/v1/auth/logout
 t "$UJ" "fs after logout" 401 GET /api/v1/fs?path=/

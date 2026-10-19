@@ -38,6 +38,10 @@ func draftPath(w http.ResponseWriter, r *http.Request, raw string) (string, bool
 		writeError(w, http.StatusBadRequest, "bad_path", "cannot draft the root")
 		return "", false
 	}
+	if isHelpPath(p) {
+		helpReadOnly(w)
+		return "", false
+	}
 	return p, true
 }
 
@@ -50,8 +54,10 @@ func (a *API) handleDraftGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_path", err.Error())
 		return
 	}
-	if !a.check(w, r, p, true, false, false) {
-		return
+	if !isHelpPath(p) {
+		if !a.check(w, r, p, true, false, false) {
+			return
+		}
 	}
 	d, ok, err := a.Drafts.Get(r.Context(), p)
 	if err != nil {
@@ -101,6 +107,10 @@ func (a *API) handleDraftDelete(w http.ResponseWriter, r *http.Request) {
 	p, err := logicalPath(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad_path", err.Error())
+		return
+	}
+	if isHelpPath(p) {
+		helpReadOnly(w)
 		return
 	}
 	if !a.check(w, r, p, false, true, false) {

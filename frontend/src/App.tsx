@@ -108,7 +108,7 @@ export default function App() {
         <AntApp component={false}>
         <Layout style={{ minHeight: '100vh' }}>
           <Layout.Header className="app-header">
-            <BrandMenu />
+            <BrandMenu onHelp={() => setFileTarget({ path: '/help/README.md', mode: 'view' })} />
             <Tabs
               activeKey={tab}
               onChange={(k) => {
@@ -138,6 +138,7 @@ export default function App() {
                   target={fileTarget}
                   onClose={() => setFileTarget(null)}
                   onSaved={() => setFilesEpoch((n) => n + 1)}
+                  openDoc={(p) => setFileTarget({ path: p, mode: 'view' })}
                 />
               </Suspense>
             )}

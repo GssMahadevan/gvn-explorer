@@ -58,6 +58,28 @@ export default function FilesPanel({
   }, [filesEpoch]);
 
   const rows = lv.payload?.entries ?? [];
+  const ro = cur === '/help' || cur.startsWith('/help/'); // built-in docs: read-only
+  const download = (p: string) => {
+    const a = document.createElement('a');
+    a.href = rawUrl(p);
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+  // The built-in docs tree lives in the server binary, not on disk, so it
+  // is pinned here client-side: every user sees and can browse it at the
+  // root, while the API's root listing stays exactly as it was.
+  const viewRows: typeof rows =
+    cur === '/' && !lv.state.q && !rows.some((x) => x.entry.path === '/help')
+      ? [
+          {
+            entry: { name: 'help', path: '/help', is_dir: true, size: 0, mod_time: '' },
+            perms: { read: true, write: false, delete: false },
+          },
+          ...rows,
+        ]
+      : rows;
   const goto = (p: string) => {
     setCur(p);
     lv.patch({ page: 1 });
@@ -146,7 +168,11 @@ export default function FilesPanel({
       sortOrder: lv.sortOrder('mtime'),
       showSorterTooltip: false,
       width: 210,
-      render: (_, x) => new Date(x.entry.mod_time).toLocaleString(),
+      render: (_, x) => {
+        // embedded docs carry no real mtime (zero time) — label them honestly
+        const d = new Date(x.entry.mod_time);
+        return d.getFullYear() > 1 ? d.toLocaleString() : 'built-in';
+      },
     },
     {
       title: 'perms',
@@ -166,56 +192,54 @@ export default function FilesPanel({
     {
       title: '',
       width: 56,
-      render: (_, x) => (
-        <RowActions
-          actions={[
-            { key: 'perms', label: 'permissions', onClick: () => showPerms(x.entry.path) },
-            ...(!x.entry.is_dir
-              ? [
-                  // editing is an explicit menu step — the name click is
-                  // the viewer. Not offered for download-only files.
-                  ...(fileKind(x.entry.name) !== 'download'
-                    ? [{ key: 'edit', label: 'edit', onClick: () => openFile({ path: x.entry.path, mode: 'edit' }) }]
-                    : []),
-                  {
-                    key: 'download',
-                    label: 'download',
-                    onClick: () => {
-                      const a = document.createElement('a');
-                      a.href = rawUrl(x.entry.path);
-                      a.download = '';
-                      document.body.appendChild(a);
-                      a.click();
-                      a.remove();
-                    },
-                  },
-                ]
-              : []),
-            {
-              key: 'rename',
-              label: 'rename',
-              onClick: () => setRename({ from: x.entry.path, to: x.entry.path }),
-            },
-            {
-              key: 'delete',
-              label: 'delete',
-              danger: true,
-              confirm: { title: `delete ${x.entry.path}?` },
-              onClick: async () => {
-                try {
-                  await api('/api/v1/fs?path=' + encodeURIComponent(x.entry.path), {
-                    method: 'DELETE',
-                  });
-                  flash.ok('deleted ' + x.entry.path);
-                  lv.reload();
-                } catch (e) {
-                  flash.err((e as Error).message);
-                }
+      render: (_, x) => {
+        const embedded = x.entry.path === '/help' || x.entry.path.startsWith('/help/');
+        if (embedded)
+          return x.entry.is_dir ? null : (
+            <RowActions
+              actions={[{ key: 'download', label: 'download', onClick: () => download(x.entry.path) }]}
+            />
+          );
+        return (
+          <RowActions
+            actions={[
+              { key: 'perms', label: 'permissions', onClick: () => showPerms(x.entry.path) },
+              ...(!x.entry.is_dir
+                ? [
+                    // editing is an explicit menu step — the name click is
+                    // the viewer. Not offered for download-only files.
+                    ...(fileKind(x.entry.name) !== 'download'
+                      ? [{ key: 'edit', label: 'edit', onClick: () => openFile({ path: x.entry.path, mode: 'edit' }) }]
+                      : []),
+                    { key: 'download', label: 'download', onClick: () => download(x.entry.path) },
+                  ]
+                : []),
+              {
+                key: 'rename',
+                label: 'rename',
+                onClick: () => setRename({ from: x.entry.path, to: x.entry.path }),
               },
-            },
-          ]}
-        />
-      ),
+              {
+                key: 'delete',
+                label: 'delete',
+                danger: true,
+                confirm: { title: `delete ${x.entry.path}?` },
+                onClick: async () => {
+                  try {
+                    await api('/api/v1/fs?path=' + encodeURIComponent(x.entry.path), {
+                      method: 'DELETE',
+                    });
+                    flash.ok('deleted ' + x.entry.path);
+                    lv.reload();
+                  } catch (e) {
+                    flash.err((e as Error).message);
+                  }
+                },
+              },
+            ]}
+          />
+        );
+      },
     },
   ];
 
@@ -240,43 +264,49 @@ export default function FilesPanel({
         <Breadcrumb items={crumbItems} />
         <span className="grow" />
         <ListSearch state={lv.state} patch={lv.patch} placeholder="search name" />
-        <Button icon={<FolderAddOutlined />} onClick={() => setNewKind('dir')}>
-          Folder
-        </Button>
-        <Button icon={<FileAddOutlined />} onClick={() => setNewKind('file')}>
-          File
-        </Button>
-        <Upload
-          maxCount={1}
-          showUploadList={false}
-          customRequest={async ({ file, onSuccess, onError }) => {
-            const fd = new FormData();
-            fd.set('path', cur);
-            fd.set('file', file as File);
-            try {
-              const r = await fetch('/api/v1/fs/upload', { method: 'POST', body: fd });
-              const b = (await r.json().catch(() => ({}))) as {
-                path?: string;
-                error?: { message?: string };
-              };
-              if (!r.ok) throw new Error(b?.error?.message || `${r.status} ${r.statusText}`);
-              flash.ok('uploaded ' + (b.path ?? ''));
-              onSuccess?.(b);
-              lv.reload();
-            } catch (e) {
-              flash.err((e as Error).message);
-              onError?.(e as Error);
-            }
-          }}
-        >
-          <Button icon={<UploadOutlined />}>Upload</Button>
-        </Upload>
+        {ro ? (
+          <Tag color="blue">built-in docs · read-only</Tag>
+        ) : (
+          <>
+            <Button icon={<FolderAddOutlined />} onClick={() => setNewKind('dir')}>
+              Folder
+            </Button>
+            <Button icon={<FileAddOutlined />} onClick={() => setNewKind('file')}>
+              File
+            </Button>
+            <Upload
+              maxCount={1}
+              showUploadList={false}
+              customRequest={async ({ file, onSuccess, onError }) => {
+                const fd = new FormData();
+                fd.set('path', cur);
+                fd.set('file', file as File);
+                try {
+                  const r = await fetch('/api/v1/fs/upload', { method: 'POST', body: fd });
+                  const b = (await r.json().catch(() => ({}))) as {
+                    path?: string;
+                    error?: { message?: string };
+                  };
+                  if (!r.ok) throw new Error(b?.error?.message || `${r.status} ${r.statusText}`);
+                  flash.ok('uploaded ' + (b.path ?? ''));
+                  onSuccess?.(b);
+                  lv.reload();
+                } catch (e) {
+                  flash.err((e as Error).message);
+                  onError?.(e as Error);
+                }
+              }}
+            >
+              <Button icon={<UploadOutlined />}>Upload</Button>
+            </Upload>
+          </>
+        )}
       </div>
       <Table
         rowKey={(x) => x.entry.path}
         size="small"
         columns={columns}
-        dataSource={rows}
+        dataSource={viewRows}
         loading={lv.loading}
         onChange={lv.onTableChange}
         pagination={lv.pagination}

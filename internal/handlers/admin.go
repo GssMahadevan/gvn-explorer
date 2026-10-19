@@ -207,6 +207,12 @@ func (a *API) handlePermsShow(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if isHelpPath(p) {
+		// built-in docs tree: readable by everyone, grants never apply
+		setTotal(w, 0)
+		writeJSON(w, http.StatusOK, map[string]any{"path": p, "grants": []any{}, "effective": acl.Bits{Read: true}})
+		return
+	}
 	grants, total, err := a.ACL.ListByPath(r.Context(), p, o)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
@@ -256,6 +262,10 @@ func (a *API) handlePermsPut(w http.ResponseWriter, r *http.Request) {
 	p, err := acl.Normalize(b.Path)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad_path", err.Error())
+		return
+	}
+	if isHelpPath(p) {
+		helpReadOnly(w)
 		return
 	}
 	var pid, ptid int64

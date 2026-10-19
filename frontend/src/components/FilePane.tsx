@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Segmented, Space, Tag, Typography } from 'antd';
 import { ArrowLeftOutlined, DownloadOutlined, EditOutlined } from '@ant-design/icons';
 import ReactMarkdown from 'react-markdown';
+import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ApiError, api } from '../api';
 import { useFlash } from '../flash';
@@ -11,6 +12,26 @@ import DocEditor from './DocEditor';
 import YamlEditor from './YamlEditor';
 
 export type FileTarget = { path: string; mode: 'view' | 'edit' };
+
+// Links inside the built-in /help docs are how the guide cross-references
+// itself; they must navigate the pane instead of hitting the browser. A
+// relative (or /help-rooted) link that resolves to another .md under
+// /help becomes an in-app navigation; everything else (http, mailto, …)
+// opens externally as usual.
+function docTarget(from: string, href?: string): string | null {
+  if (!href || /^(https?:|mailto:)/i.test(href) || href.startsWith('#')) return null;
+  const clean = (href.split('#')[0] ?? '').split('?')[0] ?? '';
+  if (!/\.(md|markdown)$/i.test(clean)) return null;
+  const abs = clean.startsWith('/') ? clean : from.slice(0, from.lastIndexOf('/')) + '/' + clean;
+  const parts: string[] = [];
+  for (const seg of abs.split('/')) {
+    if (!seg || seg === '.') continue;
+    if (seg === '..') parts.pop();
+    else parts.push(seg);
+  }
+  const dest = '/' + parts.join('/');
+  return dest === '/help' || dest.startsWith('/help/') ? dest : null;
+}
 
 interface FsContent {
   content?: string;
@@ -45,10 +66,13 @@ export default function FilePane({
   target,
   onClose,
   onSaved,
+  openDoc,
 }: {
   target: FileTarget;
   onClose: () => void;
   onSaved: () => void;
+  // opens another document in this pane (used by /help guide links)
+  openDoc?: (path: string) => void;
 }) {
   const flash = useFlash();
   const { path } = target;
@@ -208,6 +232,39 @@ export default function FilePane({
     return null;
   };
 
+  // markdown anchors: links to other /help docs navigate the pane in-app;
+  // everything else opens in a new tab so the view (and any unsaved edit
+  // state) survives.
+  const mdComponents: Components = {
+    a: ({ node: _n, href, children, ...rest }) => {
+      const dest = docTarget(path, href);
+      if (dest && openDoc)
+        return (
+          <a
+            href={dest}
+            data-testid="md-doclink"
+            onClick={(e) => {
+              e.preventDefault();
+              openDoc(dest);
+            }}
+          >
+            {children}
+          </a>
+        );
+      if (href && !href.startsWith('#'))
+        return (
+          <a {...rest} href={href} target="_blank" rel="noreferrer">
+            {children}
+          </a>
+        );
+      return (
+        <a {...rest} href={href}>
+          {children}
+        </a>
+      );
+    },
+  };
+
   return (
     <div data-testid="file-pane">
       <div className="bar" style={{ marginBottom: 8 }}>
@@ -323,7 +380,9 @@ export default function FilePane({
             />
           ) : md && mode === 'view' && view === 'render' ? (
             <div className="md-view" data-testid="md-view">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+                {text}
+              </ReactMarkdown>
             </div>
           ) : (
             // keyed by path so each file gets a fresh editor (own undo history)

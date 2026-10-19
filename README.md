@@ -324,6 +324,19 @@ drafting itself is a write action on the file. The working copy lives in
 a `file_drafts` SQLite table: the **only** place the server ever stores
 file content, a deliberate exception to the "permissions only" rule.
 
+**Built-in help (`/help`).** The user guide under `docs/user/` is embedded
+into the binary (same trick as the web bundle) and exposed through the
+file API as the reserved read-only tree `/help`: every logged-in caller
+may `GET /fs?path=/help`, `/fs/content`, `/fs/raw` — no grants needed,
+and those paths always report bits `r--`. Any mutation (write, mkdir,
+rename, delete, upload, draft, grant) on a `/help` path returns
+`403 read_only`. The GUI surfaces it two ways: brand-menu **Help**
+opens `/help/README.md` rendered in the file page (links between guides
+navigate inside the app), and the Files panel pins a read-only `help/`
+row at root — pinned client-side, so the actual `/fs` root listing is
+byte-for-byte unchanged. A root directory literally named `help` is
+shadowed by it; rename the directory if you need that name.
+
 ## Admin API
 
 All three entity kinds carry a free-text `description` for operators
