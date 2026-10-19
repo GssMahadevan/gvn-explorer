@@ -47,6 +47,22 @@ mkdir -p "$WORK/root/deliverables" "$WORK/root/docs"
 printf 'PDF-1.4 fake quarterly report\n' > "$WORK/root/deliverables/report-q3.pdf"
 printf '# readme\nhello\n' > "$WORK/root/readme.md"
 printf 'release notes\n' > "$WORK/root/docs/notes.md"
+# YAML fixture for the structured tree editor: leading comment, inline
+# comment, block scalar and two documents must all survive the
+# tree-edit -> draft -> publish round trip.
+cat > "$WORK/root/walk-cfg.yml" <<'YAML'
+# site process config
+app: web1 # do not touch
+replicas: 2
+env:
+  - name: LOG_LEVEL # level
+    value: debug
+notes: |
+  why this box exists
+  owned by team-a
+---
+agent: a1
+YAML
 
 echo "== boot server :$PORT (root + db in $WORK) =="
 "$PWD/bin/server" -addr ":$PORT" -root "$WORK/root" -db "$WORK/perms.db" \

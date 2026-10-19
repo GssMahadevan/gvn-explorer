@@ -1,4 +1,5 @@
-// GUI smoke-walk: login -> files table -> sort -> search -> navigate ->
+// GUI smoke-walk: login -> files table -> sort -> search -> YAML tree
+// editor (draft autosave + publish) -> navigate ->
 // perms -> users -> tenants, asserting along the way + screenshots.
 // Covers the modal-based entity forms (create/edit), the per-row action
 // menu (the vertical three-dots on every table row), the active-filter
@@ -256,6 +257,75 @@ fs.mkdirSync(OUT, { recursive: true });
       el.dispatchEvent(new Event('input', { bubbles: true }));
     });
     await new Promise((r) => setTimeout(r, 1100));
+
+    // ---- YAML structured editor: tree edit -> draft autosave -> publish.
+    // The walk-cfg.yml fixture carries a leading comment, an inline
+    // comment, a block scalar and two documents so the file-content
+    // assertions afterwards prove the AST round-trip kept every one.
+    const setLeaf = (sel, v) =>
+      page.evaluate((s, val) => {
+        const el = document.querySelector(s);
+        if (!el) return false;
+        el.focus(); // blur() on a never-focused input fires no event
+        const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement : window.HTMLInputElement;
+        Object.getOwnPropertyDescriptor(proto.prototype, 'value').set.call(el, val);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.blur(); // Leaf commits on blur
+        return true;
+      }, sel, v);
+    await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'walk-cfg.yml')?.click(),
+    );
+    await waitModal();
+    check('yaml file opens structured tree, not a raw textarea', await page.evaluate(() => {
+      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+      return !!m && !!m.querySelector('[data-testid="yaml-tree"]') && !m.querySelector('textarea.code');
+    }));
+    check('tree shows notes, comments, block scalar and both documents', await page.evaluate(() => {
+      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+      if (!m) return false;
+      const note = m.querySelector('[data-testid="yaml-note-d0.0"]');
+      const cmt = m.querySelector('[data-testid="yaml-cmt-d0.0"]');
+      const blk = m.querySelector('[data-testid="yaml-val-d0.3"]');
+      return !!note && note.value.includes('site process config') &&
+        !!cmt && cmt.value.includes('do not touch') &&
+        !!blk && blk.tagName === 'TEXTAREA' && blk.value.includes('why this box exists') &&
+        /document 2 of 2/.test(m.innerText);
+    }));
+    // edit one scalar through the tree -> debounced autosave pushes a draft
+    const typed = await setLeaf('[data-testid="yaml-val-d0.1"]', '5');
+    await new Promise((r) => setTimeout(r, 2500));
+    check('tree edit autosaves a draft server-side', typed && (await page.evaluate(() =>
+      fetch('/api/v1/fs/draft?path=' + encodeURIComponent('/walk-cfg.yml'))
+        .then((r) => r.json())
+        .then((d) => !!d.draft && d.draft.content.includes('replicas: 5') &&
+          d.draft.content.includes('# site process config')),
+    )));
+    check('draft banner shown in editor', await page.evaluate(() => {
+      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+      return !!m && /Unpublished draft/.test(m.innerText);
+    }));
+    await mouseClick('[data-testid="editor-publish"]');
+    await page
+      .waitForFunction(() => {
+        const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+        return !m || !/Unpublished draft/.test(m.innerText);
+      }, { timeout: 6000 })
+      .catch(() => {});
+    check(
+      'publish rewrites the file, keeps comments/block/second doc, clears draft',
+      await page.evaluate(async () => {
+        const q = encodeURIComponent('/walk-cfg.yml');
+        const c = await fetch('/api/v1/fs/content?path=' + q).then((r) => r.json());
+        const d = await fetch('/api/v1/fs/draft?path=' + q).then((r) => r.json());
+        const body = c.content || '';
+        return body.includes('replicas: 5') && body.includes('# site process config') &&
+          body.includes('# do not touch') && body.includes('why this box exists') &&
+          body.includes('agent: a1') && !d.draft;
+      }),
+    );
+    await closeModals();
+
     await page.evaluate(() =>
       [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'deliverables/')?.click(),
     );

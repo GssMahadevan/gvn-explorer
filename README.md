@@ -384,6 +384,24 @@ tables stay usable at phone widths no matter how many actions an entity
 has; destructive items pop a themed confirm dialog whose OK button
 carries the action name.
 
+Clicking a text file opens the editor modal. Plain text gets the code
+textarea, and its Save now sends the `base_mtime` captured on open: if
+the file changed underneath, the server refuses with 409 conflict and the
+text stays in the box to be copied out. **YAML config files** (`.yml`,
+`.yaml`) instead open the structured tree editor (`components/YamlTree`):
+mappings become key/value/comment rows, sequences indexed rows, sections
+collapse, block scalars get an in-node multiline box, and multi-document
+files render as separate document sections — raw text is never
+hand-edited, and anchors/aliases display but stay locked. Every change
+mutates the parsed AST (client-side `yaml`) and re-serializes it, so
+leading notes, inline comments and quoting styles survive the round trip
+— precisely the reason these process configs stay YAML rather than JSON.
+Edits autosave to the server-side draft (a banner names the last writer
+and time); the file on disk changes only on **Publish**, where the server
+re-validates and audits the draft, and a rejected draft surfaces its 422
+inside the modal without losing anything. Drafting requires `w` — with
+plain `r` the same tree renders read-only.
+
 ```sh
 cd frontend
 npm install
@@ -445,9 +463,10 @@ BASE_URL=http://localhost:8095 ADMIN_TENANT=system ADMIN_PASS=secret \
 when missing, boots a real server against a throwaway sandbox root with
 seeded fixture tenants/users, then drives `scripts/gui/walk.js` — a
 puppeteer-core walk of the live UI (login, file table, the ⋮ row action
-menus, modal forms, the active-filter wire format, flash center,
-per-file grant flow, header menus, dark mode, sign-out) with ~50
-assertions plus a zero-console-error guard. `SHOTS=1` additionally
+menus, modal forms, the YAML tree editor's draft-autosave → publish flow
+incl. comment/block-scalar preservation, the active-filter wire format,
+flash center, per-file grant flow, header menus, dark mode, sign-out)
+with ~60 assertions plus a zero-console-error guard. `SHOTS=1` additionally
 writes light/dark screenshots to `$OUT_DIR` (default `/tmp/fx-gui`).
 Needs a local Chrome; `CHROME_PATH` overrides the macOS default.
 
@@ -462,7 +481,7 @@ internal/audit/    append-only forensic event trail (authz/authn DML, fs_commit)
 internal/drafts/   per-path working copies for the draft/publish edit model
 internal/fsx/      sandboxed filesystem ops (list/read/write/mkdir/rename/delete)
 internal/handlers/ REST handlers + route table, JSON error envelope, rate limiters
-frontend/          React 19 + Ant Design GUI (Vite; list panels, per-entity form modals, row action menus, flash center; `npm run build` -> dist/ static bundle)
+frontend/          React 19 + Ant Design GUI (Vite; list panels, per-entity form modals, row action menus, YAML tree editor w/ draft+publish, flash center; `npm run build` -> dist/ static bundle)
 scripts/           test suites: test_files.sh (curl API regression), test_gui.sh + gui/ (puppeteer GUI walk + screenshots)
 web/               vanilla-JS GUI fallback (panels per view w/ paging+search+sort, editor, perms, admin)
 ```
