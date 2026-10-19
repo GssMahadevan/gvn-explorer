@@ -36,8 +36,11 @@ password `change-me`.
   survive the round trip. Other text files get a proper code editor with
   a markdown toolbar. Binaries just download — like GitHub, the decision
   is made from the name.
-- **Audit** — every mutation (file or account) is appended to an
-  event log with actor, path, request id; structured JSON logs.
+- **Audit** — every login, account change, grant and published file is
+  appended to an event log (actor, target, path, structured details)
+  and browsable in the UI: a full Events table with search, sort, and
+  action/time-range filters, plus an event-log drawer reachable from
+  anywhere. Server logs are structured JSON with a request id per line.
 - **API-first** — the whole GUI is a thin client over a documented REST
   API; API keys give headless devices the same permissions model.
 

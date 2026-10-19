@@ -1,18 +1,44 @@
-# Docker deployment
+# File explorer in Docker
 
-Single Go binary + static React bundle, all state in one mounted directory.
+One static Go binary + static React bundle, all state under one mounted
+directory. This file is the repo-side guide: build the image, run it
+locally, operate it. `HUB.md` next to it is the end-user README
+published to Docker Hub (pull + run + configure); keep the two config
+tables in sync when adding flags.
+
+## What you get
+
+- A fast, server-paged web file browser (works on phones): browse,
+  search, mkdir, upload, rename, download.
+- A file page that opens text in a real editor (CodeMirror; markdown
+  gets a formatting toolbar and live preview), and opens `.yml`/`.yaml`
+  in a structured editor that round-trips **comments and notes**
+  unchanged. Edits save as drafts in the database and hit your disk
+  only on **publish** (validated first). Binaries just download — the
+  open-vs-download decision is made from the file name, GitHub-style.
+- Real per-path permissions: read/write grants to users or groups with
+  nearest-ancestor inheritance, deny by default, optional expiry,
+  one-click suspension. Multi-tenant: several orgs share one tree;
+  each admin manages only their own users/groups. API keys give
+  headless devices the same permissions model.
+- A forensic audit trail of every login, account change, grant and
+  published file — browsable in the GUI as the **Events** tab or from
+  the **event log** drawer in the flash bar (filter by action/time
+  range, search, sort, per-row structured details). Structured JSON
+  server logs with a request id on every line.
 
 ## Quick start
 
 ```sh
 # from the repo root
 make docker-up          # build + start, app on http://localhost:8080
-make docker-down
 make docker-logs
+make docker-down
 ```
 
-If :8080 is taken on your machine, pick another host port:
-`APP_PORT=8098 make docker-up` (and `APP_PORT=8098 make docker-test`).
+If :8080 is taken on your host (common — many stacks use it), pick
+another host port: `APP_PORT=8098 make docker-up`
+(and `APP_PORT=8098 make docker-test`).
 
 Without make:
 
@@ -21,10 +47,10 @@ cd deployments/docker
 docker compose up --build -d
 ```
 
-First login: tenant `system`, user `admin`, password `admin` — set by the
-`ADMIN` env var, and **only honored while the database has no users**.
-Change it (or add tenants/users) in the Users panel, or override `ADMIN`
-before the very first start.
+First login: tenant `system`, user `admin`, password `admin` — set by
+the `ADMIN` env var, and **only honored while the database has no
+users**. Change it (or add tenants/users) in the Users panel, or
+override `ADMIN` before the very first start.
 
 ## Image layout (built by Dockerfile, 3 stages)
 
@@ -34,8 +60,10 @@ before the very first start.
 | `build` | golang:1.26-alpine | `CGO_ENABLED=0` server binary (SQLite is `modernc.org/sqlite`, pure Go) |
 | runtime | alpine:3.21 | `/app/server` + `/app/web` (GUI bundle); healthcheck `wget /` |
 
-The old vanilla `web/` fallback is intentionally **not** in the image; the
-image always ships the React GUI.
+Total image ~25 MB (~10 MB compressed). The old vanilla `web/`
+fallback is intentionally **not** in the image; the image always ships
+the React GUI. No build tools, package managers or shell extras in the
+runtime layer.
 
 ## Volumes — what to mount
 
@@ -44,10 +72,13 @@ Everything mutable lives under `/data`; mount that and nothing else:
 | container path | content | host (compose default) |
 |---|---|---|
 | `/data/root` | the file tree the explorer CRUDs (server `-root`) | `./data/root` |
-| `/data` | `perms.db` (users/groups/ACLs/sessions/**config drafts**) at `DB_PATH` | `./data/db` |
+| `/data` | `perms.db` (users/groups/ACLs/sessions/audit/**config drafts**) at `DB_PATH` | `./data/db` |
 
-`./data` is gitignored. Losing it = losing accounts and ACLs (the file
-tree itself lives in `./data/root`). With plain `docker run`:
+`./data` is gitignored. Backup = copy both directories (container
+stopped, or `sqlite3 perms.db ".backup"` while running); restore =
+mount them back. Losing `/data` = losing accounts, grants and audit
+(the file tree itself lives in `./data/root` and survives). With plain
+`docker run`:
 
 ```sh
 docker run -d --name fx -p 8080:8080 \
@@ -57,9 +88,9 @@ docker run -d --name fx -p 8080:8080 \
 
 ## Configuration (env → flags)
 
-All flags have env defaults; `docker run -e` or compose `environment` is
-enough (see `cmd/server/main.go` for the full list). Bad numeric env
-values fail at startup instead of falling back silently.
+All flags have env defaults; `docker run -e` or compose `environment`
+is enough (see `cmd/server/main.go` for the full list). Bad numeric
+env values fail at startup instead of falling back silently.
 
 | env | default in image | meaning |
 |---|---|---|
@@ -73,10 +104,21 @@ values fail at startup instead of falling back silently.
 | `AUTH_RPS` / `AUTH_BURST` | `3` / `10` | per-IP login rate limit (`AUTH_RPS=0` disables) |
 | `LOG_LEVEL` / `LOG_JSON` | `info` / `true` | structured logging |
 
-`HUB.md` in this directory is the README published with the image to
-Docker Hub (end-user view: pull + run + configure); this file is the
-repo-side view (build + develop + deploy locally). Keep the two config
-tables in sync when adding flags.
+Everything else — tenants, users, groups, API keys, grants, expiries,
+suspension — is *runtime data* in `perms.db`, managed through the GUI
+or the API, never through env.
+
+The server speaks plain HTTP (`SameSite=Lax` cookies), so terminate
+TLS at your reverse proxy; give it `client_max_body_size` ≥ `MAX_MB`
+so uploads pass through. Every request carries an `X-Request-Id` that
+appears in both the API responses and the JSON logs.
+
+## Upgrades
+
+Migrations run automatically at startup and are **not reversed on
+rollback**: before a version bump, stop the container and copy
+`/data`. `GET /` is the health endpoint (used by the image's
+HEALTHCHECK and fine for k8s readiness).
 
 ## Postgres (future) and k8s
 
@@ -91,12 +133,17 @@ SQLite. When wiring it up, add `DB_DRIVER`/`DATABASE_URL` handling in
 A k8s deployment is the next step after that: the ConfigMap covers the
 env vars, two PersistentVolumeClaims map to `/data/root` and `/data`,
 and the Postgres service becomes a StatefulSet — see
-`deployments/k8s/README.md`. The healthcheck endpoint is `GET /`
-(readiness on `/` is fine; it only serves the static bundle).
+`deployments/k8s/README.md`.
 
 ## Smoke test after start
 
 ```sh
-BASE_URL=http://localhost:8080 ADMIN_TENANT=system ADMIN_USER=admin ADMIN_PASS=admin \
+APP_PORT=8098 make docker-test
+# or against any running instance:
+BASE_URL=http://localhost:8098 ADMIN_TENANT=system ADMIN_USER=admin ADMIN_PASS=admin \
   ./scripts/test_files.sh   # full 323-case API regression, safe to re-run
 ```
+
+NB: `test_files.sh` defaults to `http://localhost:8080` — if some other
+stack owns that port on your machine, always pass `BASE_URL` (or
+`APP_PORT` through the make target), or you will be testing that stack.
