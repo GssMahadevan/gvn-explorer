@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, Form, Input, Select, Space, Table, Tag, Typography } from 'antd';
+import { Button, Form, Select, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { api, qs } from '../api';
 import type { Group, Me } from '../types';
@@ -7,6 +7,7 @@ import { useListView } from '../useListView';
 import { useFlash } from '../flash';
 import ListSearch from '../components/ListSearch';
 import ActiveFilterSelect from '../components/ActiveFilterSelect';
+import PrincipalSelect from '../components/PrincipalSelect';
 import RowActions from '../components/RowActions';
 import GroupForm from '../components/forms/GroupForm';
 
@@ -19,6 +20,10 @@ export default function GroupsPanel({ me }: { me: Me }) {
   const [memberForm] = Form.useForm();
   const [formFor, setFormFor] = useState<Group | 'new' | null>(null);
   const groups = lv.payload ?? [];
+  // member suggestions come from the selected group's own tenant — exactly
+  // the scope the backend resolves the username in.
+  const gidSel = Form.useWatch('gid', memberForm) as number | undefined;
+  const memberTenant = groups.find((g) => g.id === gidSel)?.tenant ?? me.tenant;
 
   const addMember = async (v: { gid?: number; username: string }) => {
     if (!v.gid) {
@@ -180,7 +185,13 @@ export default function GroupsPanel({ me }: { me: Me }) {
           />
         </Form.Item>
         <Form.Item name="username" noStyle rules={[{ required: true }]}>
-          <Input style={{ width: 150 }} placeholder="username" />
+          <PrincipalSelect
+            kind="user"
+            tenant={memberTenant}
+            style={{ width: 200 }}
+            placeholder="username (group's tenant)"
+            testId="member-user"
+          />
         </Form.Item>
         <Button type="primary" htmlType="submit">
           Add member

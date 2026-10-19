@@ -262,6 +262,7 @@ optional query parameters, so the GUI drives every panel identically:
 | `sort`   | sort key (see below)                                                |
 | `dir`    | `asc` or `desc`                                                     |
 | `active` | `true`/`false` (or `1`/`0`): only active or only suspended principals — users/groups/tenants lists only; a 400 anywhere else |
+| `tenant` | exact tenant name — scopes users/groups lists (who is available in one tenant); a 400 on any list without that capability |
 
 Anything outside the whitelists gets a 400, so typos surface loudly instead
 of silently changing what a query means. **Every response carries an
@@ -280,6 +281,7 @@ page returned, which is all a caller needs to compute the last page.
 ```sh
 curl -b jar 'localhost:8080/api/v1/users?q=ali&col=username&sort=created&dir=desc&limit=25&offset=25'
 curl -b jar 'localhost:8080/api/v1/users?active=false'   # suspended accounts only
+curl -b jar 'localhost:8080/api/v1/users?tenant=acme'    # one tenant's roster
 ```
 
 File listings live on disk, not in SQL, so fs search/sort/paging run
@@ -344,7 +346,12 @@ entity lists (users, groups, tenants, grants) show `active` and
 `description` columns with an all/active/suspended filter that maps
 straight onto `?active=` — suspended principals are one click away. Every
 create/edit goes through a small per-entity modal (users, groups, tenants,
-grants; edit mode only offers what the API's PUT accepts). API errors and
+grants; edit mode only offers what the API's PUT accepts). The tenant and
+principal fields of those modals are real pickers, not free text: the
+grant modal and the group-members form suggest user/group names scoped to
+the selected tenant via `?tenant=`, and the tenant control matches the
+backend's rule — super admins search all tenants, tenant admins see their
+own fixed. API errors and
 confirmations land in a **flash center** under the header: the latest
 error or success shows for 30 seconds, the full history stays behind the
 badge and clears on demand — no modal dialogs standing between you and

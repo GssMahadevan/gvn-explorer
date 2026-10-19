@@ -419,6 +419,21 @@ t "$AJ" "users active invalid" 400 GET "/api/v1/users?active=maybe"
 t "$AJ" "fs active unsupported" 400 GET "/api/v1/fs?path=/&active=true"
 t "$AJ" "events active unsupported" 400 GET "/api/v1/events?active=true"
 
+# tenant=<name> exact scope on users/groups lists (the grant/member form
+# pickers depend on it); an unknown tenant is a valid empty filter, and
+# lists without the capability reject the parameter.
+t "$AJ" "users tenant filter" 200 GET "/api/v1/users?tenant=mt$SFX"
+check "tenant filter only returns that tenant" "$(jq -e --arg t "mt$SFX" 'all(.[]; .tenant==$t)' /tmp/resp.json >/dev/null; echo $?)"
+check "tenant filter includes meta user" "$(jq -e --arg u "mu$SFX" 'any(.[]; .username==$u)' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "groups tenant filter" 200 GET "/api/v1/groups?tenant=mt$SFX"
+check "groups tenant filter only own tenant" "$(jq -e --arg t "mt$SFX" 'all(.[]; .tenant==$t)' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "tenant filter unknown" 200 GET "/api/v1/users?tenant=no-such-tenant"
+check "unknown tenant filter is empty" "$(jq -e 'length==0' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "tenant filter combines with q" 200 GET "/api/v1/users?tenant=mt$SFX&q=mu"
+check "combined filter still scoped" "$(jq -e --arg t "mt$SFX" 'all(.[]; .tenant==$t)' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "perms tenant filter unsupported" 400 GET "/api/v1/perms?path=/&tenant=x"
+t "$AJ" "fs tenant filter unsupported" 400 GET "/api/v1/fs?path=/&tenant=x"
+
 # tenant-wide kill switch: logins die, live sessions die, rows survive
 t "$AJ" "reinstate meta user" 200 POST "/api/v1/users/$MUID/active" '{"active":true}'
 t "$BJ" "login meta user" 200 POST /api/v1/auth/login "{\"tenant\":\"mt$SFX\",\"username\":\"mu$SFX\",\"password\":\"pw-$SFX\"}"

@@ -273,6 +273,35 @@ func TestTenantNameIsolation(t *testing.T) {
 }
 
 // Tenant admins manage their own namespace only and do NOT bypass file ACLs.
+// TestTenantFilter: users/groups lists accept tenant=<name> as an exact
+// scope (for the comboboxes in grant/member forms); lists without the
+// capability reject the parameter with 400.
+func TestTenantFilter(t *testing.T) {
+	e := newEnv(t)
+	u := e.srv.URL
+	must(t, e.admin, "POST", u+"/api/v1/tenants", `{"name":"globex"}`, 201)
+	must(t, e.admin, "POST", u+"/api/v1/users", `{"tenant":"globex","username":"g-user","password":"pw"}`, 201)
+	must(t, e.admin, "POST", u+"/api/v1/groups", `{"tenant":"globex","name":"g-grp"}`, 201)
+
+	for _, tc := range []struct{ path, want string }{
+		{"/api/v1/users?tenant=globex", "globex"},
+		{"/api/v1/groups?tenant=globex", "globex"},
+	} {
+		for _, row := range mustList(t, e.admin, "GET", u+tc.path, 200) {
+			if m := row.(map[string]any); m["tenant"] != tc.want {
+				t.Fatalf("tenant filter leaked %v under %s", m, tc.path)
+			}
+		}
+	}
+	// an unknown tenant is a valid filter that matches nothing
+	if n := len(mustList(t, e.admin, "GET", u+"/api/v1/users?tenant=nope", 200)); n != 0 {
+		t.Fatalf("unknown tenant filter returned %d rows, want 0", n)
+	}
+	// capability-gated: other list endpoints reject the parameter
+	must(t, e.admin, "GET", u+"/api/v1/perms?path=%2F&tenant=acme", "", 400)
+	must(t, e.admin, "GET", u+"/api/v1/fs?path=%2F&tenant=acme", "", 400)
+}
+
 func TestTenantAdminScope(t *testing.T) {
 	e := newEnv(t)
 	u := e.srv.URL

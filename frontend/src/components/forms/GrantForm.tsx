@@ -1,8 +1,10 @@
 import { useEffect } from 'react';
-import { Checkbox, Form, Input, InputNumber, Modal, Select, Space, Typography } from 'antd';
+import { Checkbox, Form, InputNumber, Modal, Select, Space, Typography } from 'antd';
 import { api } from '../../api';
 import { useFlash } from '../../flash';
 import type { Me } from '../../types';
+import PrincipalSelect from '../PrincipalSelect';
+import TenantSelect from '../TenantSelect';
 
 // Grant modal for one path: PUT /api/v1/perms is an upsert, so changing a
 // grant = save it again (revoke stays the row's action). The target path
@@ -22,6 +24,10 @@ export default function GrantForm({
 }) {
   const flash = useFlash();
   const [form] = Form.useForm();
+  // live values feeding the principal suggestions: the backend resolves
+  // names inside the selected tenant, so the picker follows that scope.
+  const ptype = (Form.useWatch('principal_type', form) ?? 'user') as 'user' | 'group';
+  const tenantSel = (Form.useWatch('tenant', form) as string) || me.tenant;
 
   useEffect(() => {
     if (!open) return;
@@ -87,10 +93,20 @@ export default function GrantForm({
           />
         </Form.Item>
         <Form.Item name="tenant" label="Tenant" rules={[{ required: true }]}>
-          <Input placeholder={`defaults to ${me.tenant}`} />
+          <TenantSelect me={me} testId="grant-tenant" />
         </Form.Item>
-        <Form.Item name="principal" label="Principal name" rules={[{ required: true }]}>
-          <Input placeholder="user or group name in that tenant" />
+        <Form.Item
+          name="principal"
+          label="Principal name"
+          extra={`suggestions come from ${ptype} names in ${tenantSel}`}
+          rules={[{ required: true }]}
+        >
+          <PrincipalSelect
+            kind={ptype}
+            tenant={tenantSel}
+            placeholder="user or group name in that tenant"
+            testId="grant-principal"
+          />
         </Form.Item>
         <Form.Item name="exp" label="Expires in days">
           <InputNumber min={0.1} style={{ width: '100%' }} placeholder="blank = never" />

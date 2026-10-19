@@ -350,6 +350,7 @@ var usersListSpec = ListSpec{
 	Cols:         []string{"username", "tenant", "description"},
 	DefSort:      "username",
 	ActiveFilter: true,
+	TenantFilter: true,
 }
 
 func (a *API) handleUsersList(w http.ResponseWriter, r *http.Request) {
@@ -663,6 +664,7 @@ var groupsListSpec = ListSpec{
 	Cols:         []string{"name", "tenant", "description"},
 	DefSort:      "name",
 	ActiveFilter: true,
+	TenantFilter: true,
 }
 
 func (a *API) handleGroupsList(w http.ResponseWriter, r *http.Request) {

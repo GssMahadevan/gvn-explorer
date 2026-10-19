@@ -518,8 +518,9 @@ fs.mkdirSync(OUT, { recursive: true });
       (await visiblePanelText()).includes('walk-perms.md') &&
         (await visiblePanelText()).includes('permissions on'),
     );
-    // grant r to alice@acme on the exact file via the modal (the tenant
-    // field targets a cross-tenant principal; system/alice does not exist)
+    // grant r to alice@acme on the exact file via the modal. The tenant
+    // field is a real picker now (super admin: remote-search of tenants)
+    // and the principal box suggests names only inside the selected tenant.
     check('Grant access button opens grant modal', await (async () => {
       await mouseClick('button', '^Grant access$');
       try {
@@ -529,8 +530,27 @@ fs.mkdirSync(OUT, { recursive: true });
       }
       return /Grant access/.test(await modalText()) && /inherit down/.test(await modalText());
     })());
-    await fillModal('user or group name in that tenant', 'alice');
-    await fillModal('defaults to system', 'acme');
+    const tenantSelPos = await page.evaluate(() => {
+      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+      const s = m?.querySelector('[data-testid="grant-tenant"]');
+      if (!s) return null;
+      const q = s.getBoundingClientRect();
+      return { x: q.x + q.width / 2, y: q.y + q.height / 2 };
+    });
+    check('grant modal tenant field is a tenant select (super admin)', tenantSelPos !== null);
+    check('tenant picker switches to acme', tenantSelPos !== null && (await pickOption(tenantSelPos.x, tenantSelPos.y, 'acme')));
+    await page.evaluate(() => {
+      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+      m?.querySelector('[data-testid="grant-principal"] input')?.focus();
+    });
+    await page.keyboard.type('alice');
+    await new Promise((r) => setTimeout(r, 900)); // debounce + round trip
+    check('principal suggestions are scoped to the selected tenant', await page.evaluate(() => {
+      const d = [...document.querySelectorAll('.ant-select-dropdown')].find((x) => x.offsetParent !== null);
+      if (!d) return false;
+      const opts = [...d.querySelectorAll('.ant-select-item-option')].map((o) => o.textContent);
+      return opts.some((o) => /alice/.test(o)) && !opts.some((o) => /carol/.test(o));
+    }));
     await mouseClick('.ant-modal button', '^Save grant$');
     await new Promise((r) => setTimeout(r, 1400));
     check('grant on the file appears in grants table', (await visiblePanelText()).includes('acme/alice'));

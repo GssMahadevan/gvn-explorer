@@ -3,6 +3,7 @@ import { Form, Input, Modal } from 'antd';
 import { api } from '../../api';
 import { useFlash } from '../../flash';
 import type { Group, Me } from '../../types';
+import TenantSelect from '../TenantSelect';
 
 // Create/update modal for a group.
 //   create: tenant (super admin only) + name + description.
@@ -69,9 +70,9 @@ export default function GroupForm({
       destroyOnHidden
     >
       <Form form={form} layout="vertical" onFinish={submit}>
-        {me.is_super && isCreate && (
+        {isCreate && (
           <Form.Item name="tenant" label="Tenant" rules={[{ required: true }]}>
-            <Input placeholder={`defaults to ${me.tenant}`} />
+            <TenantSelect me={me} testId="group-tenant" />
           </Form.Item>
         )}
         {!isCreate && (

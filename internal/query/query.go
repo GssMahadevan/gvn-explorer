@@ -15,6 +15,7 @@ type List struct {
 	Sort   string // sort key, already validated against the endpoint whitelist
 	Dir    string // "asc" or "desc"
 	Active *bool  // exact-match filter on the active column; nil = no filter
+	Tenant string // exact-match tenant name filter (users/groups lists); "" = none
 }
 
 // Like wraps Q as a SQL LIKE pattern, escaping LIKE metacharacters.

@@ -3,6 +3,7 @@ import { Checkbox, Form, Input, InputNumber, Modal, Typography } from 'antd';
 import { api } from '../../api';
 import { useFlash } from '../../flash';
 import type { Me, User } from '../../types';
+import TenantSelect from '../TenantSelect';
 
 // Create/update modal for a single user.
 //   create (editing === null): full signup form (device users have a blank
@@ -83,9 +84,9 @@ export default function UserForm({
       destroyOnHidden
     >
       <Form form={form} layout="vertical" onFinish={submit}>
-        {me.is_super && isCreate && (
+        {isCreate && (
           <Form.Item name="tenant" label="Tenant" rules={[{ required: true }]}>
-            <Input placeholder={`defaults to ${me.tenant}`} />
+            <TenantSelect me={me} testId="user-tenant" />
           </Form.Item>
         )}
         {!isCreate && (

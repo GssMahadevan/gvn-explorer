@@ -23,6 +23,7 @@ type ListSpec struct {
 	DefSort      string          // sort key when sort is omitted
 	DefDir       string          // direction when dir is omitted ("" = asc)
 	ActiveFilter bool            // endpoint accepts active=true|false (entity lists)
+	TenantFilter bool            // endpoint accepts tenant=<name> (users/groups lists)
 }
 
 // parseList reads limit/offset/q/col/sort/dir (and active, for specs that
@@ -94,6 +95,13 @@ func parseList(w http.ResponseWriter, r *http.Request, spec ListSpec) (query.Lis
 			writeError(w, http.StatusBadRequest, "bad_request", "active must be true or false")
 			return l, false
 		}
+	}
+	if v := qs.Get("tenant"); v != "" {
+		if !spec.TenantFilter {
+			writeError(w, http.StatusBadRequest, "bad_request", "this list does not support the tenant filter")
+			return l, false
+		}
+		l.Tenant = v
 	}
 	return l, true
 }

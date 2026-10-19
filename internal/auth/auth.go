@@ -347,6 +347,10 @@ func (s *Store) ListUsers(ctx context.Context, tenantID int64, o query.List) ([]
 		conds = append(conds, "u.tenant_id = ?")
 		args = append(args, tenantID)
 	}
+	if o.Tenant != "" {
+		conds = append(conds, "t.name = ?")
+		args = append(args, o.Tenant)
+	}
 	if o.Q != "" {
 		like := o.Like()
 		switch o.Col {
@@ -496,6 +500,10 @@ func (s *Store) ListGroups(ctx context.Context, tenantID int64, o query.List) ([
 	if tenantID != 0 {
 		conds = append(conds, "g.tenant_id = ?")
 		args = append(args, tenantID)
+	}
+	if o.Tenant != "" {
+		conds = append(conds, "t.name = ?")
+		args = append(args, o.Tenant)
 	}
 	if o.Q != "" {
 		like := o.Like()
