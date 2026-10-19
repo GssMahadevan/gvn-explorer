@@ -283,7 +283,7 @@ export default function EditorModal({
             />
           )}
           {yaml ? (
-            <YamlEditor text={text} onChange={onTreeChange} readOnly={!canW} />
+            <YamlEditor text={text} onChange={onTreeChange} readOnly={!canW} onClose={onClose} />
           ) : (
             <textarea
               className="code"

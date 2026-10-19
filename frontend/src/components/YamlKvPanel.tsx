@@ -1,23 +1,26 @@
 import { Button, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { isPair, isScalar, Pair, Scalar, type Node, type YAMLMap } from 'yaml';
-import YamlLeaf, { YamlInlineComment, YamlNoteEditor } from './YamlLeaf';
+import YamlLeaf, { YamlNoteEditor } from './YamlLeaf';
 import YamlRowActions from './YamlRowActions';
 import {
-  applyScalarText,
-  isBlockish,
+  cmtGet,
   lockedLabel,
   makeLeafAccess,
+  mono,
   scalarText,
+  short,
   summaryOf,
   type EditorCtx,
   type Resolved,
 } from './yamlutil';
 
-// Mapping detail: one row per entry, columns K | V | description — the
-// description column is the entry's inline YAML comment. Container
-// values (map/seq) show a summary button that opens them in this panel;
-// clicking any row selects it and moves the tree + detail to that node.
+// Mapping level of the drill-down: one row per entry — K | V |
+// description. Values and descriptions are shown, not edited here:
+// clicking any row pushes the path stack and opens the leaf screen for
+// a scalar, or the next level for a map/seq (whose row shows a ▸
+// summary button). The table itself edits the structure of THIS node:
+// rename keys, add, reorder, delete.
 export default function YamlKvPanel({ r, path, ctx }: { r: Resolved; path: string; ctx: EditorCtx }) {
   const map = r.node as YAMLMap;
   const panelAcc = makeLeafAccess(r, ctx.edit);
@@ -57,37 +60,19 @@ export default function YamlKvPanel({ r, path, ctx }: { r: Resolved; path: strin
       render: (p, _1, i) => {
         const childPath = `${path}.${i}`;
         const val = (p.value ?? null) as Node | null;
-        if (val != null && lockedLabel(val)) return <Tag>{lockedLabel(val)}</Tag>;
-        if (val == null)
-          return (
-            <YamlLeaf
-              value=""
-              placeholder="(empty value)"
-              disabled={ctx.readOnly}
-              testId={`yaml-val-${childPath}`}
-              onCommit={(v) =>
-                ctx.edit(() => {
-                  const s = new Scalar(v);
-                  applyScalarText(s, v);
-                  p.value = s;
-                })
-              }
-            />
-          );
-        if (!isScalar(val))
+        const lock = val != null ? lockedLabel(val) : null;
+        if (lock) return <Tag>{lock}</Tag>;
+        if (val != null && !isScalar(val))
           return (
             <Button size="small" data-testid={`yaml-open-${childPath}`} onClick={(e) => { e.stopPropagation(); ctx.select(childPath); }}>
-              {summaryOf(val)}
+              {summaryOf(val)} ▸
             </Button>
           );
+        const raw = val == null ? '' : scalarText(val as Scalar).replace(/\n+/g, ' ');
         return (
-          <YamlLeaf
-            value={scalarText(val as Scalar)}
-            multiline={isBlockish(val as Scalar)}
-            disabled={ctx.readOnly}
-            testId={`yaml-val-${childPath}`}
-            onCommit={(v) => ctx.edit(() => applyScalarText(val as Scalar, v))}
-          />
+          <span data-testid={`yaml-valview-${childPath}`} style={{ ...mono, opacity: val == null ? 0.35 : 0.75 }}>
+            {val == null ? '(empty)' : short(raw)}
+          </span>
         );
       },
     },
@@ -95,9 +80,14 @@ export default function YamlKvPanel({ r, path, ctx }: { r: Resolved; path: strin
       title: 'description',
       width: 220,
       render: (p, _1, i) => {
-        const acc = makeLeafAccess({ doc: r.doc, node: (p.value ?? null) as Node | null, parent: map, pair: p }, ctx.edit);
-        if (!acc) return null;
-        return <YamlInlineComment acc={acc} testPath={`${path}.${i}`} readOnly={ctx.readOnly} />;
+        const holder = (p.value ?? p.key) as { comment?: string };
+        const text = cmtGet(holder.comment);
+        if (!text) return null;
+        return (
+          <span data-testid={`yaml-cmtview-${path}.${i}`} style={{ ...mono, fontSize: 12, opacity: 0.55 }}>
+            {short(text, 60)}
+          </span>
+        );
       },
     },
     {

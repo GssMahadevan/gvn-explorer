@@ -1,22 +1,24 @@
 import { Button, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { isScalar, Scalar, type Node, type YAMLSeq } from 'yaml';
-import YamlLeaf, { YamlInlineComment, YamlNoteEditor } from './YamlLeaf';
+import { YamlNoteEditor } from './YamlLeaf';
 import YamlRowActions from './YamlRowActions';
 import {
-  applyScalarText,
-  isBlockish,
+  cmtGet,
   lockedLabel,
   makeLeafAccess,
+  mono,
   scalarText,
+  short,
   summaryOf,
   type EditorCtx,
   type Resolved,
 } from './yamlutil';
 
-// Array detail: two columns — value and comment — plus a narrow action
-// strip. Items that are themselves maps/seqs open as sub-pages, so the
-// k8s "list of env vars" or "list of containers" shape stays readable.
+// Array level: value and comment columns, view-only — clicking a row
+// pushes the stack (leaf screen for a scalar, next level for a map/seq
+// item shown as a ▸ summary button). The table edits the shape of this
+// array: add, reorder, delete items.
 export default function YamlSeqPanel({ r, path, ctx }: { r: Resolved; path: string; ctx: EditorCtx }) {
   const seq = r.node as YAMLSeq;
   const panelAcc = makeLeafAccess(r, ctx.edit);
@@ -41,17 +43,13 @@ export default function YamlSeqPanel({ r, path, ctx }: { r: Resolved; path: stri
         if (!isScalar(item))
           return (
             <Button size="small" data-testid={`yaml-open-${childPath}`} onClick={(e) => { e.stopPropagation(); ctx.select(childPath); }}>
-              {summaryOf(item)}
+              {summaryOf(item)} ▸
             </Button>
           );
         return (
-          <YamlLeaf
-            value={scalarText(item as Scalar)}
-            multiline={isBlockish(item as Scalar)}
-            disabled={ctx.readOnly}
-            testId={`yaml-val-${childPath}`}
-            onCommit={(v) => ctx.edit(() => applyScalarText(item as Scalar, v))}
-          />
+          <span data-testid={`yaml-valview-${childPath}`} style={{ ...mono, opacity: 0.75 }}>
+            {short(scalarText(item as Scalar).replace(/\n+/g, ' '))}
+          </span>
         );
       },
     },
@@ -59,9 +57,13 @@ export default function YamlSeqPanel({ r, path, ctx }: { r: Resolved; path: stri
       title: 'comment',
       width: 220,
       render: (item, _1, i) => {
-        const acc = makeLeafAccess({ doc: r.doc, node: item, parent: seq, pair: null }, ctx.edit);
-        if (!acc) return null;
-        return <YamlInlineComment acc={acc} testPath={`${path}.${i}`} readOnly={ctx.readOnly} />;
+        const text = cmtGet((item as { comment?: string }).comment);
+        if (!text) return null;
+        return (
+          <span data-testid={`yaml-cmtview-${path}.${i}`} style={{ ...mono, fontSize: 12, opacity: 0.55 }}>
+            {short(text, 60)}
+          </span>
+        );
       },
     },
     {

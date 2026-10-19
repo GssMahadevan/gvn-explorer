@@ -149,6 +149,60 @@ export function pathLabel(docs: Document[], path: string): string {
   return out;
 }
 
+export type NodeKind = 'file' | 'doc' | 'map' | 'seq' | 'scalar';
+
+export const kindOf = (n: Node | null): NodeKind =>
+  n == null || isScalar(n) || isAlias(n) ? 'scalar' : isMap(n) ? 'map' : isSeq(n) ? 'seq' : 'scalar';
+
+// One row of the path stack: flat rows from root down to the selected
+// node, top item = parent, so deep nesting costs zero horizontal width.
+export interface Crumb {
+  path: string;
+  label: string;
+  kind: NodeKind;
+  summary: string;
+}
+
+export function segmentsOf(docs: Document[], path: string): Crumb[] {
+  const parts = path.split('.');
+  const ds = parts[0] ?? '';
+  if (!/^d\d+$/.test(ds)) return [];
+  const di = Number(ds.slice(1));
+  const doc = docs[di];
+  if (!doc) return [];
+  const out: Crumb[] = [];
+  if (docs.length > 1) out.push({ path: 'd', label: 'file', kind: 'file', summary: `${docs.length} documents` });
+  out.push({
+    path: ds,
+    label: docs.length > 1 ? `document ${di + 1}` : 'root',
+    kind: kindOf(doc.contents as Node),
+    summary: summaryOf(doc.contents as Node),
+  });
+  let node = (doc.contents ?? null) as Node | null;
+  let acc = ds;
+  for (const seg of parts.slice(1)) {
+    const i = Number(seg);
+    acc += '.' + seg;
+    if (node == null || isAlias(node)) break;
+    if (isMap(node)) {
+      const p = node.items[i];
+      if (!p || !isPair(p)) break;
+      out.push({
+        path: acc,
+        label: String((p.key as { value?: unknown })?.value ?? '?'),
+        kind: kindOf(p.value as Node),
+        summary: summaryOf(p.value as Node),
+      });
+      node = (p.value ?? null) as Node | null;
+    } else if (isSeq(node)) {
+      const item = (node.items[i] ?? null) as Node | null;
+      out.push({ path: acc, label: `[${i}]`, kind: kindOf(item), summary: summaryOf(item) });
+      node = item;
+    } else break;
+  }
+  return out;
+}
+
 // what every detail panel needs: mutate-the-AST-and-reserialize, open
 // another node in the detail panel, and whether editing is allowed.
 export interface EditorCtx {

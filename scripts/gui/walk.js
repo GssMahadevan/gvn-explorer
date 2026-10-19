@@ -1,5 +1,5 @@
-// GUI smoke-walk: login -> files table -> sort -> search -> YAML tree
-// editor (draft autosave + publish) -> navigate ->
+// GUI smoke-walk: login -> files table -> sort -> search -> YAML
+// path-stack editor (drill-down + draft autosave + publish) -> navigate ->
 // perms -> users -> tenants, asserting along the way + screenshots.
 // Covers the modal-based entity forms (create/edit), the per-row action
 // menu (the vertical three-dots on every table row), the active-filter
@@ -258,8 +258,9 @@ fs.mkdirSync(OUT, { recursive: true });
     });
     await new Promise((r) => setTimeout(r, 1100));
 
-    // ---- YAML structured editor: explorer tree selects nodes, detail
-    // panel edits them; edit -> draft autosave -> publish. The fixture
+    // ---- YAML structured editor: the flat path stack (file/document/
+    // keys, top item = parent) navigates, table rows push deeper, the
+    // leaf screen edits; edit -> draft autosave -> publish. The fixture
     // carries a leading comment, an inline comment, a block scalar and
     // two documents so the file assertions afterwards prove the AST
     // round-trip kept every one.
@@ -274,48 +275,86 @@ fs.mkdirSync(OUT, { recursive: true });
         el.blur(); // YamlLeaf commits on blur
         return true;
       }, sel, v);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await page.evaluate(() =>
       [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'walk-cfg.yml')?.click(),
     );
     await waitModal();
-    check('yaml file opens tree+detail editor, not a raw textarea', await page.evaluate(() => {
+    await page.waitForFunction(
+      () =>
+        [...document.querySelectorAll('.ant-modal')]
+          .find((x) => x.offsetParent !== null)
+          ?.querySelector('[data-testid="yaml-kv-d0"]') ?? false,
+      { timeout: 5000 },
+    ).catch(() => {});
+    check('yaml file opens path-stack editor, not a raw textarea', await page.evaluate(() => {
       const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
       return !!m && !!m.querySelector('[data-testid="yaml-editor"]') &&
-        !!m.querySelector('[data-testid="yaml-tree-pane"]') && !!m.querySelector('[data-testid="yaml-kv-d0"]') &&
+        !!m.querySelector('[data-testid="yaml-nav"]') && !!m.querySelector('[data-testid="yaml-kv-d0"]') &&
         !m.querySelector('textarea.code');
     }));
-    check('tree shows the document structure incl. both documents', await page.evaluate(() => {
+    check('path stack is flat: file + document rows, keys table shows values', await page.evaluate(() => {
       const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
       if (!m) return false;
-      const t = m.querySelector('[data-testid="yaml-node-d0.1"]');
-      return !!t && /replicas/.test(t.textContent) &&
-        !!m.querySelector('[data-testid="yaml-node-d0.3"]') && /document 2 of 2/.test(m.innerText);
+      const file = m.querySelector('[data-testid="yaml-crumb-d"]');
+      const doc = m.querySelector('[data-testid="yaml-crumb-d0"]');
+      const val = m.querySelector('[data-testid="yaml-valview-d0.1"]');
+      return !!file && /file/.test(file.textContent) && !!doc && /document 1/.test(doc.textContent) &&
+        !!val && val.value === undefined && /2/.test(val.textContent) &&
+        !!m.querySelector('[data-testid="yaml-cmtview-d0.0"]');
     }));
-    // selecting the app row puts its note + inline comment in the detail
-    await mouseClick('[data-testid="yaml-node-d0.0"]');
-    await new Promise((r) => setTimeout(r, 600));
-    check('detail panel edits notes and comments of the selected line', await page.evaluate(() => {
+    // the file level of a multi-document file lists every document...
+    await mouseClick('[data-testid="yaml-crumb-d"]');
+    await sleep(600);
+    check('file level switches between documents', await page.evaluate(() => {
+      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+      const d2 = m?.querySelector('[data-testid="yaml-open-d1"]');
+      return !!d2 && /document 2/.test(d2.textContent);
+    }));
+    await mouseClick('[data-testid="yaml-open-d1"]');
+    await sleep(600);
+    check('document 2 opens as its own tree', await page.evaluate(() => {
+      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+      const k = m?.querySelector('[data-testid="yaml-key-d1.0"]');
+      return !!m.querySelector('[data-testid="yaml-kv-d1"]') && !!k && k.value === 'agent';
+    }));
+    await mouseClick('[data-testid="yaml-crumb-d"]');
+    await sleep(600);
+    await mouseClick('[data-testid="yaml-open-d0"]');
+    await sleep(600);
+    // clicking a table row pushes the stack: the leaf screen carries
+    // the note above the line and the inline comment
+    await mouseClick('[data-testid="yaml-valview-d0.0"]');
+    await sleep(600);
+    check('row click pushes leaf screen editing note + value + comment', await page.evaluate(() => {
       const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
       if (!m) return false;
       const note = m.querySelector('[data-testid="yaml-note-d0.0"]');
       const cmt = m.querySelector('[data-testid="yaml-cmt-d0.0"]');
-      return /(^|\.)(root|document 1)\.app/.test(m.querySelector('[data-testid="yaml-detail-path"]')?.textContent ?? '') &&
+      const val = m.querySelector('[data-testid="yaml-val-d0.0"]');
+      return !!m.querySelector('[data-testid="yaml-scalar-d0.0"]') &&
+        !!m.querySelector('[data-testid="yaml-crumb-d0.0"]') &&
+        /(^|\.)(root|document 1)\.app/.test(m.querySelector('[data-testid="yaml-detail-path"]')?.textContent ?? '') &&
         !!note && note.value.includes('site process config') &&
-        !!cmt && cmt.value.includes('do not touch');
+        !!cmt && cmt.value.includes('do not touch') && val && val.value === 'web1';
     }));
     // the block-scalar value gets a real multiline editor
-    await mouseClick('[data-testid="yaml-node-d0.3"]');
-    await new Promise((r) => setTimeout(r, 600));
+    await mouseClick('[data-testid="yaml-crumb-d0"]');
+    await sleep(600);
+    await mouseClick('[data-testid="yaml-valview-d0.3"]');
+    await sleep(600);
     check('block scalar gets an in-panel multiline editor', await page.evaluate(() => {
       const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
       const blk = m?.querySelector('[data-testid="yaml-val-d0.3"]');
       return !!blk && blk.tagName === 'TEXTAREA' && blk.value.includes('why this box exists');
     }));
-    // edit one scalar through the detail panel -> debounced autosave drafts it
-    await mouseClick('[data-testid="yaml-node-d0.1"]');
-    await new Promise((r) => setTimeout(r, 600));
+    // edit one scalar on the leaf screen -> debounced autosave drafts it
+    await mouseClick('[data-testid="yaml-crumb-d0"]');
+    await sleep(600);
+    await mouseClick('[data-testid="yaml-valview-d0.1"]');
+    await sleep(600);
     const typed = await setLeaf('[data-testid="yaml-val-d0.1"]', '5');
-    await new Promise((r) => setTimeout(r, 2500));
+    await sleep(2500);
     check('detail edit autosaves a draft server-side', typed && (await page.evaluate(() =>
       fetch('/api/v1/fs/draft?path=' + encodeURIComponent('/walk-cfg.yml'))
         .then((r) => r.json())

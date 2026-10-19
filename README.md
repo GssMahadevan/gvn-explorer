@@ -389,17 +389,22 @@ textarea, and its Save now sends the `base_mtime` captured on open: if
 the file changed underneath, the server refuses with 409 conflict and the
 text stays in the box to be copied out. **YAML config files** (`.yml`,
 `.yaml`) instead open the structured editor (`components/YamlEditor`),
-laid out like a file explorer: a **left tree** shows how the whole
-document is organized — every key, index and document is one row,
-parents above children, values hinted as truncated text or `{n}`/`[n]` —
-which reads fine at phone widths and auto-expands to whatever node you
-are editing. The **right side** edits the selected node as the shape it
-actually is: mappings as a **K / V / description** table (the description
-column is the entry's inline YAML comment), arrays as a **value /
-comment** table, scalars as a full-width editor where the note above the
-line and multiline block scalars get real text areas; on phone widths
-the detail opens as a drawer over the tree instead. Nested maps/seqs
-open as sub-pages, multi-document files appear as separate documents,
+organized like drilling into folders. The **left panel is a flat path
+stack**: one row per level — file (multi-doc files), document, key,
+index — top item is the root, the current node at the bottom, each row
+an icon + name + value hint. It is deliberately not an indented tree,
+so deeply nested files never need horizontal scrolling at any width;
+tapping any row jumps the editor back to that level, `↑ parent` pops
+one level (and closes the editor at the root). The **right side** edits
+the node the stack sits on: mappings as a **K / V / description** table
+(description = the entry's inline YAML comment), arrays as a **value /
+comment** table — both view-and-navigate, with container rows showing a
+`▸` summary button; clicking any row **pushes** the stack one level
+deeper, and scalars open a pushed full-width leaf editor where the note
+above the line and multiline block scalars get real text areas. On
+phone widths the path stack lives in a drawer that hides itself the
+moment you pick a level, and the editor keeps the full width.
+Multi-document files get a `file` level that lists every document,
 anchors/aliases display but stay locked — raw text is never hand-edited.
 Every change mutates the parsed AST (client-side `yaml`) and
 re-serializes it, so leading notes, inline comments and quoting styles
@@ -472,7 +477,7 @@ BASE_URL=http://localhost:8095 ADMIN_TENANT=system ADMIN_PASS=secret \
 when missing, boots a real server against a throwaway sandbox root with
 seeded fixture tenants/users, then drives `scripts/gui/walk.js` — a
 puppeteer-core walk of the live UI (login, file table, the ⋮ row action
-menus, modal forms, the YAML tree editor's draft-autosave → publish flow
+menus, modal forms, the YAML editor's drill-down + draft-autosave → publish flow
 incl. comment/block-scalar preservation, the active-filter wire format,
 flash center, per-file grant flow, header menus, dark mode, sign-out)
 with ~60 assertions plus a zero-console-error guard. `SHOTS=1` additionally
@@ -490,7 +495,7 @@ internal/audit/    append-only forensic event trail (authz/authn DML, fs_commit)
 internal/drafts/   per-path working copies for the draft/publish edit model
 internal/fsx/      sandboxed filesystem ops (list/read/write/mkdir/rename/delete)
 internal/handlers/ REST handlers + route table, JSON error envelope, rate limiters
-frontend/          React 19 + Ant Design GUI (Vite; list panels, per-entity form modals, row action menus, YAML tree editor w/ draft+publish, flash center; `npm run build` -> dist/ static bundle)
+frontend/          React 19 + Ant Design GUI (Vite; list panels, per-entity form modals, row action menus, YAML structured editor w/ draft+publish, flash center; `npm run build` -> dist/ static bundle)
 scripts/           test suites: test_files.sh (curl API regression), test_gui.sh + gui/ (puppeteer GUI walk + screenshots)
 web/               vanilla-JS GUI fallback (panels per view w/ paging+search+sort, editor, perms, admin)
 ```
