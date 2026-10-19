@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Button, Layout, Space, Spin, Tabs, Tag } from 'antd';
 import type { TabsProps } from 'antd';
 import { api } from './api';
+import { FolderOpenOutlined } from '@ant-design/icons';
 import type { Me } from './types';
 import Login from './components/Login';
 import FilesPanel from './panels/FilesPanel';
@@ -51,7 +52,10 @@ export default function App() {
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Layout.Header className="app-header">
-        <strong>File Explorer</strong>
+        <span className="app-brand">
+          <FolderOpenOutlined style={{ color: '#1677ff' }} />
+          File Explorer
+        </span>
         <Tabs
           activeKey={tab}
           onChange={setTab}

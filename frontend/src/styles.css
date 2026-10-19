@@ -12,6 +12,16 @@ body {
   flex: 1;
 }
 
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #fff;
+  font-size: 17px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .bar {
   display: flex;
   align-items: center;
