@@ -6,9 +6,12 @@
 set -u
 cd "$(dirname "$0")/.."
 DIST="${DIST:-dist}"
-OS=$(uname -s | tr '[:upper:]' '[:lower:]') # darwin | linux
-ARCH=$(uname -m)
+OS="${OS:-$(uname -s | tr '[:upper:]' '[:lower:]')}" # darwin | linux
+ARCH="${ARCH:-$(uname -m)}"
 case $ARCH in x86_64) ARCH=amd64 ;; aarch64) ARCH=arm64 ;; esac
+# OS=/ARCH= can be overridden to test another bundle — e.g. the Intel
+# Mac binary on Apple Silicon runs under Rosetta 2:
+#   ARCH=amd64 make test-dist   (windows bundles are not runnable here)
 
 PASS=0
 FAIL=0
