@@ -19,6 +19,12 @@ open http://localhost:8080 and sign in as `system / admin / admin`.
 No build tools, no Docker; the archive's own README explains the rest.
 Container: `ghcr.io/gssmahadevan/gvn-explorer:latest` (multi-arch).
 
+Prefer to watch first? Two ~1-minute narrated walkthroughs live in
+`docs/`: [demo-standalone.mp4](docs/demo-standalone.mp4) (release
+binary) and [demo-docker.mp4](docs/demo-docker.mp4) (container). They
+are real screencasts — the same binary and image we ship, driven by
+`make demo`.
+
 ## Run
 
 ```sh
