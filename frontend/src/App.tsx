@@ -14,6 +14,7 @@ export default function App() {
   // undefined = booting, null = anonymous (login screen), Me = session
   const [me, setMe] = useState<Me | null | undefined>(undefined);
   const [cur, setCur] = useState('/'); // current directory, shared: files + perms panels
+  const [tab, setTab] = useState('files'); // active tab (hooks: all before early returns)
 
   useEffect(() => {
     api<Me>('/api/v1/auth/me')
@@ -52,7 +53,9 @@ export default function App() {
       <Layout.Header className="app-header">
         <strong>File Explorer</strong>
         <Tabs
-          items={items}
+          activeKey={tab}
+          onChange={setTab}
+          items={items.map(({ key, label }) => ({ key, label }))}
           style={{ flex: 1, minWidth: 0 }}
           tabBarStyle={{ margin: 0 }}
         />
@@ -66,6 +69,15 @@ export default function App() {
           </Button>
         </Space>
       </Layout.Header>
+      {/* all panels stay mounted; only the active one is visible —
+          panel state (page, search, sort) survives tab switches */}
+      <Layout.Content style={{ padding: 16 }}>
+        {items.map(({ key, children }) => (
+          <div key={key} style={{ display: tab === key ? undefined : 'none' }}>
+            {children}
+          </div>
+        ))}
+      </Layout.Content>
     </Layout>
   );
 }
