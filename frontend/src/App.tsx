@@ -15,6 +15,7 @@ export default function App() {
   // undefined = booting, null = anonymous (login screen), Me = session
   const [me, setMe] = useState<Me | null | undefined>(undefined);
   const [cur, setCur] = useState('/'); // current directory, shared: files + perms panels
+  const [permPath, setPermPath] = useState('/'); // path the perms panel targets (a row's "perms" can point it at a file)
   const [tab, setTab] = useState('files'); // active tab (hooks: all before early returns)
   const [dark, setDark] = useState(() => localStorage.getItem('fx.theme') === 'dark');
 
@@ -43,9 +44,25 @@ export default function App() {
     location.reload();
   };
 
+  // navigating the browser follows the perms panel along (it shows grants
+  // for the directory you are standing in)…
+  const goto = (p: string) => {
+    setCur(p);
+    setPermPath(p);
+  };
+  // …unless a row's "perms" deliberately targets one specific file
+  const showPerms = (p: string) => {
+    setPermPath(p);
+    setTab('perms');
+  };
+
   const items: NonNullable<TabsProps['items']> = [
-    { key: 'files', label: 'Files', children: <FilesPanel cur={cur} setCur={setCur} /> },
-    { key: 'perms', label: 'Permissions', children: <PermsPanel cur={cur} me={me} /> },
+    {
+      key: 'files',
+      label: 'Files',
+      children: <FilesPanel cur={cur} setCur={goto} showPerms={showPerms} />,
+    },
+    { key: 'perms', label: 'Permissions', children: <PermsPanel path={permPath} me={me} /> },
   ];
   if (isMgr) {
     items.push({ key: 'users', label: 'Users', children: <UsersPanel me={me} /> });
@@ -55,7 +72,20 @@ export default function App() {
 
   return (
     <ConfigProvider
-      theme={{ algorithm: dark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm }}
+      theme={{
+        algorithm: dark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
+        components: {
+          // the header is dark navy in both themes, but default Tabs labels
+          // use the light-theme colorText (near-black) and turn invisible on
+          // it — only the active tab (primary blue) shows. force light text;
+          // the header nav is the only Tabs instance in the app.
+          Tabs: {
+            itemColor: 'rgba(255, 255, 255, 0.72)',
+            itemHoverColor: '#ffffff',
+            itemSelectedColor: '#ffffff',
+          },
+        },
+      }}
     >
       <Layout style={{ minHeight: '100vh' }}>
         <Layout.Header className="app-header">

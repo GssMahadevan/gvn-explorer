@@ -38,6 +38,18 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+/* antd v6's message list-content box spans the whole top of the viewport
+   while any toast is alive and would swallow clicks on the app header
+   (e.g. the user avatar right after any action shows a toast). pass clicks
+   through the container, keep the notices themselves interactive
+   (hover-to-pause). two-class selectors to outrank antd's injected css. */
+.ant-message .ant-message-list-content {
+  pointer-events: none;
+}
+.ant-message .ant-message-notice {
+  pointer-events: auto;
+}
+
 textarea.code {
   width: 100%;
   min-height: 320px;

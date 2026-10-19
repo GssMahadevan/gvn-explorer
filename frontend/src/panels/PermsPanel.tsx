@@ -19,13 +19,13 @@ import type { Grant, Me, PermsList } from '../types';
 import { useListView } from '../useListView';
 import ListSearch from '../components/ListSearch';
 
-// Permissions panel: grants on the current directory (nearest-ancestor
-// inheritance applies server-side), effective-for-you summary, grant
-// form (admin+), revoke.
-export default function PermsPanel({ cur, me }: { cur: string; me: Me }) {
+// Permissions panel: grants on a target path (a directory — or one file via
+// a row's "perms" action; nearest-ancestor inheritance applies server-side),
+// effective-for-you summary, grant form (admin+), revoke.
+export default function PermsPanel({ path, me }: { path: string; me: Me }) {
   const { message } = AntApp.useApp();
   const lv = useListView<PermsList>(
-    (s) => `/api/v1/perms?path=${encodeURIComponent(cur)}&${qs(s)}`,
+    (s) => `/api/v1/perms?path=${encodeURIComponent(path)}&${qs(s)}`,
     { sort: 'principal' },
   );
   const [form] = Form.useForm();
@@ -43,7 +43,7 @@ export default function PermsPanel({ cur, me }: { cur: string; me: Me }) {
     d: boolean;
   }) => {
     const body: Record<string, unknown> = {
-      path: cur,
+      path,
       principal_type: v.principal_type,
       principal: v.principal.trim(),
       tenant: v.tenant?.trim() || me.tenant,
@@ -134,7 +134,7 @@ export default function PermsPanel({ cur, me }: { cur: string; me: Me }) {
     <>
       <div className="bar">
         <span>
-          permissions on <Typography.Text code>{cur}</Typography.Text>
+          permissions on <Typography.Text code>{path}</Typography.Text>
         </span>
         <span className="grow" />
         <ListSearch

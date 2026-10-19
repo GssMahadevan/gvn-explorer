@@ -317,7 +317,9 @@ built with Vite. The Go server ships the built bundle as plain static
 files and never runs any JS itself; every list panel drives the shared
 paging/search/sort contract above, with antd's server-side table paging
 (`X-Total-Count` → last page). `docs/gui-survey.md` records the framework
-survey and the perf data behind this choice.
+survey and the perf data behind this choice. A file or folder row's
+**perms** action points the Permissions panel at that exact path, so
+granting access to one file is one click from the browser.
 
 ```sh
 cd frontend

@@ -25,9 +25,11 @@ import EditorModal from '../components/EditorModal';
 export default function FilesPanel({
   cur,
   setCur,
+  showPerms,
 }: {
   cur: string;
   setCur: (p: string) => void;
+  showPerms: (p: string) => void;
 }) {
   const { message } = AntApp.useApp();
   const lv = useListView<FsList>(
@@ -133,9 +135,12 @@ export default function FilesPanel({
     },
     {
       title: '',
-      width: 170,
+      width: 240,
       render: (_, x) => (
         <Space>
+          <Button size="small" onClick={() => showPerms(x.entry.path)}>
+            perms
+          </Button>
           <Button size="small" onClick={() => setRename({ from: x.entry.path, to: x.entry.path })}>
             rename
           </Button>

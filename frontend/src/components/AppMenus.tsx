@@ -108,8 +108,9 @@ export function BrandMenu() {
               </li>
               <li>
                 <b>Permissions</b>: grants are per path with user/group inheritance (nearest
-                ancestor wins, user beats group, deny by default). A grant may expire on a date —
-                expired grants simply disappear.
+                ancestor wins, user beats group, deny by default). Use a row's <b>perms</b> action
+                to set access on a single file or folder. A grant may expire on a date — expired
+                grants simply disappear.
               </li>
               <li>
                 <b>Users</b>: accounts, including “device” users for IoT firmware pulls — those get

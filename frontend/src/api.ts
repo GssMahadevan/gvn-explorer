@@ -34,8 +34,17 @@ export class ApiError extends Error {
 }
 
 async function toError(r: Response): Promise<ApiError> {
-  const body = (await r.json().catch(() => ({}))) as { error?: { message?: string } };
-  return new ApiError(body?.error?.message || `${r.status} ${r.statusText}`, r.status);
+  const body = (await r.json().catch(() => ({}))) as {
+    error?: { code?: string; message?: string };
+  };
+  const e = body?.error;
+  // the backend sends {code, message} — the message alone ("system/alice")
+  // is a bare identifier and reads as nonsense without its reason.
+  const msg =
+    e?.code && e.message
+      ? `${e.code}: ${e.message}`
+      : (e?.message ?? `${r.status} ${r.statusText}`);
+  return new ApiError(msg, r.status);
 }
 
 export async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
