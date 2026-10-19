@@ -17,7 +17,8 @@ enforced purely by ACL grants.
 (linux/windows/macOS × amd64/arm64, ~5 MB each), unpack, run the binary,
 open http://localhost:8080 and sign in as `system / admin / admin`.
 No build tools, no Docker; the archive's own README explains the rest.
-Container: `ghcr.io/gssmahadevan/gvn-explorer:latest` (multi-arch).
+Container? `ghcr.io/gssmahadevan/gvn-explorer:latest` (multi-arch) — pull
+and run below under *Run from the published image*.
 
 Prefer to watch first? Two narrated walkthroughs live in `docs/`:
 [demo-standalone.mp4](docs/demo-standalone.mp4) (~45 s: download, run,
@@ -53,6 +54,41 @@ Flags (env fallbacks in caps; flags win):
 The bootstrap flag creates the tenant *and* a **platform super admin** inside
 it. All paths are logical and rooted at `-root`: no `..`, absolute paths, or
 symlink traversal can escape it.
+
+## Run from the published image (ghcr.io)
+
+The image is published multi-arch (linux/amd64 + linux/arm64) on GitHub
+Container Registry — `latest` tracks the release tag. No registry login is
+needed for a public package:
+
+```sh
+docker pull ghcr.io/gssmahadevan/gvn-explorer:latest
+docker run -d --name gvn -p 8080:8080 \
+  -v "$PWD/files:/data/root" \
+  -v "$PWD/state:/data" \
+  -e ADMIN='system:admin:change-me' \
+  ghcr.io/gssmahadevan/gvn-explorer:latest
+```
+
+Then open http://localhost:8080. The two mounts are the whole design:
+
+| mount      | what lives there                                                    |
+|------------|----------------------------------------------------------------------|
+| `/data/root` | your **file tree** — plain files on the host, visible/editable outside the app |
+| `/data`      | `perms.db`: tenants/users/groups/ACLs/sessions/API keys/audit/drafts — the **only state to back up** |
+
+Image defaults are `ROOT=/data/root`, `DB_PATH=/data/perms.db`,
+`ADMIN=system:admin:admin`, `LOG_JSON=true`; the container health-checks
+itself and logs JSON to stdout (`docker logs -f gvn`). Every server flag has
+its uppercase env counterpart (same table as above) — e.g. `-e ROOT=/data/root`
+is the default already, so pointing the app at another host directory is just
+a different `-v`. `ADMIN` only applies while the database is empty (first
+start), so set it before the very first run in production. Upgrade =
+`docker pull` + recreate the container; your volumes carry everything.
+
+A `docker-compose.yml` (same two volumes, plus a Postgres-ready shape) and
+the full operator notes live in [`deployments/docker/README.md`](deployments/docker/README.md);
+`make docker-up` builds the same image locally from source instead.
 
 ## Auth
 
@@ -605,7 +641,13 @@ cross-compile — no QEMU penalty:
 ```sh
 docker login ghcr.io                      # PAT works for ghcr (needs write:packages)
 make docker-push IMAGE=ghcr.io/gssmahadevan/gvn-explorer:latest
+make docker-push IMAGE=ghcr.io/gssmahadevan/gvn-explorer:v0.1.0   # pin-able tag, same build
 ```
+
+Publishing the *same commit* under two tags means the second push only
+uploads the small manifest — and a pure retag of an image already in the
+registry needs no build at all:
+`docker buildx imagetools create -t …:vX.Y.Z …:latest`.
 
 The first run creates a `docker-container`-driver buildx builder
 (`gvn-builder`, overridable via `BUILDER=`); it keeps its own layer
@@ -638,8 +680,9 @@ make dist VERSION=vX.Y.Z && make test-dist
 
 ghcr note: the container package keeps its own visibility setting —
 if anonymous `docker pull` gives 401 even though the repo is public, flip
-the package to Public on the GitHub *Packages* settings page (the
-`delete:packages` PAT scope is what the API path would need instead).
+the package to Public at
+<https://github.com/users/GssMahadevan/packages/container/gvn-explorer/settings>
+(the `delete:packages` PAT scope is what the API path would need instead).
 
 ## Layout
 
