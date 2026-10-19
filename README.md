@@ -484,9 +484,36 @@ with ~60 assertions plus a zero-console-error guard. `SHOTS=1` additionally
 writes light/dark screenshots to `$OUT_DIR` (default `/tmp/fx-gui`).
 Needs a local Chrome; `CHROME_PATH` overrides the macOS default.
 
+The root `Makefile` (split into `makefiles/{build,test,deploy}.mk`) wraps all of
+this: `make build`, `make test` (go + a self-contained `test-api` that boots a
+throwaway server on its own port + the GUI walk), `make docker-*`.
+
+## Deployment
+
+Container image + compose live in `deployments/docker/` (see its README for
+volume/env details):
+
+```sh
+make docker-up     # build + start; app on http://localhost:8080
+make docker-test   # run the curl suite against the running stack
+make docker-down
+```
+
+Three-stage Dockerfile (node GUI build → `CGO_ENABLED=0` Go binary — the
+SQLite driver `modernc.org/sqlite` is pure Go → small Alpine runtime).
+All state lives under `/data`: mount the managed file tree at `/data/root`
+and the SQLite/drafts dir at `/data`; config is env-only (`ADDR`, `ROOT`,
+`DB_PATH`, `ADMIN`, `WEB_DIR`, `LOG_*`). The compose file also carries a
+profiled `postgres` service ready for the Postgres cutover. Placeholder
+READMEs in `deployments/k8s/` and `deployments/swarm/` sketch the next
+steps; nothing there is deployed yet.
+
 ## Layout
 
 ```
+Makefile           entry points; includes makefiles/ (same layout as gvndb sample)
+makefiles/         build.mk (server+GUI), test.mk (go/curl/GUI suites), deploy.mk (docker+compose)
+deployments/       docker/ (Dockerfile, compose, README), k8s/ + swarm/ (planned, README sketches)
 cmd/server/        main + middleware (JSON logging w/ request ids, panic recovery)
 internal/db/       SQL layer: dialect-aware DB wrapper + embedded versioned migrations (tenants/users/groups/members/perms/auth_factors/sessions/events/file_drafts)
 internal/auth/     tenants, users, groups, bcrypt, sessions, API-key factors, active flag

@@ -1,0 +1,19 @@
+# Top-level entry points. The specifics live in makefiles/, one file per
+# concern (same layout as the gvndb sample):
+#   makefiles/build.mk   - server binary + GUI bundle
+#   makefiles/test.mk    - go tests, curl API suite, GUI walk
+#   makefiles/deploy.mk  - docker image + compose lifecycle
+
+-include makefiles/build.mk
+-include makefiles/test.mk
+-include makefiles/deploy.mk
+
+.DEFAULT_GOAL := help
+
+help:
+	@echo "build        server binary + GUI bundle"
+	@echo "test         go vet/test + curl API suite + GUI walk (needs nothing running)"
+	@echo "docker-build build the container image"
+	@echo "docker-up    build + start via compose (app on :8080)"
+	@echo "docker-down  stop compose"
+.PHONY: help

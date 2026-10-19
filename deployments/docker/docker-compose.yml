@@ -1,0 +1,44 @@
+# Local/dev deployment of the file-explorer server.
+#   docker compose up --build          (or: make docker-up from the repo root)
+#
+# Volumes: everything stateful lives in ./data (relative to this file):
+#   ./data/root -> the file tree the app manages  (server -root)
+#   ./data/db   -> perms.db + config drafts       (server -db dir)
+# Bootstrap admin (ADMIN) is only applied when the database has no users;
+# after that, manage users through the UI/API.
+services:
+  app:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile
+    image: file-explorer:dev
+    ports:
+      - "${APP_PORT:-8080}:8080" # APP_PORT=9000 docker compose up -> host :9000
+    environment:
+      ADDR: ":8080"
+      ROOT: "/data/root"
+      DB_PATH: "/data/perms.db"
+      ADMIN: "system:admin:admin" # change me before first start
+      LOG_LEVEL: "info"
+      LOG_JSON: "true"
+    volumes:
+      - ./data/root:/data/root
+      - ./data/db:/data
+    restart: unless-stopped
+
+  # Ready for when the db layer grows a Postgres backend (dialect +
+  # migrations/postgres/ are already in the repo). Not used by the
+  # server yet — start it explicitly with:
+  #   docker compose --profile postgres up -d
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: fx
+      POSTGRES_PASSWORD: fx
+      POSTGRES_DB: fx
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data/pg:/var/lib/postgresql/data
+    restart: unless-stopped
