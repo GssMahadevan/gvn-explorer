@@ -12,6 +12,13 @@ enforced purely by ACL grants.
 > Schema note: the tenant schema is **not compatible** with pre-tenant
 > databases. Delete the old `.db` file; the server recreates it.
 
+**Just want to try it?** Grab a prebuilt archive from the
+[Releases](https://github.com/GssMahadevan/gvn-explorer/releases) page
+(linux/windows/macOS × amd64/arm64, ~5 MB each), unpack, run the binary,
+open http://localhost:8080 and sign in as `system / admin / admin`.
+No build tools, no Docker; the archive's own README explains the rest.
+Container: `ghcr.io/gssmahadevan/gvn-explorer:latest` (multi-arch).
+
 ## Run
 
 ```sh
@@ -597,22 +604,34 @@ The first run creates a `docker-container`-driver buildx builder
 cache, so repeat pushes are fast. Verify with
 `docker buildx imagetools inspect <image>`.
 
-**Bare binaries** — `make dist` cross-builds all six platforms
+**Bare binaries** — `make dist VERSION=v0.1.0` cross-builds all six platforms
 (linux/windows/darwin × amd64/arm64) with `-tags embedweb`, which bakes
 the GUI bundle (see `frontend/webfs_embed.go`) *and* the `/help` docs
 into the binary — each `dist/bundles/` archive is just the binary +
 `deployments/binary/README.md`. Genuinely one file: `make test-dist`
 unpacks this machine's archive, starts it with zero flags and asserts
 the GUI and `/help` come out of the binary (and that no `web/` dir
-ships). Bare binaries also land flat in `dist/`. Artifacts are named
-with `VERSION=` (default: current commit short SHA — override for tags,
-e.g. `make dist VERSION=v0.3.0`), which is what to attach to a GitHub
-Release. The plain build (`go build`, dev, tests, the Docker image)
-never embeds — it serves `-web` from disk exactly as before; embedding
-is purely the release-binary mode. Serving precedence either way: an
-existing `-web` directory wins, otherwise the embedded bundle. A version
-stamp *inside* the binary (`-ldflags -X main.version`) is still on the
-backlog.
+ships). Bare binaries also land flat in `dist/`. The plain build
+(`go build`, dev, tests, the Docker image) never embeds — it serves
+`-web` from disk exactly as before; embedding is purely the
+release-binary mode. Serving precedence either way: an existing `-web`
+directory wins, otherwise the embedded bundle.
+
+Published: **v0.1.0** is live on the Releases page with all six
+archives attached. The flow for the next release (no `gh` CLI needed):
+
+```sh
+git tag vX.Y.Z && git push origin vX.Y.Z
+make dist VERSION=vX.Y.Z && make test-dist
+# create the release + upload assets with the same PAT (api.github.com
+# /repos/.../releases, then the release upload_url per asset),
+# or use `gh release create` wherever the gh CLI exists.
+```
+
+ghcr note: the container package keeps its own visibility setting —
+if anonymous `docker pull` gives 401 even though the repo is public, flip
+the package to Public on the GitHub *Packages* settings page (the
+`delete:packages` PAT scope is what the API path would need instead).
 
 ## Layout
 
