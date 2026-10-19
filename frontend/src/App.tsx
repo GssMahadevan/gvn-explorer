@@ -4,6 +4,7 @@ import type { TabsProps } from 'antd';
 import { api } from './api';
 import type { Me } from './types';
 import { FlashBar, FlashProvider } from './flash';
+import { notifyThemeChange } from './theme';
 import Login from './components/Login';
 import { BrandMenu, UserMenu } from './components/AppMenus';
 import FilesPanel from './panels/FilesPanel';
@@ -28,6 +29,7 @@ export default function App() {
 
   useEffect(() => {
     localStorage.setItem('fx.theme', dark ? 'dark' : 'light');
+    notifyThemeChange(); // CodeMirror chrome follows the antd theme
   }, [dark]);
 
   if (me === undefined)

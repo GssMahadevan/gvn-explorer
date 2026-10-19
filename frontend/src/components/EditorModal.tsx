@@ -1,9 +1,14 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Modal, Space, Spin, Tag, Typography } from 'antd';
 import { ApiError, api } from '../api';
 import { useFlash } from '../flash';
+import { fileKind, rawUrl } from '../filekind';
 import type { PermsList } from '../types';
 import YamlEditor from './YamlEditor';
+
+// CodeMirror lands in its own lazy chunk: the base bundle stays lean and
+// the editor code only downloads the first time a text file is opened.
+const DocEditor = lazy(() => import('./DocEditor'));
 
 interface FsContent {
   content?: string;
@@ -19,16 +24,19 @@ interface DraftResp {
   draft: Draft | null;
 }
 
-const isYamlPath = (p: string) => /\.(ya?ml)$/i.test(p);
 const fmtTs = (ts: number) => new Date(ts * 1000).toLocaleString();
 
-// View/edit a text file. Plain text keeps the classic textarea, now with
-// the base_mtime guard so two writers get a 409 instead of clobbering.
-// YAML config files (.yml/.yaml) get the structured editor — an
-// explorer-style tree plus per-node detail tables — on top of the
-// draft/publish model: every change autosaves to the server-side
-// draft, and the file on disk only changes when the draft is published.
-// Drafting needs the w bit; readers can preview the draft but not edit.
+// View/edit a text file. Plain documents (markdown, txt, json, code…) get
+// CodeMirror — GitHub's editor family — with the base_mtime guard so two
+// writers get a 409 instead of clobbering. YAML config files (.yml/.yaml)
+// get the structured editor — an explorer-style tree plus per-node detail
+// tables — on top of the draft/publish model: every change autosaves to
+// the server-side draft, and the file on disk only changes when the draft
+// is published. Drafting needs the w bit; readers can preview the draft
+// but not edit. Files outside the text allowlist never reach this modal —
+// their row action is already "download" (see filekind.ts); the binary
+// branch below is only the safety net for text-looking names that sniff
+// binary on content.
 export default function EditorModal({
   path,
   onClose,
@@ -54,7 +62,7 @@ export default function EditorModal({
   const savedRef = useRef('');
   const debounce = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  const yaml = path !== null && isYamlPath(path);
+  const yaml = path !== null && fileKind(path) === 'yaml';
 
   useEffect(() => {
     if (!path) return;
@@ -202,7 +210,7 @@ export default function EditorModal({
       onCancel={onClose}
       footer={[
         binary ? (
-          <Button key="dl" href={`/api/v1/fs/raw?path=${encodeURIComponent(path ?? '')}`}>
+          <Button key="dl" href={rawUrl(path ?? '')}>
             Download
           </Button>
         ) : yaml ? (
@@ -210,7 +218,7 @@ export default function EditorModal({
             Discard draft
           </Button>
         ) : (
-          <Button key="save" onClick={savePlain} disabled={!canW}>
+          <Button key="save" onClick={savePlain} disabled={!canW} data-testid="editor-save">
             Save
           </Button>
         ),
@@ -285,13 +293,16 @@ export default function EditorModal({
           {yaml ? (
             <YamlEditor text={text} onChange={onTreeChange} readOnly={!canW} onClose={onClose} />
           ) : (
-            <textarea
-              className="code"
-              value={text}
-              readOnly={!canW}
-              spellCheck={false}
-              onChange={(e) => setText(e.target.value)}
-            />
+            // keyed by path so each file gets a fresh editor (own undo history)
+            <Suspense fallback={<Spin style={{ display: 'block', margin: '40px auto' }} />}>
+              <DocEditor
+                key={path ?? undefined}
+                path={path ?? ''}
+                value={text}
+                readOnly={!canW}
+                onChange={setText}
+              />
+            </Suspense>
           )}
         </>
       )}

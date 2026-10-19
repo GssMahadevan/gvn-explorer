@@ -1,5 +1,7 @@
 // GUI smoke-walk: login -> files table -> sort -> search -> YAML
-// path-stack editor (drill-down + draft autosave + publish) -> navigate ->
+// path-stack editor (drill-down + draft autosave + publish) -> document
+// editor (CodeMirror open/edit/save) + download links for binaries ->
+// navigate ->
 // perms -> users -> tenants, asserting along the way + screenshots.
 // Covers the modal-based entity forms (create/edit), the per-row action
 // menu (the vertical three-dots on every table row), the active-filter
@@ -287,11 +289,11 @@ fs.mkdirSync(OUT, { recursive: true });
           ?.querySelector('[data-testid="yaml-kv-d0"]') ?? false,
       { timeout: 5000 },
     ).catch(() => {});
-    check('yaml file opens path-stack editor, not a raw textarea', await page.evaluate(() => {
+    check('yaml file opens path-stack editor, not the document editor', await page.evaluate(() => {
       const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
       return !!m && !!m.querySelector('[data-testid="yaml-editor"]') &&
         !!m.querySelector('[data-testid="yaml-nav"]') && !!m.querySelector('[data-testid="yaml-kv-d0"]') &&
-        !m.querySelector('textarea.code');
+        !m.querySelector('[data-testid="doc-editor"]') && !m.querySelector('.cm-editor');
     }));
     check('path stack is flat: file + document rows, keys table shows values', await page.evaluate(() => {
       const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
@@ -412,6 +414,17 @@ fs.mkdirSync(OUT, { recursive: true });
           ?.querySelector('[data-testid="yaml-nav-open"]') ?? false,
       { timeout: 5000 },
     ).catch(() => {});
+    // let the resize settle: the table re-lays itself once antd flips to
+    // the narrow layout (briefly measurably squeezed), so measure the key
+    // column only after it stabilizes — generous budget, returns early
+    await page.waitForFunction(
+      () => {
+        const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+        const key = m?.querySelector('[data-testid="yaml-key-d0.0"]');
+        return !!key && key.getBoundingClientRect().width >= 140;
+      },
+      { timeout: 10000 },
+    ).catch(() => {});
     const mobileOk = await page.evaluate(() => {
       const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
       if (!m) return { ok: false, why: 'no modal', modals: document.querySelectorAll('.ant-modal').length };
@@ -445,19 +458,65 @@ fs.mkdirSync(OUT, { recursive: true });
       await page.evaluate(() => {
         const crumbs = document.querySelector('nav[aria-label="Breadcrumb"], .ant-breadcrumb');
         return !!crumbs && /deliverables/.test(crumbs.textContent) &&
-          [...document.querySelectorAll('tbody button')].some((b) => b.textContent === 'report-q3.pdf');
+          [...document.querySelectorAll('tbody button, tbody a')].some((b) => b.textContent === 'report-q3.pdf');
       }),
     );
 
-    // file row menu: permissions/rename/delete live behind the ⋮ now
+    // file row menu: permissions/download/rename/delete live behind the ⋮
     check(
-      'file row menu lists permissions/rename/delete',
+      'file row menu lists permissions/download/rename/delete',
       (await openRowMenu('report-q3')) &&
         (await visibleMenuText()).includes('permissions') &&
+        (await visibleMenuText()).includes('download') &&
         (await visibleMenuText()).includes('rename') &&
         (await visibleMenuText()).includes('delete'),
     );
     await closeRowMenu();
+
+    // binaries / non-allowlisted types never get an editor: the name
+    // itself is a download link straight to /fs/raw. (The pdf fixture
+    // holds plain-text bytes on purpose: the policy is name-based, like
+    // GitHub's, not content-sniffed per row.)
+    check('disallowed file name is a download link to /fs/raw', await page.evaluate(() => {
+      const a = [...document.querySelectorAll('tbody a')].find((x) => x.textContent === 'report-q3.pdf');
+      return !!a && (a.getAttribute('href') || '') === '/api/v1/fs/raw?path=%2Fdeliverables%2Freport-q3.pdf';
+    }));
+
+    // plain documents get CodeMirror: open readme.md, assert the editor
+    // surface, type an edit, save (base_mtime-guarded), verify the bytes.
+    await page.evaluate(() => document.querySelector('.ant-breadcrumb a')?.click());
+    await new Promise((r) => setTimeout(r, 1000));
+    await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'readme.md')?.click(),
+    );
+    await waitModal();
+    await page.waitForFunction(
+      () =>
+        [...document.querySelectorAll('.ant-modal')]
+          .find((x) => x.offsetParent !== null)
+          ?.querySelector('.cm-content') ?? false,
+      { timeout: 8000 },
+    ).catch(() => {});
+    check('markdown file opens CodeMirror (not a textarea), content visible', await page.evaluate(() => {
+      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+      const cm = m?.querySelector('[data-testid="doc-editor"] .cm-editor');
+      return !!cm && /# readme/.test(m.querySelector('.cm-content')?.innerText ?? '');
+    }));
+    await mouseClick('.cm-content', 'readme');
+    // caret to end of doc without modifier chords: ArrowDown clamps at the
+    // last line; a click in the blank area below the text usually does too.
+    for (let i = 0; i < 5; i++) await page.keyboard.press('ArrowDown');
+    await page.keyboard.type('\nedited via doc editor\n');
+    await page.evaluate(() =>
+      [...document.querySelectorAll('.ant-modal button')].find((b) => b.dataset.testid === 'editor-save')?.click(),
+    );
+    await new Promise((r) => setTimeout(r, 800));
+    check('doc editor save writes to disk (fs/content reflects the edit)', await page.evaluate(() =>
+      fetch('/api/v1/fs/content?path=' + encodeURIComponent('/readme.md'))
+        .then((r) => r.json())
+        .then((c) => /edited via doc editor/.test(c.content ?? '')),
+    ));
+    await closeModals();
 
     // perms tab (super admin sees the bypass notice instead of bits)
     await click('[role="tab"]', 'permissions');

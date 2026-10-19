@@ -384,8 +384,17 @@ tables stay usable at phone widths no matter how many actions an entity
 has; destructive items pop a themed confirm dialog whose OK button
 carries the action name.
 
-Clicking a text file opens the editor modal. Plain text gets the code
-textarea, and its Save now sends the `base_mtime` captured on open: if
+Clicking a file either opens the editor modal or downloads, decided from
+the **name** alone — GitHub-style policy in `filekind.ts`: `.yml`/`.yaml`
+get the structured editor below, an allowlist of text extensions (plus
+extension-less files like `LICENSE`/`Makefile`) get the document editor,
+everything else (binaries, `.pdf`, unknown types) never opens an editor:
+the name itself links to `/fs/raw` (attachment disposition), and every
+file's ⋮ menu carries `download` too. Text files get a **CodeMirror 6**
+editor (`components/DocEditor`, markdown/JSON/HTML highlighting, dark-mode
+aware) — the editor family behind GitHub's in-browser file editing,
+chosen over Monaco for a tenth the bundle size and real touch support.
+Its Save sends the `base_mtime` captured on open: if
 the file changed underneath, the server refuses with 409 conflict and the
 text stays in the box to be copied out. **YAML config files** (`.yml`,
 `.yaml`) instead open the structured editor (`components/YamlEditor`),
@@ -478,7 +487,9 @@ when missing, boots a real server against a throwaway sandbox root with
 seeded fixture tenants/users, then drives `scripts/gui/walk.js` — a
 puppeteer-core walk of the live UI (login, file table, the ⋮ row action
 menus, modal forms, the YAML editor's drill-down + draft-autosave → publish flow
-incl. comment/block-scalar preservation, the active-filter wire format,
+incl. comment/block-scalar preservation, the document editor open→type→save
+round trip via CodeMirror, download links for non-text files,
+the active-filter wire format,
 flash center, per-file grant flow, header menus, dark mode, sign-out)
 with ~60 assertions plus a zero-console-error guard. `SHOTS=1` additionally
 writes light/dark screenshots to `$OUT_DIR` (default `/tmp/fx-gui`).
@@ -522,7 +533,7 @@ internal/audit/    append-only forensic event trail (authz/authn DML, fs_commit)
 internal/drafts/   per-path working copies for the draft/publish edit model
 internal/fsx/      sandboxed filesystem ops (list/read/write/mkdir/rename/delete)
 internal/handlers/ REST handlers + route table, JSON error envelope, rate limiters
-frontend/          React 19 + Ant Design GUI (Vite; list panels, per-entity form modals, row action menus, YAML structured editor w/ draft+publish, flash center; `npm run build` -> dist/ static bundle)
+frontend/          React 19 + Ant Design GUI (Vite; list panels, per-entity form modals, row action menus, YAML structured editor w/ draft+publish, CodeMirror doc editor + download actions (filekind.ts policy), flash center; `npm run build` -> dist/ static bundle)
 scripts/           test suites: test_files.sh (curl API regression), test_gui.sh + gui/ (puppeteer GUI walk + screenshots)
 web/               vanilla-JS GUI fallback (panels per view w/ paging+search+sort, editor, perms, admin)
 ```

@@ -14,6 +14,7 @@ import { FileAddOutlined, FolderAddOutlined, UploadOutlined } from '@ant-design/
 import type { ColumnsType } from 'antd/es/table';
 import { api, bits, fmtSize, qs } from '../api';
 import { useFlash } from '../flash';
+import { fileKind, rawUrl } from '../filekind';
 import type { EntryView, FsList } from '../types';
 import { useListView } from '../useListView';
 import ListSearch from '../components/ListSearch';
@@ -21,7 +22,10 @@ import RowActions from '../components/RowActions';
 import EditorModal from '../components/EditorModal';
 
 // Files panel: breadcrumb browser + server-paged entry table (dirs first
-// is done by the backend), text editor modal, mkdir/upload/rename/delete.
+// is done by the backend), editor modal for text/YAML, mkdir/upload/
+// rename/delete. Files outside the text allowlist (binaries, pdf, …) get
+// a download instead of an editor: the name itself links to /fs/raw and
+// the row menu offers download too (see filekind.ts).
 export default function FilesPanel({
   cur,
   setCur,
@@ -89,16 +93,28 @@ export default function FilesPanel({
       sorter: true,
       sortOrder: lv.sortOrder('name'),
       showSorterTooltip: false,
-      render: (_, x) => (
-        <Button
-          type="link"
-          size="small"
-          style={{ padding: 0 }}
-          onClick={() => (x.entry.is_dir ? goto(x.entry.path) : setEditPath(x.entry.path))}
-        >
-          {x.entry.is_dir ? x.entry.name + '/' : x.entry.name}
-        </Button>
-      ),
+      render: (_, x) =>
+        x.entry.is_dir ? (
+          <Button type="link" size="small" style={{ padding: 0 }} onClick={() => goto(x.entry.path)}>
+            {x.entry.name + '/'}
+          </Button>
+        ) : fileKind(x.entry.name) === 'download' ? (
+          // not editor-able: the name IS the download (Content-Disposition
+          // on /fs/raw makes the browser save it without navigating away)
+          <Button
+            type="link"
+            size="small"
+            style={{ padding: 0 }}
+            href={rawUrl(x.entry.path)}
+            data-testid={`file-dl-${x.entry.name}`}
+          >
+            {x.entry.name}
+          </Button>
+        ) : (
+          <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setEditPath(x.entry.path)}>
+            {x.entry.name}
+          </Button>
+        ),
     },
     {
       title: 'size',
@@ -141,6 +157,22 @@ export default function FilesPanel({
         <RowActions
           actions={[
             { key: 'perms', label: 'permissions', onClick: () => showPerms(x.entry.path) },
+            ...(!x.entry.is_dir
+              ? [
+                  {
+                    key: 'download',
+                    label: 'download',
+                    onClick: () => {
+                      const a = document.createElement('a');
+                      a.href = rawUrl(x.entry.path);
+                      a.download = '';
+                      document.body.appendChild(a);
+                      a.click();
+                      a.remove();
+                    },
+                  },
+                ]
+              : []),
             {
               key: 'rename',
               label: 'rename',
