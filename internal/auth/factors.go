@@ -63,7 +63,7 @@ func (s *Store) CreateAPIKey(ctx context.Context, userID int64, label string, ex
 	if expiresAt != nil {
 		exp = expiresAt.Unix()
 	}
-	res, err := s.DB.ExecContext(ctx,
+	id, err := s.DB.Insert(ctx,
 		"INSERT INTO auth_factors (user_id, method, label, secret, created_at, expires_at) VALUES (?,?,?,?,?,?)",
 		userID, "apikey", label, hashKey(key), time.Now().UTC().Format(tsFmt), exp)
 	if err != nil {
@@ -72,7 +72,6 @@ func (s *Store) CreateAPIKey(ctx context.Context, userID int64, label string, ex
 		}
 		return Factor{}, "", err
 	}
-	id, _ := res.LastInsertId()
 	f := Factor{ID: id, UserID: userID, Method: "apikey", Label: label, CreatedAt: time.Now().UTC(), ExpiresAt: expiresAt}
 	return f, key, nil
 }
@@ -151,7 +150,7 @@ func (s *Store) UserByAPIKey(ctx context.Context, key string) (User, error) {
 	if err != nil {
 		return User{}, err
 	}
-	if u.Expired || !u.Active { // account-level lapse/suspension outranks a live key
+	if u.Expired || !u.Active || !u.tenantActive { // account/tenant lapse or suspension outranks a live key
 		return User{}, ErrNotFound
 	}
 	if !lastUsed.Valid || lastUsed.Int64 < time.Now().Add(-time.Minute).Unix() {

@@ -18,15 +18,16 @@ import (
 // Anything outside these whitelists is a 400, so typos surface loudly
 // instead of silently changing what a query means.
 type ListSpec struct {
-	Sorts   map[string]bool // allowed sort keys
-	Cols    []string        // allowed col= values
-	DefSort string          // sort key when sort is omitted
-	DefDir  string          // direction when dir is omitted ("" = asc)
+	Sorts        map[string]bool // allowed sort keys
+	Cols         []string        // allowed col= values
+	DefSort      string          // sort key when sort is omitted
+	DefDir       string          // direction when dir is omitted ("" = asc)
+	ActiveFilter bool            // endpoint accepts active=true|false (entity lists)
 }
 
-// parseList reads limit/offset/q/col/sort/dir from the URL query.
-// Omitting limit keeps the historical "every row" behaviour scripts rely
-// on; stores add LIMIT/OFFSET only when Limit > 0.
+// parseList reads limit/offset/q/col/sort/dir (and active, for specs that
+// opt in) from the URL query. Omitting limit keeps the historical "every
+// row" behaviour scripts rely on; stores add LIMIT/OFFSET only when Limit > 0.
 func parseList(w http.ResponseWriter, r *http.Request, spec ListSpec) (query.List, bool) {
 	var l query.List
 	qs := r.URL.Query()
@@ -76,6 +77,23 @@ func parseList(w http.ResponseWriter, r *http.Request, spec ListSpec) (query.Lis
 	if l.Dir != "asc" && l.Dir != "desc" {
 		writeError(w, http.StatusBadRequest, "bad_request", "dir must be asc or desc")
 		return l, false
+	}
+	if v := strings.ToLower(qs.Get("active")); v != "" {
+		if !spec.ActiveFilter {
+			writeError(w, http.StatusBadRequest, "bad_request", "this list does not support the active filter")
+			return l, false
+		}
+		switch v {
+		case "1", "true":
+			t := true
+			l.Active = &t
+		case "0", "false":
+			f := false
+			l.Active = &f
+		default:
+			writeError(w, http.StatusBadRequest, "bad_request", "active must be true or false")
+			return l, false
+		}
 	}
 	return l, true
 }

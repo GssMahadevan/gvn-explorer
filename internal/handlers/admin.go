@@ -26,17 +26,26 @@ func scopeTenantID(u auth.User) int64 {
 // ---- tenants (super admin only) ----
 
 type nameBody struct {
-	Name string `json:"name"`
+	Name        string `json:"name"`
+	Description string `json:"description"` // free-text context for operators
+}
+
+// descriptionBody is the update payload for every entity kind (users,
+// groups, tenants): description-only edits go through PUT /{id}.
+type descriptionBody struct {
+	Description string `json:"description"`
 }
 
 // List endpoints share one contract: limit/offset paging plus q/col search
 // and sort/dir ordering (validated against these whitelists; the stores
-// implement the same keys). X-Total-Count reports the filtered total.
+// implement the same keys). Entity lists additionally accept active=true|false
+// as an exact-match filter. X-Total-Count reports the filtered total.
 
 var tenantsListSpec = ListSpec{
-	Sorts:   map[string]bool{"name": true, "created": true},
-	Cols:    []string{"name"},
-	DefSort: "name",
+	Sorts:        map[string]bool{"name": true, "created": true, "active": true},
+	Cols:         []string{"name", "description"},
+	DefSort:      "name",
+	ActiveFilter: true,
 }
 
 func (a *API) handleTenantsList(w http.ResponseWriter, r *http.Request) {
@@ -62,7 +71,7 @@ func (a *API) handleTenantsCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "validation", "name required")
 		return
 	}
-	t, err := a.Auth.CreateTenant(r.Context(), b.Name)
+	t, err := a.Auth.CreateTenant(r.Context(), b.Name, strings.TrimSpace(b.Description))
 	if err != nil {
 		writeError(w, http.StatusConflict, "exists", "tenant name taken")
 		return
@@ -70,6 +79,54 @@ func (a *API) handleTenantsCreate(w http.ResponseWriter, r *http.Request) {
 	a.audit(r, audit.Event{Action: "tenant_create", TenantID: t.ID,
 		TargetType: "tenant", TargetID: t.ID, TargetName: t.Name})
 	writeJSON(w, http.StatusCreated, t)
+}
+
+// handleTenantsUpdate: PUT /api/v1/tenants/{id} {"description":...}
+func (a *API) handleTenantsUpdate(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "id must be numeric")
+		return
+	}
+	var b descriptionBody
+	if !a.decodeBody(w, r, &b) {
+		return
+	}
+	if err := a.Auth.UpdateTenant(r.Context(), id, strings.TrimSpace(b.Description)); err != nil {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	a.audit(r, audit.Event{Action: "tenant_update", TenantID: id,
+		TargetType: "tenant", TargetID: id})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleTenantsActive: POST /api/v1/tenants/{id}/active {"active":bool} —
+// the tenant-wide kill switch. Rows, users, groups, grants and history all
+// survive; the tenant's logins, live sessions and API keys stop working.
+func (a *API) handleTenantsActive(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "id must be numeric")
+		return
+	}
+	var b activeBody
+	if !a.decodeBody(w, r, &b) {
+		return
+	}
+	// footgun guard, same spirit as users: you cannot suspend the tenant you
+	// are standing in (it would lock every admin in it out, super included).
+	if !b.Active && id == userFrom(r.Context()).TenantID {
+		writeError(w, http.StatusUnprocessableEntity, "validation", "you cannot deactivate your own tenant")
+		return
+	}
+	if err := a.Auth.SetTenantActive(r.Context(), id, b.Active); err != nil {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	a.audit(r, audit.Event{Action: "tenant_active", TenantID: id,
+		TargetType: "tenant", TargetID: id, Details: map[string]any{"active": b.Active}})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleTenantsDelete drops the tenant with its users, groups, memberships
@@ -270,11 +327,12 @@ func (a *API) handlePermsDelete(w http.ResponseWriter, r *http.Request) {
 // ---- users ----
 
 type userBody struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-	Tenant   string `json:"tenant"` // required for super admins; ignored for tenant admins
-	IsAdmin  bool   `json:"is_admin"`
-	Expiry          // expires_days / expires_at: customer accounts with a lifespan
+	Username    string `json:"username"`
+	Password    string `json:"password"`
+	Tenant      string `json:"tenant"` // required for super admins; ignored for tenant admins
+	Description string `json:"description"`
+	IsAdmin     bool   `json:"is_admin"`
+	Expiry      // expires_days / expires_at: customer accounts with a lifespan
 }
 
 // resolveCreateTenant decides which tenant a new user/group belongs to:
@@ -288,9 +346,10 @@ func resolveCreateTenant(u auth.User, requested string) string {
 }
 
 var usersListSpec = ListSpec{
-	Sorts:   map[string]bool{"username": true, "tenant": true, "created": true, "active": true},
-	Cols:    []string{"username", "tenant"},
-	DefSort: "username",
+	Sorts:        map[string]bool{"username": true, "tenant": true, "created": true, "active": true, "description": true},
+	Cols:         []string{"username", "tenant", "description"},
+	DefSort:      "username",
+	ActiveFilter: true,
 }
 
 func (a *API) handleUsersList(w http.ResponseWriter, r *http.Request) {
@@ -323,7 +382,7 @@ func (a *API) handleUsersCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "validation", err.Error())
 		return
 	}
-	nu, err := a.Auth.CreateUser(r.Context(), resolveCreateTenant(u, b.Tenant), b.Username, b.Password, b.IsAdmin, false, exp)
+	nu, err := a.Auth.CreateUser(r.Context(), resolveCreateTenant(u, b.Tenant), b.Username, b.Password, strings.TrimSpace(b.Description), b.IsAdmin, false, exp)
 	if err != nil {
 		writeError(w, http.StatusConflict, "exists", "username taken, unknown tenant, or invalid input")
 		return
@@ -455,6 +514,34 @@ func (a *API) handleUsersActive(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, u)
 }
 
+// handleUsersUpdate: PUT /api/v1/users/{id} {"description":...}
+func (a *API) handleUsersUpdate(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "id must be numeric")
+		return
+	}
+	var b descriptionBody
+	if !a.decodeBody(w, r, &b) {
+		return
+	}
+	target, err := a.Auth.UserByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	if !a.targetInScope(w, r, target.TenantID, "user") {
+		return
+	}
+	if err := a.Auth.UpdateUser(r.Context(), id, strings.TrimSpace(b.Description)); err != nil {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	a.audit(r, audit.Event{Action: "user_update", TenantID: target.TenantID,
+		TargetType: "user", TargetID: id, TargetName: target.Username})
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // ---- auth factors (device/API-key auth; ed25519 + oauth2 reserved) ----
 
 type factorBody struct {
@@ -566,14 +653,16 @@ func (a *API) handleFactorsDelete(w http.ResponseWriter, r *http.Request) {
 // ---- groups ----
 
 type groupBody struct {
-	Name   string `json:"name"`
-	Tenant string `json:"tenant"` // required for super admins; ignored for tenant admins
+	Name        string `json:"name"`
+	Tenant      string `json:"tenant"` // required for super admins; ignored for tenant admins
+	Description string `json:"description"`
 }
 
 var groupsListSpec = ListSpec{
-	Sorts:   map[string]bool{"name": true, "tenant": true, "active": true},
-	Cols:    []string{"name", "tenant"},
-	DefSort: "name",
+	Sorts:        map[string]bool{"name": true, "tenant": true, "active": true, "description": true},
+	Cols:         []string{"name", "tenant", "description"},
+	DefSort:      "name",
+	ActiveFilter: true,
 }
 
 func (a *API) handleGroupsList(w http.ResponseWriter, r *http.Request) {
@@ -600,7 +689,7 @@ func (a *API) handleGroupsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := userFrom(r.Context())
-	g, err := a.Auth.CreateGroup(r.Context(), resolveCreateTenant(u, b.Tenant), b.Name)
+	g, err := a.Auth.CreateGroup(r.Context(), resolveCreateTenant(u, b.Tenant), b.Name, strings.TrimSpace(b.Description))
 	if err != nil {
 		writeError(w, http.StatusConflict, "exists", "group name taken in tenant, or unknown tenant")
 		return
@@ -669,6 +758,34 @@ func (a *API) handleGroupsActive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, up)
+}
+
+// handleGroupsUpdate: PUT /api/v1/groups/{id} {"description":...}
+func (a *API) handleGroupsUpdate(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "id must be numeric")
+		return
+	}
+	var b descriptionBody
+	if !a.decodeBody(w, r, &b) {
+		return
+	}
+	g, err := a.Auth.GroupByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	if !a.targetInScope(w, r, g.TenantID, "group") {
+		return
+	}
+	if err := a.Auth.UpdateGroup(r.Context(), id, strings.TrimSpace(b.Description)); err != nil {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	a.audit(r, audit.Event{Action: "group_update", TenantID: g.TenantID,
+		TargetType: "group", TargetID: id, TargetName: g.Name})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type memberBody struct {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/user/llm-crud1/internal/auth"
+	"github.com/user/llm-crud1/internal/db"
 	"github.com/user/llm-crud1/internal/query"
 )
 
@@ -79,9 +80,9 @@ func Ancestors(path string) []string {
 	}
 }
 
-type Store struct{ DB *sql.DB }
+type Store struct{ DB *db.DB }
 
-func NewStore(db *sql.DB) *Store { return &Store{DB: db} }
+func NewStore(conn *db.DB) *Store { return &Store{DB: conn} }
 
 // Upsert replaces any existing grant for (path, principal) with the new bits
 // and expiry. expiresAt nil = grant never expires.
@@ -91,7 +92,7 @@ func (s *Store) Upsert(ctx context.Context, path, ptype string, pid int64, r, w,
 	if expiresAt != nil {
 		exp = expiresAt.Unix()
 	}
-	res, err := s.DB.ExecContext(ctx, `
+	id, err := s.DB.Insert(ctx, `
 		INSERT INTO perms (path, principal_type, principal_id, can_read, can_write, can_delete, created_at, expires_at)
 		VALUES (?,?,?,?,?,?,?,?)
 		ON CONFLICT (path, principal_type, principal_id)
@@ -101,7 +102,6 @@ func (s *Store) Upsert(ctx context.Context, path, ptype string, pid int64, r, w,
 	if err != nil {
 		return Grant{}, err
 	}
-	id, _ := res.LastInsertId()
 	return Grant{ID: id, Path: path, PrincipalType: ptype, PrincipalID: pid,
 		Read: r, Write: w, Delete: d, ExpiresAt: expiresAt,
 		Expired: expiresAt != nil && expiresAt.Before(time.Now())}, nil

@@ -375,6 +375,81 @@ check "events q filters to matches" "$ALLQ"
 t "$AJ" "fs bad sort" 400 GET "/api/v1/fs?path=$PD&sort=perms"
 t "$AJ" "perms bad dir" 400 GET "/api/v1/perms?path=$PD&dir=sideways"
 
+echo "== entity meta: description + active filters + tenant kill switch =="
+# fresh throwaway tenant/user/group carrying descriptions from birth
+t "$AJ" "create tenant w/ description" 201 POST /api/v1/tenants "{\"name\":\"mt$SFX\",\"description\":\"meta test customer\"}"
+MTID=$(jq -r '.id' /tmp/resp.json)
+check "tenant echoes description+active" "$(jq -e '.description=="meta test customer" and .active==true' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "create user w/ description" 201 POST /api/v1/users "{\"username\":\"mu$SFX\",\"password\":\"pw-$SFX\",\"tenant\":\"mt$SFX\",\"description\":\"q3 contractor\"}"
+MUID=$(jq -r '.id' /tmp/resp.json)
+check "user echoes description" "$(jq -e '.description=="q3 contractor" and .active==true' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "create group w/ description" 201 POST /api/v1/groups "{\"name\":\"mg$SFX\",\"tenant\":\"mt$SFX\",\"description\":\"build agents\"}"
+MGID=$(jq -r '.id' /tmp/resp.json)
+check "group echoes description" "$(jq -e '.description=="build agents" and .active==true' /tmp/resp.json >/dev/null; echo $?)"
+
+# description is searchable per column and via the default all-columns search
+t "$AJ" "users col=description" 200 GET "/api/v1/users?q=contractor&col=description"
+check "col=description finds user" "$(jq -e --arg u "mu$SFX" 'any(.[]; .username==$u)' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "users all-columns desc hit" 200 GET "/api/v1/users?q=contractor"
+check "default search finds via description" "$(jq -e --arg u "mu$SFX" 'any(.[]; .username==$u)' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "groups col=description" 200 GET "/api/v1/groups?q=build%20agents&col=description"
+check "groups desc search" "$(jq -e --arg g "mg$SFX" 'any(.[]; .name==$g)' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "tenants col=description" 200 GET "/api/v1/tenants?q=meta%20test&col=description"
+check "tenants desc search" "$(jq -e --arg t "mt$SFX" 'any(.[]; .name==$t)' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "users sort=description" 200 GET "/api/v1/users?sort=description"
+
+# PUT /{id} updates descriptions
+t "$AJ" "update user description" 204 PUT "/api/v1/users/$MUID" '{"description":"now permanent"}'
+t "$AJ" "update group description" 204 PUT "/api/v1/groups/$MGID" '{"description":"build + release agents"}'
+t "$AJ" "update tenant description" 204 PUT "/api/v1/tenants/$MTID" '{"description":"meta test customer renamed"}'
+t "$AJ" "user desc update visible" 200 GET "/api/v1/users?q=permanent&col=description"
+check "user desc update searchable" "$(jq -e --arg u "mu$SFX" 'any(.[]; .username==$u)' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "update unknown user" 404 PUT "/api/v1/users/99999999" '{"description":"x"}'
+
+# active=true|exact filter on entity lists; 400 for invalid values or unsupported lists
+t "$AJ" "suspend meta user" 200 POST "/api/v1/users/$MUID/active" '{"active":false}'
+t "$AJ" "users active=true" 200 GET "/api/v1/users?active=true"
+check "suspended user absent from active=true" "$(jq -e --arg u "mu$SFX" 'all(.[]; .username!=$u)' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "users active=false" 200 GET "/api/v1/users?active=false"
+check "suspended user present in active=false" "$(jq -e --arg u "mu$SFX" 'any(.[]; .username==$u and .active==false)' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "suspend meta group" 200 POST "/api/v1/groups/$MGID/active" '{"active":false}'
+t "$AJ" "groups active=false" 200 GET "/api/v1/groups?active=false"
+check "suspended group in active=false" "$(jq -e --arg g "mg$SFX" 'any(.[]; .name==$g and .active==false)' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "users active invalid" 400 GET "/api/v1/users?active=maybe"
+t "$AJ" "fs active unsupported" 400 GET "/api/v1/fs?path=/&active=true"
+t "$AJ" "events active unsupported" 400 GET "/api/v1/events?active=true"
+
+# tenant-wide kill switch: logins die, live sessions die, rows survive
+t "$AJ" "reinstate meta user" 200 POST "/api/v1/users/$MUID/active" '{"active":true}'
+t "$BJ" "login meta user" 200 POST /api/v1/auth/login "{\"tenant\":\"mt$SFX\",\"username\":\"mu$SFX\",\"password\":\"pw-$SFX\"}"
+t "$BJ" "meta user session live" 403 GET "/api/v1/fs?path=/" # 403 not 401 = authenticated, just ungranted
+t "$AJ" "suspend tenant" 204 POST "/api/v1/tenants/$MTID/active" '{"active":false}'
+t "$BJ" "session dies on tenant suspend" 401 GET "/api/v1/fs?path=/"
+t - "login in suspended tenant" 401 POST /api/v1/auth/login "{\"tenant\":\"mt$SFX\",\"username\":\"mu$SFX\",\"password\":\"pw-$SFX\"}"
+t "$AJ" "tenants active=false" 200 GET "/api/v1/tenants?active=false"
+check "suspended tenant in active=false" "$(jq -e --arg t "mt$SFX" 'any(.[]; .name==$t and .active==false)' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "suspended tenant users intact" 200 GET "/api/v1/users?q=mu$SFX"
+check "tenant suspend leaves user rows" "$(jq -e --arg u "mu$SFX" 'any(.[]; .username==$u)' /tmp/resp.json >/dev/null; echo $?)"
+# footgun guard: the caller cannot suspend the tenant they stand in
+t "$AJ" "find own tenant" 200 GET "/api/v1/tenants?q=$ADMIN_TENANT&col=name"
+STID=$(jq -r '.[0].id' /tmp/resp.json)
+t "$AJ" "self-tenant suspend refused" 422 POST "/api/v1/tenants/$STID/active" '{"active":false}'
+# reinstatement brings logins back
+t "$AJ" "reinstate tenant" 204 POST "/api/v1/tenants/$MTID/active" '{"active":true}'
+t "$BJ" "login after reinstate" 200 POST /api/v1/auth/login "{\"tenant\":\"mt$SFX\",\"username\":\"mu$SFX\",\"password\":\"pw-$SFX\"}"
+
+# new audit actions land in the forensic trail
+t "$AJ" "events user_update" 200 GET "/api/v1/events?action=user_update"
+check "user_update event recorded" "$(jq -e --arg u "mu$SFX" 'any(.[]; .target_name==$u)' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "events group_update" 200 GET "/api/v1/events?action=group_update"
+check "group_update event recorded" "$(jq -e --arg g "mg$SFX" 'any(.[]; .target_name==$g)' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "events tenant_update" 200 GET "/api/v1/events?action=tenant_update"
+check "tenant_update event recorded" "$(jq -e --argjson t "$MTID" 'any(.[]; .target_id==$t)' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "events tenant_active" 200 GET "/api/v1/events?action=tenant_active"
+check "tenant_active event recorded" "$(jq -e --argjson t "$MTID" 'any(.[]; .target_id==$t)' /tmp/resp.json >/dev/null; echo $?)"
+
+t "$AJ" "delete meta tenant" 204 DELETE "/api/v1/tenants/$MTID"
+
 echo "== session lifecycle =="
 t "$UJ" "logout" 204 POST /api/v1/auth/logout
 t "$UJ" "fs after logout" 401 GET /api/v1/fs?path=/

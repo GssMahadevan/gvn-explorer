@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/user/llm-crud1/internal/db"
 	"github.com/user/llm-crud1/internal/query"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -21,31 +22,37 @@ var (
 )
 
 type Tenant struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"created_at"`
+	ID          int64     `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Active      bool      `json:"active"` // false = tenant suspended: logins, sessions and keys stop working
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type User struct {
-	ID        int64      `json:"id"`
-	TenantID  int64      `json:"tenant_id"`
-	Tenant    string     `json:"tenant"`
-	Username  string     `json:"username"`
-	IsAdmin   bool       `json:"is_admin"` // tenant admin
-	IsSuper   bool       `json:"is_super"` // platform super admin
-	Active    bool       `json:"active"`   // false = suspended: no action allowed, but history kept
-	CreatedAt time.Time  `json:"created_at"`
-	ExpiresAt *time.Time `json:"expires_at,omitempty"` // nil = never
-	Expired   bool       `json:"expired"`              // ExpiresAt in the past
+	ID          int64      `json:"id"`
+	TenantID    int64      `json:"tenant_id"`
+	Tenant      string     `json:"tenant"`
+	Username    string     `json:"username"`
+	Description string     `json:"description"`
+	IsAdmin     bool       `json:"is_admin"` // tenant admin
+	IsSuper     bool       `json:"is_super"` // platform super admin
+	Active      bool       `json:"active"`   // false = suspended: no action allowed, but history kept
+	CreatedAt   time.Time  `json:"created_at"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"` // nil = never
+	Expired     bool       `json:"expired"`              // ExpiresAt in the past
+
+	tenantActive bool // tenant kill switch; enforced by Verify/SessionUser, not exposed
 }
 
 type Group struct {
-	ID       int64    `json:"id"`
-	TenantID int64    `json:"tenant_id"`
-	Tenant   string   `json:"tenant"`
-	Name     string   `json:"name"`
-	Active   bool     `json:"active"` // false = grants through it are ignored
-	Members  []Member `json:"members,omitempty"`
+	ID          int64    `json:"id"`
+	TenantID    int64    `json:"tenant_id"`
+	Tenant      string   `json:"tenant"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Active      bool     `json:"active"` // false = grants through it are ignored
+	Members     []Member `json:"members,omitempty"`
 }
 
 type Member struct {
@@ -53,23 +60,22 @@ type Member struct {
 	Username string `json:"username"`
 }
 
-type Store struct{ DB *sql.DB }
+type Store struct{ DB *db.DB }
 
-func NewStore(db *sql.DB) *Store { return &Store{DB: db} }
+func NewStore(conn *db.DB) *Store { return &Store{DB: conn} }
 
 const tsFmt = time.RFC3339Nano
 
 // ---- tenants ----
 
-func (s *Store) CreateTenant(ctx context.Context, name string) (Tenant, error) {
+func (s *Store) CreateTenant(ctx context.Context, name, description string) (Tenant, error) {
 	now := time.Now().UTC()
-	res, err := s.DB.ExecContext(ctx, "INSERT INTO tenants (name, created_at) VALUES (?,?)",
-		name, now.Format(tsFmt))
+	id, err := s.DB.Insert(ctx, "INSERT INTO tenants (name, description, created_at) VALUES (?,?,?)",
+		name, description, now.Format(tsFmt))
 	if err != nil {
 		return Tenant{}, err
 	}
-	id, _ := res.LastInsertId()
-	return Tenant{ID: id, Name: name, CreatedAt: now}, nil
+	return Tenant{ID: id, Name: name, Description: description, Active: true, CreatedAt: now}, nil
 }
 
 // count runs one COUNT(*) query, for the total behind paged listings.
@@ -82,20 +88,38 @@ func (s *Store) count(ctx context.Context, q string, args ...any) (int, error) {
 }
 
 // ListTenants returns one page of tenants plus the total matching count.
-// Sort keys: name, created. Search columns: name.
+// Sort keys: name, created, active. Search columns: name, description.
 func (s *Store) ListTenants(ctx context.Context, o query.List) ([]Tenant, int, error) {
-	where := ""
+	var conds []string
 	var args []any
 	if o.Q != "" {
-		where = ` WHERE name LIKE ? ESCAPE '\'`
-		args = append(args, o.Like())
+		like := o.Like()
+		switch o.Col {
+		case "name":
+			conds = append(conds, `name LIKE ? ESCAPE '\'`)
+			args = append(args, like)
+		case "description":
+			conds = append(conds, `description LIKE ? ESCAPE '\'`)
+			args = append(args, like)
+		default: // "" = every searchable column
+			conds = append(conds, `(name LIKE ? ESCAPE '\' OR description LIKE ? ESCAPE '\')`)
+			args = append(args, like, like)
+		}
+	}
+	if o.Active != nil {
+		conds = append(conds, "active = ?")
+		args = append(args, b2i(*o.Active))
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
 	}
 	total, err := s.count(ctx, "SELECT COUNT(*) FROM tenants"+where, args...)
 	if err != nil {
 		return nil, 0, err
 	}
-	order := map[string]string{"name": "name", "created": "created_at"}[o.Sort]
-	q := "SELECT id, name, created_at FROM tenants" + where + " ORDER BY " + order + o.Order() + ", id"
+	order := map[string]string{"name": "name", "created": "created_at", "active": "active"}[o.Sort]
+	q := "SELECT id, name, description, active, created_at FROM tenants" + where + " ORDER BY " + order + o.Order() + ", id"
 	if o.Limit > 0 {
 		q += " LIMIT ? OFFSET ?"
 		args = append(args, o.Limit, o.Offset)
@@ -109,15 +133,44 @@ func (s *Store) ListTenants(ctx context.Context, o query.List) ([]Tenant, int, e
 	for rows.Next() {
 		var (
 			t     Tenant
+			act   int
 			caStr string
 		)
-		if err := rows.Scan(&t.ID, &t.Name, &caStr); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.Description, &act, &caStr); err != nil {
 			return nil, 0, err
 		}
+		t.Active = act != 0
 		t.CreatedAt, _ = time.Parse(tsFmt, caStr)
 		out = append(out, t)
 	}
 	return out, total, rows.Err()
+}
+
+// UpdateTenant sets a tenant's description.
+func (s *Store) UpdateTenant(ctx context.Context, id int64, description string) error {
+	res, err := s.DB.ExecContext(ctx, "UPDATE tenants SET description = ? WHERE id = ?", description, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetTenantActive suspends (false) or reinstates (true) a whole tenant: the
+// same suspend-instead-of-delete kill switch as users/groups, one level up.
+// Rows, grants and history all survive; the tenant's logins, live sessions
+// and API keys stop working (see Verify/SessionUser/UserByAPIKey).
+func (s *Store) SetTenantActive(ctx context.Context, id int64, active bool) error {
+	res, err := s.DB.ExecContext(ctx, "UPDATE tenants SET active = ? WHERE id = ?", b2i(active), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) tenantIDByName(ctx context.Context, name string) (int64, error) {
@@ -153,7 +206,7 @@ func (s *Store) DeleteTenant(ctx context.Context, id int64) error {
 
 type rowScanner interface{ Scan(dest ...any) error }
 
-const userCols = `u.id, u.tenant_id, t.name, u.username, u.is_admin, u.is_super, u.active, u.created_at, u.expires_at`
+const userCols = `u.id, u.tenant_id, t.name, u.username, u.is_admin, u.is_super, u.active, u.created_at, u.expires_at, u.description, t.active`
 const userFrom = `FROM users u JOIN tenants t ON t.id = u.tenant_id`
 
 // CreateUser adds a user inside tenant. admin marks a tenant admin; super
@@ -161,7 +214,7 @@ const userFrom = `FROM users u JOIN tenants t ON t.id = u.tenant_id`
 // expiresAt nil = account never expires. An empty password means "device
 // user": a random hash is stored, so interactive login can never succeed —
 // access goes through auth_factors (API keys) instead.
-func (s *Store) CreateUser(ctx context.Context, tenant, username, password string, admin, super bool, expiresAt *time.Time) (User, error) {
+func (s *Store) CreateUser(ctx context.Context, tenant, username, password, description string, admin, super bool, expiresAt *time.Time) (User, error) {
 	tid, err := s.tenantIDByName(ctx, tenant)
 	if err != nil {
 		return User{}, err
@@ -180,15 +233,14 @@ func (s *Store) CreateUser(ctx context.Context, tenant, username, password strin
 	if expiresAt != nil {
 		exp = expiresAt.Unix()
 	}
-	res, err := s.DB.ExecContext(ctx,
-		"INSERT INTO users (tenant_id, username, pass_hash, is_admin, is_super, created_at, expires_at) VALUES (?,?,?,?,?,?,?)",
-		tid, username, string(hash), b2i(admin), b2i(super), now.Format(tsFmt), exp)
+	id, err := s.DB.Insert(ctx,
+		"INSERT INTO users (tenant_id, username, pass_hash, is_admin, is_super, description, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?)",
+		tid, username, string(hash), b2i(admin), b2i(super), description, now.Format(tsFmt), exp)
 	if err != nil {
 		return User{}, err
 	}
-	id, _ := res.LastInsertId()
-	return User{ID: id, TenantID: tid, Tenant: tenant, Username: username,
-		IsAdmin: admin, IsSuper: super, Active: true, CreatedAt: now, ExpiresAt: expiresAt}, nil
+	return User{ID: id, TenantID: tid, Tenant: tenant, Username: username, Description: description,
+		IsAdmin: admin, IsSuper: super, Active: true, CreatedAt: now, ExpiresAt: expiresAt, tenantActive: true}, nil
 }
 
 func b2i(b bool) int {
@@ -199,9 +251,9 @@ func b2i(b bool) int {
 }
 
 // Verify checks tenant+username+password and returns the user,
-// or ErrNotFound on mismatch. Expired and deactivated accounts report
-// ErrNotFound too, so callers cannot enumerate which accounts exist but
-// are lapsed or suspended.
+// or ErrNotFound on mismatch. Expired, deactivated and tenant-suspended
+// accounts report ErrNotFound too, so callers cannot enumerate which
+// accounts exist but are lapsed or suspended.
 func (s *Store) Verify(ctx context.Context, tenant, username, password string) (User, error) {
 	var (
 		u       User
@@ -210,11 +262,13 @@ func (s *Store) Verify(ctx context.Context, tenant, username, password string) (
 		act     int
 		caStr   string
 		exp     sql.NullInt64
+		desc    string
+		tact    int
 	)
 	err := s.DB.QueryRowContext(ctx,
-		"SELECT u.id, u.tenant_id, t.name, u.username, u.pass_hash, u.is_admin, u.is_super, u.active, u.created_at, u.expires_at "+
+		"SELECT u.id, u.tenant_id, t.name, u.username, u.pass_hash, u.is_admin, u.is_super, u.active, u.created_at, u.expires_at, u.description, t.active "+
 			userFrom+" WHERE u.username = ? AND t.name = ?", username, tenant).
-		Scan(&u.ID, &u.TenantID, &u.Tenant, &u.Username, &hash, &ad, &sup, &act, &caStr, &exp)
+		Scan(&u.ID, &u.TenantID, &u.Tenant, &u.Username, &hash, &ad, &sup, &act, &caStr, &exp, &desc, &tact)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
@@ -226,10 +280,12 @@ func (s *Store) Verify(ctx context.Context, tenant, username, password string) (
 		u.ExpiresAt = &t
 		u.Expired = exp.Int64 <= time.Now().Unix()
 	}
-	if u.Expired || act == 0 || bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
+	if u.Expired || act == 0 || tact == 0 || bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
 		return User{}, ErrNotFound
 	}
 	u.IsAdmin, u.IsSuper, u.Active = ad != 0, sup != 0, act != 0
+	u.Description = desc
+	u.tenantActive = tact != 0
 	u.CreatedAt, _ = time.Parse(tsFmt, caStr)
 	return u, nil
 }
@@ -262,11 +318,13 @@ func (s *Store) scanUserRow(sc rowScanner) (User, error) {
 		act      int
 		caStr    string
 		exp      sql.NullInt64
+		desc     string
+		tact     int
 	)
-	if err := sc.Scan(&id, &tid, &tenant, &username, &ad, &sup, &act, &caStr, &exp); err != nil {
+	if err := sc.Scan(&id, &tid, &tenant, &username, &ad, &sup, &act, &caStr, &exp, &desc, &tact); err != nil {
 		return User{}, err
 	}
-	u := User{ID: id, TenantID: tid, Tenant: tenant, Username: username,
+	u := User{ID: id, TenantID: tid, Tenant: tenant, Username: username, Description: desc,
 		IsAdmin: ad != 0, IsSuper: sup != 0, Active: act != 0}
 	u.CreatedAt, _ = time.Parse(tsFmt, caStr)
 	if exp.Valid {
@@ -274,12 +332,14 @@ func (s *Store) scanUserRow(sc rowScanner) (User, error) {
 		u.ExpiresAt = &t
 		u.Expired = exp.Int64 <= time.Now().Unix()
 	}
+	u.tenantActive = tact != 0
 	return u, nil
 }
 
 // ListUsers returns one page of users plus the total matching count;
 // tenantID 0 means all tenants (super admin view).
-// Sort keys: username, tenant, created, active. Search columns: username, tenant.
+// Sort keys: username, tenant, created, active, description.
+// Search columns: username, tenant, description.
 func (s *Store) ListUsers(ctx context.Context, tenantID int64, o query.List) ([]User, int, error) {
 	var conds []string
 	var args []any
@@ -296,10 +356,17 @@ func (s *Store) ListUsers(ctx context.Context, tenantID int64, o query.List) ([]
 		case "tenant":
 			conds = append(conds, `t.name LIKE ? ESCAPE '\'`)
 			args = append(args, like)
+		case "description":
+			conds = append(conds, `u.description LIKE ? ESCAPE '\'`)
+			args = append(args, like)
 		default: // "" = every searchable column
-			conds = append(conds, `(u.username LIKE ? ESCAPE '\' OR t.name LIKE ? ESCAPE '\')`)
-			args = append(args, like, like)
+			conds = append(conds, `(u.username LIKE ? ESCAPE '\' OR t.name LIKE ? ESCAPE '\' OR u.description LIKE ? ESCAPE '\')`)
+			args = append(args, like, like, like)
 		}
+	}
+	if o.Active != nil {
+		conds = append(conds, "u.active = ?")
+		args = append(args, b2i(*o.Active))
 	}
 	where := ""
 	if len(conds) > 0 {
@@ -309,7 +376,7 @@ func (s *Store) ListUsers(ctx context.Context, tenantID int64, o query.List) ([]
 	if err != nil {
 		return nil, 0, err
 	}
-	order := map[string]string{"username": "u.username", "tenant": "t.name", "created": "u.created_at", "active": "u.active"}[o.Sort]
+	order := map[string]string{"username": "u.username", "tenant": "t.name", "created": "u.created_at", "active": "u.active", "description": "u.description"}[o.Sort]
 	q := "SELECT " + userCols + " " + userFrom + where + " ORDER BY " + order + o.Order() + ", u.id"
 	if o.Limit > 0 {
 		q += " LIMIT ? OFFSET ?"
@@ -371,6 +438,18 @@ func (s *Store) SetUserActive(ctx context.Context, id int64, active bool) error 
 	return nil
 }
 
+// UpdateUser sets a user's description.
+func (s *Store) UpdateUser(ctx context.Context, id int64, description string) error {
+	res, err := s.DB.ExecContext(ctx, "UPDATE users SET description = ? WHERE id = ?", description, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // TenantID resolves a tenant name to its id (ErrNotFound when unknown);
 // exported for audit scoping of unauthenticated attempts.
 func (s *Store) TenantID(ctx context.Context, name string) (int64, error) {
@@ -379,7 +458,7 @@ func (s *Store) TenantID(ctx context.Context, name string) (int64, error) {
 
 // ---- groups ----
 
-const groupCols = `g.id, g.tenant_id, t.name, g.name, g.active`
+const groupCols = `g.id, g.tenant_id, t.name, g.name, g.active, g.description`
 const groupFrom = `FROM groups g JOIN tenants t ON t.id = g.tenant_id`
 
 func scanGroup(sc rowScanner) (Group, error) {
@@ -387,7 +466,7 @@ func scanGroup(sc rowScanner) (Group, error) {
 		g   Group
 		act int
 	)
-	if err := sc.Scan(&g.ID, &g.TenantID, &g.Tenant, &g.Name, &act); err != nil {
+	if err := sc.Scan(&g.ID, &g.TenantID, &g.Tenant, &g.Name, &act, &g.Description); err != nil {
 		return Group{}, err
 	}
 	g.Active = act != 0
@@ -395,22 +474,22 @@ func scanGroup(sc rowScanner) (Group, error) {
 }
 
 // CreateGroup adds a group named name inside tenant.
-func (s *Store) CreateGroup(ctx context.Context, tenant, name string) (Group, error) {
+func (s *Store) CreateGroup(ctx context.Context, tenant, name, description string) (Group, error) {
 	tid, err := s.tenantIDByName(ctx, tenant)
 	if err != nil {
 		return Group{}, err
 	}
-	res, err := s.DB.ExecContext(ctx, "INSERT INTO groups (tenant_id, name) VALUES (?,?)", tid, name)
+	id, err := s.DB.Insert(ctx, "INSERT INTO groups (tenant_id, name, description) VALUES (?,?,?)", tid, name, description)
 	if err != nil {
 		return Group{}, err
 	}
-	id, _ := res.LastInsertId()
-	return Group{ID: id, TenantID: tid, Tenant: tenant, Name: name, Active: true}, nil
+	return Group{ID: id, TenantID: tid, Tenant: tenant, Name: name, Description: description, Active: true}, nil
 }
 
 // ListGroups returns one page of groups (with their members) plus the total
 // matching count; tenantID 0 means all tenants.
-// Sort keys: name, tenant, active. Search columns: name, tenant.
+// Sort keys: name, tenant, active, description. Search columns: name, tenant,
+// description.
 func (s *Store) ListGroups(ctx context.Context, tenantID int64, o query.List) ([]Group, int, error) {
 	var conds []string
 	var args []any
@@ -427,10 +506,17 @@ func (s *Store) ListGroups(ctx context.Context, tenantID int64, o query.List) ([
 		case "tenant":
 			conds = append(conds, `t.name LIKE ? ESCAPE '\'`)
 			args = append(args, like)
+		case "description":
+			conds = append(conds, `g.description LIKE ? ESCAPE '\'`)
+			args = append(args, like)
 		default: // "" = every searchable column
-			conds = append(conds, `(g.name LIKE ? ESCAPE '\' OR t.name LIKE ? ESCAPE '\')`)
-			args = append(args, like, like)
+			conds = append(conds, `(g.name LIKE ? ESCAPE '\' OR t.name LIKE ? ESCAPE '\' OR g.description LIKE ? ESCAPE '\')`)
+			args = append(args, like, like, like)
 		}
+	}
+	if o.Active != nil {
+		conds = append(conds, "g.active = ?")
+		args = append(args, b2i(*o.Active))
 	}
 	where := ""
 	if len(conds) > 0 {
@@ -440,7 +526,7 @@ func (s *Store) ListGroups(ctx context.Context, tenantID int64, o query.List) ([
 	if err != nil {
 		return nil, 0, err
 	}
-	order := map[string]string{"name": "g.name", "tenant": "t.name", "active": "g.active"}[o.Sort]
+	order := map[string]string{"name": "g.name", "tenant": "t.name", "active": "g.active", "description": "g.description"}[o.Sort]
 	q := "SELECT " + groupCols + " " + groupFrom + where + " ORDER BY " + order + o.Order() + ", g.id"
 	if o.Limit > 0 {
 		q += " LIMIT ? OFFSET ?"
@@ -525,6 +611,18 @@ func (s *Store) DeleteGroup(ctx context.Context, id int64) error {
 // grant through it is ignored (see GroupIDsFor).
 func (s *Store) SetGroupActive(ctx context.Context, id int64, active bool) error {
 	res, err := s.DB.ExecContext(ctx, "UPDATE groups SET active = ? WHERE id = ?", b2i(active), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpdateGroup sets a group's description.
+func (s *Store) UpdateGroup(ctx context.Context, id int64, description string) error {
+	res, err := s.DB.ExecContext(ctx, "UPDATE groups SET description = ? WHERE id = ?", description, id)
 	if err != nil {
 		return err
 	}
@@ -638,7 +736,7 @@ func (s *Store) SessionUser(ctx context.Context, token string) (User, error) {
 	if err != nil {
 		return User{}, err
 	}
-	if u.Expired || !u.Active { // lapsed or suspended account kills live sessions
+	if u.Expired || !u.Active || !u.tenantActive { // lapsed/suspended account or tenant kills live sessions
 		s.DB.ExecContext(ctx, "DELETE FROM sessions WHERE id = ?", token)
 		return User{}, ErrNotFound
 	}

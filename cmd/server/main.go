@@ -64,7 +64,7 @@ func main() {
 	log := slog.New(handler)
 	slog.SetDefault(log)
 
-	conn, err := db.Open(*dbPath)
+	conn, err := db.Open("sqlite", *dbPath)
 	if err != nil {
 		log.Error("open database", "path", *dbPath, "err", err)
 		os.Exit(1)
@@ -150,10 +150,10 @@ func bootstrapAdmin(s *auth.Store, spec string) error {
 		return fmt.Errorf("ADMIN/bootstrap must look like tenant:user:pass, got %q", spec)
 	}
 	ctx := context.Background()
-	if _, err := s.CreateTenant(ctx, tenant); err != nil {
+	if _, err := s.CreateTenant(ctx, tenant, "bootstrap tenant"); err != nil {
 		return fmt.Errorf("create tenant: %w", err)
 	}
-	if _, err := s.CreateUser(ctx, tenant, user, pass, true, true, nil); err != nil {
+	if _, err := s.CreateUser(ctx, tenant, user, pass, "bootstrap super admin", true, true, nil); err != nil {
 		return err
 	}
 	slog.Warn("bootstrap super admin created — change the password in production",

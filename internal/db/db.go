@@ -1,148 +1,111 @@
-// Package db opens the SQLite database and owns the platform-independent
-// permission schema: users, groups, memberships, per-path ACLs, sessions.
-// The files themselves live on the real filesystem under the server's root.
+// Package db opens the application database and owns the schema lifecycle:
+// versioned, dialect-scoped migration files applied under a
+// schema_migrations bookkeeping table.
+//
+// The permission model itself (users, groups, memberships, per-path ACLs,
+// sessions) is platform-independent; the files they guard live on the real
+// filesystem under the server's root. SQLite is the built-in engine today.
+// Everything above this package talks to DB (below), whose Exec/Query/Insert
+// helpers keep SQL portable so moving to Postgres means: import a driver,
+// add its migrations/postgres/*.sql, adjust the noted app-level conventions
+// (case-insensitive matching) — not rewriting call sites.
 package db
 
 import (
+	"context"
 	"database/sql"
-	"strings"
+	"fmt"
 
 	_ "modernc.org/sqlite"
 )
 
-const schema = `
-CREATE TABLE IF NOT EXISTS tenants (
-	id         INTEGER PRIMARY KEY AUTOINCREMENT,
-	name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
-	created_at TEXT NOT NULL
-);
+// DB wraps *sql.DB behind the engine's Dialect: the same `?`-placeholder SQL
+// is rewritten per engine where needed, and Insert retrieves new ids the way
+// the engine hands them back. Call sites (auth/acl/audit stores) use DB
+// instead of *sql.DB; unlisted methods would silently bypass the dialect, so
+// keep new query verbs here deliberately.
+type DB struct {
+	*sql.DB
+	d Dialect
+}
 
--- usernames and group names are unique per tenant, not globally.
--- is_admin: tenant admin (manages own tenant's users/groups/grants, no file bypass)
--- is_super: platform super admin (tenant CRUD, cross-tenant management, ACL bypass)
--- expires_at: unix seconds; NULL = never. Expired accounts cannot log in and
--- live sessions stop working (checked on every request, no cron needed).
-CREATE TABLE IF NOT EXISTS users (
-	id         INTEGER PRIMARY KEY AUTOINCREMENT,
-	tenant_id  INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-	username   TEXT NOT NULL COLLATE NOCASE,
-	pass_hash  TEXT NOT NULL,
-	is_admin   INTEGER NOT NULL DEFAULT 0,
-	is_super   INTEGER NOT NULL DEFAULT 0,
-	created_at TEXT NOT NULL,
-	expires_at INTEGER,
-	UNIQUE (tenant_id, username)
-);
+// Dialect returns the active engine descriptor.
+func (db *DB) Dialect() Dialect { return db.d }
 
-CREATE TABLE IF NOT EXISTS groups (
-	id        INTEGER PRIMARY KEY AUTOINCREMENT,
-	tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-	name      TEXT NOT NULL COLLATE NOCASE,
-	UNIQUE (tenant_id, name)
-);
+// ExecContext / QueryContext / QueryRowContext rebind the query for the
+// engine before delegating. (Signatures mirror *sql.DB so stores that hold a
+// *DB use them transparently.)
+func (db *DB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return db.DB.ExecContext(ctx, db.d.Rebind(query), args...)
+}
 
-CREATE TABLE IF NOT EXISTS group_members (
-	group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-	user_id  INTEGER NOT NULL REFERENCES users(id)  ON DELETE CASCADE,
-	PRIMARY KEY (group_id, user_id)
-);
+func (db *DB) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return db.DB.QueryContext(ctx, db.d.Rebind(query), args...)
+}
 
--- Per-path ACL grants. path is the root-relative logical path ("/" = root).
--- principal_id is the rowid of a users/groups row, which carries the tenant,
--- so the same name in two tenants is two distinct grant subjects.
--- expires_at: unix seconds; NULL = never. Expired grants are ignored by the
--- inheritance engine, so a "3 day share" is just a read grant with an expiry.
-CREATE TABLE IF NOT EXISTS perms (
-	id             INTEGER PRIMARY KEY AUTOINCREMENT,
-	path           TEXT NOT NULL,
-	principal_type TEXT NOT NULL CHECK (principal_type IN ('user','group')),
-	principal_id   INTEGER NOT NULL,
-	can_read       INTEGER NOT NULL DEFAULT 0,
-	can_write      INTEGER NOT NULL DEFAULT 0,
-	can_delete     INTEGER NOT NULL DEFAULT 0,
-	created_at     TEXT NOT NULL,
-	expires_at     INTEGER,
-	UNIQUE (path, principal_type, principal_id)
-);
+func (db *DB) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	return db.DB.QueryRowContext(ctx, db.d.Rebind(query), args...)
+}
 
--- Alternate sign-in methods, one row per (user, method, label). Designed so
--- future methods slot in without schema change: 'apikey' (live), 'ed25519'
--- (device-signed challenges) and 'oauth2' (alg = provider: google, entra,
--- github...) are reserved. secret: apikey = hex sha256(key), ed25519 = base64
--- pubkey, oauth2 = provider subject id. label lets two apikeys coexist while
--- rotating keys during a firmware rollout.
-CREATE TABLE IF NOT EXISTS auth_factors (
-	id           INTEGER PRIMARY KEY AUTOINCREMENT,
-	user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-	method       TEXT NOT NULL CHECK (method IN ('apikey','ed25519','oauth2')),
-	alg          TEXT NOT NULL DEFAULT '',
-	label        TEXT NOT NULL DEFAULT '',
-	secret       TEXT NOT NULL,
-	created_at   TEXT NOT NULL,
-	expires_at   INTEGER,
-	last_used_at INTEGER,
-	UNIQUE (user_id, method, label)
-);
-CREATE INDEX IF NOT EXISTS idx_factors_lookup ON auth_factors (method, secret);
+// QueryRow mirrors QueryRowContext without a context, for boot-time code.
+func (db *DB) QueryRow(query string, args ...any) *sql.Row {
+	return db.DB.QueryRow(db.d.Rebind(query), args...)
+}
 
--- Append-only forensic trail for every authz/authn DML. Deliberately has no
--- FKs: events must outlive the deletion of their actors and targets.
--- tenant_id scopes visibility for tenant admins (0 = platform-level or an
--- unauthenticated attempt against an unknown tenant).
-CREATE TABLE IF NOT EXISTS events (
-	id          INTEGER PRIMARY KEY AUTOINCREMENT,
-	ts          INTEGER NOT NULL,
-	actor_id    INTEGER,
-	actor       TEXT NOT NULL DEFAULT '',
-	tenant_id   INTEGER NOT NULL DEFAULT 0,
-	action      TEXT NOT NULL,
-	target_type TEXT NOT NULL DEFAULT '',
-	target_id   INTEGER NOT NULL DEFAULT 0,
-	target_name TEXT NOT NULL DEFAULT '',
-	path        TEXT NOT NULL DEFAULT '',
-	details     TEXT NOT NULL DEFAULT '',
-	ip          TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_events_tenant_ts ON events (tenant_id, ts);
+// Exec mirrors ExecContext without a context, for boot-time code.
+func (db *DB) Exec(query string, args ...any) (sql.Result, error) {
+	return db.DB.Exec(db.d.Rebind(query), args...)
+}
 
-CREATE TABLE IF NOT EXISTS sessions (
-	id         TEXT PRIMARY KEY,
-	user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-	created_at TEXT NOT NULL,
-	expires_at TEXT NOT NULL
-);
-`
+// Insert runs an INSERT and returns the new row's id. SQLite reports it via
+// LastInsertId; Postgres-style engines get " RETURNING id" appended and the
+// id scanned back. Call sites therefore write plain INSERTs with `?` marks.
+func (db *DB) Insert(ctx context.Context, insert string, args ...any) (int64, error) {
+	if db.d.IDReturning == "" {
+		res, err := db.ExecContext(ctx, insert, args...)
+		if err != nil {
+			return 0, err
+		}
+		return res.LastInsertId()
+	}
+	var id int64
+	q := insert + " RETURNING " + db.d.IDReturning
+	if err := db.QueryRowContext(ctx, q, args...).Scan(&id); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
 
-// Open opens (creating if needed) the database at path and applies the schema.
-// Additive changes migrate in place; the tenant schema itself is not backward
-// compatible with pre-tenant databases — delete those and let Open recreate.
-func Open(path string) (*sql.DB, error) {
-	conn, err := sql.Open("sqlite", path)
+// Open opens the database for driver ("sqlite" is built in; "postgres"
+// needs a driver import) at dsn and applies pending migrations.
+func Open(driver, dsn string) (*DB, error) {
+	var d Dialect
+	switch driver {
+	case "sqlite":
+		d = sqliteDialect
+	case "postgres":
+		d = postgresDialect
+	default:
+		return nil, fmt.Errorf("unsupported driver %q (sqlite is built in; other engines need a driver import and a Dialect entry)", driver)
+	}
+
+	conn, err := sql.Open(driver, dsn)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := conn.Exec("PRAGMA foreign_keys = ON;"); err != nil {
-		conn.Close()
-		return nil, err
-	}
-	if _, err := conn.Exec(schema); err != nil {
-		conn.Close()
-		return nil, err
-	}
-	// Additive migrations for databases created before earlier features.
-	for _, stmt := range []string{
-		"ALTER TABLE users ADD COLUMN expires_at INTEGER",
-		"ALTER TABLE perms ADD COLUMN expires_at INTEGER",
-		"ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
-		"ALTER TABLE groups ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
-	} {
-		if _, err := conn.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+	if driver == "sqlite" {
+		if _, err := conn.Exec("PRAGMA foreign_keys = ON;"); err != nil {
 			conn.Close()
 			return nil, err
 		}
+		// Single connection: correct for ":memory:" (per-connection DBs
+		// otherwise) and avoids SQLITE_BUSY contention for file databases
+		// at this scale. Postgres pools properly, so the cap is sqlite-only.
+		conn.SetMaxOpenConns(1)
 	}
-	// Single connection: correct for ":memory:" (per-connection DBs otherwise)
-	// and avoids SQLITE_BUSY contention for file databases at this scale.
-	conn.SetMaxOpenConns(1)
-	return conn, nil
+	if err := migrate(context.Background(), conn, d); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	return &DB{DB: conn, d: d}, nil
 }

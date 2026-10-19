@@ -14,6 +14,7 @@ type List struct {
 	Col    string // restrict Q to one column; "" = all searchable columns
 	Sort   string // sort key, already validated against the endpoint whitelist
 	Dir    string // "asc" or "desc"
+	Active *bool  // exact-match filter on the active column; nil = no filter
 }
 
 // Like wraps Q as a SQL LIKE pattern, escaping LIKE metacharacters.

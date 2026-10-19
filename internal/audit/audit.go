@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"strings"
 	"time"
+
+	"github.com/user/llm-crud1/internal/db"
 )
 
 type Event struct {
@@ -28,9 +30,9 @@ type Event struct {
 	IP         string         `json:"ip,omitempty"`
 }
 
-type Store struct{ DB *sql.DB }
+type Store struct{ DB *db.DB }
 
-func NewStore(db *sql.DB) *Store { return &Store{DB: db} }
+func NewStore(conn *db.DB) *Store { return &Store{DB: conn} }
 
 // Record appends one event. details is serialized as JSON; secrets (api
 // keys, passwords) must never be placed in it by callers.

@@ -33,7 +33,7 @@ func newEnv(t *testing.T) *env { return newEnvLimits(t, 0, 0, 0, 0) }
 // authenticated endpoints, authRPS/authBurst for login-per-IP. Zero = off.
 func newEnvLimits(t *testing.T, rps float64, rburst int, authRPS float64, authBurst int) *env {
 	t.Helper()
-	conn, err := db.Open(":memory:")
+	conn, err := db.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -44,10 +44,10 @@ func newEnvLimits(t *testing.T, rps float64, rburst int, authRPS float64, authBu
 	}
 	as := auth.NewStore(conn)
 	ctx := context.Background()
-	if _, err := as.CreateTenant(ctx, "acme"); err != nil {
+	if _, err := as.CreateTenant(ctx, "acme", ""); err != nil {
 		t.Fatalf("bootstrap tenant: %v", err)
 	}
-	if _, err := as.CreateUser(ctx, "acme", "admin", "pw", true, true, nil); err != nil {
+	if _, err := as.CreateUser(ctx, "acme", "admin", "pw", "", true, true, nil); err != nil {
 		t.Fatalf("bootstrap admin: %v", err)
 	}
 	api := API{Auth: as, ACL: acl.NewStore(conn), Events: audit.NewStore(conn),
@@ -971,4 +971,136 @@ func arr2slice(arr []any) []map[string]any {
 		out = append(out, v.(map[string]any))
 	}
 	return out
+}
+
+// TestEntityMetaActive covers description + active across all three entity
+// kinds: create bodies accept a description, lists expose/search/filter/sort
+// by it, PUT /{id} updates it, and the active filter narrows lists quickly.
+func TestEntityMetaActive(t *testing.T) {
+	e := newEnv(t)
+	u := e.admin
+	base := e.srv.URL + "/api/v1"
+
+	tn := must(t, u, "POST", base+"/tenants", `{"name":"acme2","description":"customer acme 2"}`, http.StatusCreated)
+	if tn["description"] != "customer acme 2" || tn["active"] != true {
+		t.Fatalf("tenant create echo: %v", tn)
+	}
+	usr := must(t, u, "POST", base+"/users", `{"username":"meta1","password":"pw123456","description":"q3 contractor"}`, http.StatusCreated)
+	if usr["description"] != "q3 contractor" || usr["active"] != true {
+		t.Fatalf("user create echo: %v", usr)
+	}
+	grp := must(t, u, "POST", base+"/groups", `{"name":"gmeta","description":"build agents"}`, http.StatusCreated)
+	if grp["description"] != "build agents" || grp["active"] != true {
+		t.Fatalf("group create echo: %v", grp)
+	}
+
+	// description is searchable per column and via the default all-columns search
+	if arr := mustList(t, u, "GET", base+"/users?q=contractor&col=description", http.StatusOK); len(arr) != 1 {
+		t.Fatalf("users col=description hit: %v", arr)
+	}
+	if arr := mustList(t, u, "GET", base+"/users?q=contractor", http.StatusOK); len(arr) != 1 {
+		t.Fatalf("users all-columns description hit: %v", arr)
+	}
+	if arr := mustList(t, u, "GET", base+"/groups?q=build&col=description", http.StatusOK); len(arr) != 1 {
+		t.Fatalf("groups col=description hit: %v", arr)
+	}
+	if arr := mustList(t, u, "GET", base+"/tenants?q=acme%202&col=description", http.StatusOK); len(arr) != 1 {
+		t.Fatalf("tenants col=description hit: %v", arr)
+	}
+	// and sortable
+	if arr := mustList(t, u, "GET", base+"/users?sort=description", http.StatusOK); len(arr) == 0 {
+		t.Fatal("users sort=description empty")
+	}
+
+	// PUT updates descriptions
+	uid := jsonInt(usr["id"])
+	gid := jsonInt(grp["id"])
+	tid := jsonInt(tn["id"])
+	must(t, u, "PUT", base+"/users/"+strconv.FormatInt(uid, 10), `{"description":"now permanent"}`, http.StatusNoContent)
+	must(t, u, "PUT", base+"/groups/"+strconv.FormatInt(gid, 10), `{"description":"build + release agents"}`, http.StatusNoContent)
+	must(t, u, "PUT", base+"/tenants/"+strconv.FormatInt(tid, 10), `{"description":"renamed customer"}`, http.StatusNoContent)
+	if arr := mustList(t, u, "GET", base+"/users?q=permanent&col=description", http.StatusOK); len(arr) != 1 {
+		t.Fatalf("user description update not visible: %v", arr)
+	}
+
+	// active filter: exact-match on each entity list, 400 on non-entity lists
+	must(t, u, "POST", base+"/users/"+strconv.FormatInt(uid, 10)+"/active", `{"active":false}`, http.StatusOK)
+	ids := func(url string) []int64 {
+		var out []int64
+		for _, row := range mustList(t, u, "GET", url, http.StatusOK) {
+			out = append(out, jsonInt(row.(map[string]any)["id"]))
+		}
+		return out
+	}
+	has := func(ids []int64, id int64) bool {
+		for _, v := range ids {
+			if v == id {
+				return true
+			}
+		}
+		return false
+	}
+	if has(ids(base+"/users?active=true"), uid) || !has(ids(base+"/users?active=false"), uid) {
+		t.Fatal("users active filter broken")
+	}
+	must(t, u, "POST", base+"/groups/"+strconv.FormatInt(gid, 10)+"/active", `{"active":false}`, http.StatusOK)
+	if has(ids(base+"/groups?active=true"), gid) || !has(ids(base+"/groups?active=false"), gid) {
+		t.Fatal("groups active filter broken")
+	}
+	for _, bad := range []string{base + "/users?active=maybe", base + "/fs?path=/&active=true", base + "/events?active=true"} {
+		if code, _, _ := reqJSON(t, u, "GET", bad, ""); code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400 for invalid/unsupported active", bad, code)
+		}
+	}
+}
+
+// TestTenantSuspend exercises the tenant-wide kill switch: a suspended
+// tenant's users can neither log in nor keep live sessions, and the tenant
+// is filterable via active=false. Super admins may not suspend their own
+// tenant (footgun guard), but may suspend and reinstate another.
+func TestTenantSuspend(t *testing.T) {
+	e := newEnv(t)
+	u := e.admin
+	base := e.srv.URL + "/api/v1"
+
+	tn := must(t, u, "POST", base+"/tenants", `{"name":"offgrid","description":"paused account"}`, http.StatusCreated)
+	tid := jsonInt(tn["id"])
+	must(t, u, "POST", base+"/users", `{"username":"cust","password":"pw123456","tenant":"offgrid"}`, http.StatusCreated)
+
+	c := login(t, e.srv, "offgrid", "cust", "pw123456") // live session before the switch
+	must(t, c, "GET", base+"/auth/me", "", http.StatusOK)
+
+	must(t, u, "POST", base+"/tenants/"+strconv.FormatInt(tid, 10)+"/active", `{"active":false}`, http.StatusNoContent)
+
+	// live session dies on the next request
+	if code, _, _ := reqJSON(t, c, "GET", base+"/auth/me", ""); code != http.StatusUnauthorized {
+		t.Fatalf("auth/me after tenant suspend: %d, want 401", code)
+	}
+	// and new logins fail like unknown credentials
+	jar, _ := cookiejar.New(nil)
+	fresh := &http.Client{Jar: jar}
+	if code, _, _ := reqJSON(t, fresh, "POST", base+"/auth/login",
+		`{"tenant":"offgrid","username":"cust","password":"pw123456"}`); code != http.StatusUnauthorized {
+		t.Fatalf("login after tenant suspend: %d, want 401", code)
+	}
+
+	// visible through the active filter, and its users/grants are untouched
+	if arr := mustList(t, u, "GET", base+"/tenants?active=false", http.StatusOK); len(arr) != 1 {
+		t.Fatalf("tenants?active=false: %v", arr)
+	}
+	if arr := mustList(t, u, "GET", base+"/users?q=cust", http.StatusOK); len(arr) != 1 {
+		t.Fatalf("suspended tenant's users must remain listed: %v", arr)
+	}
+
+	// footgun guard: the bootstrap super admin sits in acme; acme cannot self-suspend
+	acmeID := jsonInt(mustList(t, u, "GET", base+"/tenants?q=acme&col=name", http.StatusOK)[0].(map[string]any)["id"])
+	if code, _, _ := reqJSON(t, u, "POST", base+"/tenants/"+strconv.FormatInt(acmeID, 10)+"/active", `{"active":false}`); code != http.StatusUnprocessableEntity {
+		t.Fatalf("self-tenant suspend: %d, want 422", code)
+	}
+
+	// reinstatement brings the tenant back: the old session row was deleted
+	// by the kill switch, but a fresh login succeeds again
+	must(t, u, "POST", base+"/tenants/"+strconv.FormatInt(tid, 10)+"/active", `{"active":true}`, http.StatusNoContent)
+	c2 := login(t, e.srv, "offgrid", "cust", "pw123456")
+	must(t, c2, "GET", base+"/auth/me", "", http.StatusOK)
 }
