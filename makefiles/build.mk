@@ -53,3 +53,31 @@ dist: build-web
 test-dist: dist
 	./scripts/test_dist.sh
 .PHONY: dist test-dist
+
+# ---- Android APK (an old phone as a home server) -------------------------
+# The app in android/ is a thin wrapper: a foreground service that exec()s
+# the ordinary CGO_ENABLED=0 server binary. It ships in jniLibs named
+# lib*.so so the installer drops it into nativeLibraryDir — the one place
+# a modern targetSdk still lets an app exec from (same trick as
+# syncthing-android). arm64 uses GOOS=android; plain GOOS=android/arm
+# would demand cgo, but a static linux/arm binary runs on Android's
+# kernel as-is, so 32-bit (and the emulator's x86_64) use GOOS=linux.
+ANDROID_JNILIBS := android/app/src/main/jniLibs
+ANDROID_HOME ?= $(HOME)/Library/Android/sdk
+# brew gradle 7.5 runs on JDK 17 (it refuses 19); pick 17 if present.
+GRADLE_JAVA ?= $(shell /usr/libexec/java_home -v 17 2>/dev/null || echo "$(JAVA_HOME)")
+
+android-so: build-web
+	@for spec in "arm64-v8a android arm64 " "armeabi-v7a linux arm GOARM=7" "x86_64 linux amd64 "; do \
+	  set -- $$spec; abi=$$1; goos=$$2; goarch=$$3; goarm=$$4; \
+	  echo "==> jniLibs/$$abi"; \
+	  mkdir -p $(ANDROID_JNILIBS)/$$abi; \
+	  env $$goarm GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -trimpath -tags embedweb -ldflags='-s -w' -o $(ANDROID_JNILIBS)/$$abi/libgvnserver.so ./cmd/server || exit 1; \
+	done
+
+android-apk: android-so
+	@ANDROID_HOME=$(ANDROID_HOME) JAVA_HOME=$(GRADLE_JAVA) ./android/gradlew -p android assembleDebug
+	@mkdir -p $(DIST)
+	@cp android/app/build/outputs/apk/debug/app-debug.apk $(DIST)/gvn-explorer-$(VERSION)-android.apk
+	@echo "APK: $(DIST)/gvn-explorer-$(VERSION)-android.apk"
+.PHONY: android-so android-apk

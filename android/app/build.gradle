@@ -1,0 +1,48 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'dev.gvn.explorer'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'dev.gvn.explorer'
+        // Android 5: about as far back as a usable always-on file server
+        // phone realistically is, and it matches our static linux/arm build.
+        minSdk 21
+        targetSdk 33
+        versionCode 1
+        versionName '0.1.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    packaging {
+        jniLibs {
+            // libgvnserver.so is our own Go binary (already stripped by
+            // -ldflags); tell AGP not to try its strip tool on it.
+            keepDebugSymbols += ['**/libgvnserver.so']
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+
+    // libgvnserver.so is generated into jniLibs by `make android-so` — the
+    // server binary itself, named lib*.so so the installer extracts it into
+    // nativeLibraryDir (the only place an app may exec from, targetSdk >= 29).
+}
+
+dependencies {
+}

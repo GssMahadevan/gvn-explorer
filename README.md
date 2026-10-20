@@ -18,6 +18,8 @@ enforced purely by ACL grants.
 open https://localhost:8080 (self-signed cert: accept the one-time
 browser warning) and sign in as `system / admin / admin`.
 No build tools, no Docker; the archive's own README explains the rest.
+Got an old Android phone? The APK in the Releases wraps the same server
+and turns the phone into the box it runs on — see [`android/README.md`](android/README.md).
 Container? `ghcr.io/gssmahadevan/gvn-explorer:latest` (multi-arch) — pull
 and run below under *Run from the published image*.
 
@@ -828,6 +830,16 @@ ships). Bare binaries also land flat in `dist/`. The plain build
 `-web` from disk exactly as before; embedding is purely the
 release-binary mode. Serving precedence either way: an existing `-web`
 directory wins, otherwise the embedded bundle.
+
+**Android APK** — `make android-apk` builds the same embedded binary for
+arm64-v8a/armeabi-v7a/x86_64, packages it inside a thin wrapper app
+(`android/`: a Kotlin foreground service that exec's the binary and a
+one-screen settings UI with a storage-volume picker for phone/SD/USB
+roots), and drops the APK next to the other artifacts in `dist/`. The
+app has no third-party dependencies; the server inside it is the
+ordinary `CGO_ENABLED=0` build. `android/README.md` has the end-user
+setup; it was smoke-tested end-to-end (install → boot autostart →
+login → file write) on an Android-14 emulator via adb.
 
 Published: **v0.1.0** is live on the Releases page with all six
 archives attached. The flow for the next release (no `gh` CLI needed):

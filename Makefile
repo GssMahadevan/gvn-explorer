@@ -22,4 +22,5 @@ help:
 	@echo "docker-up    build + start via compose (app on :8080)"
 	@echo "docker-down  stop compose"
 	@echo "demo         rebuild the narrated demo videos (docs/demo-*.mp4)"
+	@echo "android-apk  build the Android wrapper APK (old phone as a server)"
 .PHONY: help
