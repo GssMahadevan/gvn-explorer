@@ -7,8 +7,10 @@ here is in this guide. The exhaustive contract, plus the ~350-case curl
 regression suite that tests it, lives in the project's source repo
 (root `README.md` and `scripts/test_files.sh`).
 
-Base URL: `http://<host>:8080/api/v1`. JSON in, JSON out. Every
-response carries `X-Request-Id` (echo yours to correlate logs).
+Base URL: `http://<host>:8080/api/v1` — or `https://…` when the instance
+is served with TLS; a self-signed certificate just means `curl -k`. JSON
+in, JSON out. Every response carries `X-Request-Id` (echo yours to
+correlate logs).
 
 ## Authentication
 

@@ -37,6 +37,11 @@ type API struct {
 	AuthRPS   float64
 	AuthBurst int
 
+	// CookieSecure adds the Secure attribute to the session cookie. The
+	// server sets it automatically when serving TLS ('auto'); operators
+	// behind a TLS-terminating proxy set it explicitly.
+	CookieSecure bool
+
 	principalLim *limiterSet // built by Register
 	authIP       *limiterSet
 }

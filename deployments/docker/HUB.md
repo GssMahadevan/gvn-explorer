@@ -85,6 +85,10 @@ the image.
 | `AUTH_BURST` | `10` | burst allowance for `AUTH_RPS` |
 | `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
 | `LOG_JSON` | `true` | JSON log lines (`false` = human-readable) |
+| `TLS_CERT` / `TLS_KEY` | unset | serve HTTPS instead of HTTP; point both at a cert/key pair you mount into the container |
+| `TLS_SELF` | unset | `true` → HTTPS with a throwaway self-signed cert (browser warns once; nothing to mount) |
+| `COOKIE_SECURE` | `auto` | `Secure` flag on the session cookie: auto / on / off |
+| `HSTS_DAYS` | `0` | send `Strict-Transport-Security` (days) on HTTPS responses |
 
 Bad values fail loudly at startup (`RPS: invalid number "ozone"`) rather
 than being silently ignored.

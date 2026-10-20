@@ -4,8 +4,8 @@ export GO111MODULE=on
 
 API_PORT ?= 8097
 
-test: test-go test-api test-gui
-.PHONY: test test-go test-api test-gui
+test: test-go test-api test-tls test-gui
+.PHONY: test test-go test-api test-tls test-gui
 
 test-go:
 	go vet ./...
@@ -20,6 +20,12 @@ test-api: build-server
 	BASE_URL=http://localhost:$(API_PORT) ADMIN_TENANT=system ADMIN_USER=admin ADMIN_PASS=admin \
 		./scripts/test_files.sh; rc=$$?; \
 	kill $$pid 2>/dev/null; rm -rf $$dir; exit $$rc
+
+# HTTPS smoke (scripts/test-tls.sh on :8099/:8100): self-signed -tls-self,
+# file certs via scripts/gen-selfsigned.sh, HTTP->HTTPS 308, Secure cookies,
+# security headers.
+test-tls: build-server
+	@./scripts/test-tls.sh
 
 # Headless-Chrome GUI walk (scripts/test_gui.sh builds its own
 # fixtures/server on :8096; needs local Chrome).

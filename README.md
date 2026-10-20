@@ -50,6 +50,10 @@ Flags (env fallbacks in caps; flags win):
 | -auth-burst | —     | burst allowance for -auth-rps (default 10)           |
 | -log-level | LOG_LEVEL | debug|info|warn|error (default info)               |
 | -log-json  | LOG_JSON  | JSON log lines, one object per line (default true; false = human text) |
+| -tls-cert / -tls-key | TLS_CERT / TLS_KEY | serve HTTPS on -addr from this cert/key pair (must be set together) |
+| -tls-self  | TLS_SELF  | HTTPS with an in-memory self-signed cert (no files; browsers warn once) |
+| -cookie-secure | COOKIE_SECURE | session cookie `Secure` flag: auto (on while serving TLS) / on / off |
+| -hsts-days | HSTS_DAYS | `Strict-Transport-Security` max-age in days on TLS responses (0 disables) |
 
 The bootstrap flag creates the tenant *and* a **platform super admin** inside
 it. All paths are logical and rooted at `-root`: no `..`, absolute paths, or
@@ -89,6 +93,55 @@ start), so set it before the very first run in production. Upgrade =
 A `docker-compose.yml` (same two volumes, plus a Postgres-ready shape) and
 the full operator notes live in [`deployments/docker/README.md`](deployments/docker/README.md);
 `make docker-up` builds the same image locally from source instead.
+
+## HTTPS (self-signed or your own cert)
+
+The listener serves TLS itself — no reverse proxy required. Quick path:
+
+```sh
+./bin/server -tls-self      # → https on the same -addr, throwaway self-signed cert
+```
+
+The container does the same thing with `-e TLS_SELF=true`. Browsers show a
+one-time warning (unknown issuer — unavoidable for any self-signed cert);
+`curl -k` or `--cacert` covers scripts.
+
+For a *stable* cert — one that survives restarts and can be added to the
+OS trust store so the warning disappears — generate one on disk and point
+the server at it:
+
+```sh
+./scripts/gen-selfsigned.sh                              # → tls/server.crt + tls/server.key
+./bin/server -tls-cert tls/server.crt -tls-key tls/server.key
+```
+
+The generated cert covers `localhost`, the machine hostname, `127.0.0.1`
+and `::1` and is its own CA, so clients can verify it without switching
+off checking: `curl --cacert tls/server.crt https://localhost:8080/healthz`.
+(Serve behind a real cert the same way — `-tls-cert/-tls-key` take any
+pair, the built-in TLS needs nothing else.)
+
+Behaviour when TLS is on:
+
+- **Plain HTTP keeps working on the same port.** The first byte of each
+  connection decides: TLS records proceed, plaintext HTTP requests get an
+  instant **308** to the `https://` URL of the same host:port:path. 308
+  preserves method and body, so even an old `http://` bookmark with a POST
+  re-sends correctly; `Location` reuses the request's `Host`, so port and
+  hostname survive.
+- The session cookie picks up **`Secure`** automatically
+  (`-cookie-secure=on|off` overrides — set `on` behind a TLS-terminating
+  proxy, which is still fully supported).
+- `-hsts-days 365` opts into HSTS; off by default because a bare-IP
+  self-signed setup pinned in the browser is awkward to undo.
+- TLS 1.2 and up only.
+
+Everything here is additive: with no TLS flags the server is plain HTTP
+exactly as before, and `make test-api` (HTTP) plus `make test-tls`
+(both cert paths, the 308, Secure cookies, security headers) keep both
+sides honest. What the app does against the standard *web attacks* —
+XSS, CSRF, clickjacking, path traversal, SQL injection, MIME confusion —
+is summarized under *Web attack surface* further down.
 
 ## Auth
 
@@ -283,6 +336,52 @@ Admin rights; super admins see all tenants. Newest first. A failed audit
 write is logged loudly but never blocks the operation itself. The GUI
 mirrors this API one-for-one as the **Events tab** (see Web GUI): all
 columns, the same filters, and per-row expansion of the `details` JSON.
+
+## Web attack surface
+
+What stands between this app and the standard browser-side attacks — each
+line names the exact mechanism, most of it pinned by tests:
+
+- **XSS** — everything rendered in the GUI goes through React, which
+  escapes all text; the markdown viewer (`react-markdown`) **does not
+  render raw HTML inside `.md` files at all** (no `rehype-raw`), and the
+  codebase uses no `dangerouslySetInnerHTML`. A content-security-policy
+  (`script-src 'self'`, sent on every response) means no script from any
+  source the bundle didn't ship can execute.
+- **CSRF** — three independent layers on every state-changing call: the
+  `Origin` must match the `Host`, form content-types are refused (a
+  cross-origin form can't accidentally post JSON-shaped bodies), and
+  session cookies are `SameSite=Lax`. Bearer-token callers carry no
+  ambient credential, so they are immune by construction.
+- **Clickjacking** — `X-Frame-Options: DENY` + CSP `frame-ancestors
+  'none'`: no other origin can frame the app to capture blind clicks.
+- **Confused-MPE / download XSS** — file content always comes back as
+  `Content-Disposition: attachment` with `X-Content-Type-Options:
+  nosniff`; an uploaded `report.html` never runs as a page on your origin.
+- **Path traversal / symlink escape** — enforced in `internal/fsx`, not in
+  handlers: cleaned path, root-prefix check, and symlink components
+  refused, so no `..`, absolute path, or planted symlink leaves the
+  sandbox.
+- **SQL injection** — every query is parameterized (including the dynamic
+  `IN (?,?,…)` lists); sort columns come from per-endpoint whitelists and
+  LIKE metacharacters in search terms are escaped, so user text is data
+  everywhere.
+- **Session theft / brute force** — bcrypt password hashing; API keys are
+  stored as SHA-256 hashes and shown exactly once; session tokens come
+  from `crypto/rand`, are rotated at every login and dropped at logout,
+  and are `HttpOnly` (+ `Secure` automatically whenever TLS serves, see
+  *HTTPS*); logins are rate-limited per source IP (3/s + burst by
+  default) and every authenticated principal has its own request bucket;
+  request bodies are capped (`-max-mb`).
+- **Referrer leakage** — `Referrer-Policy: no-referrer` keeps logical
+  paths (which carry file names) from leaking to third-party links.
+- **Replay/forensics** — every authn/authz mutation lands in the
+  append-only `events` table above; failed logins are recorded with
+  source IP.
+
+`make test-tls` asserts the header set, the Secure cookie under TLS, and
+the HTTP→HTTPS redirect; the GUI walk runs with the CSP active and fails
+on any console error.
 
 ## Logging
 
@@ -584,6 +683,7 @@ shape-identical to the sqlite baseline: BIGINT ids, text/unix timestamps,
 GO111MODULE=on go test ./...                     # httptest API suite
 BASE_URL=http://localhost:8095 ADMIN_TENANT=system ADMIN_PASS=secret \
   ./scripts/test_files.sh                        # curl regression suite
+./scripts/test-tls.sh                            # HTTPS/self-signed smoke
 ./scripts/test_gui.sh                            # headless-Chrome GUI walk
 ```
 
@@ -600,13 +700,16 @@ the active-filter wire format,
 flash center, per-file grant flow, the Events tab (all audit columns,
 the `action=` filter wire format, search scoping, details expansion),
 header menus, dark mode, sign-out)
-with 78 assertions plus a zero-console-error guard. `SHOTS=1` additionally
+with 84 assertions plus a zero-console-error guard (which also proves the
+server's content-security-policy is compatible with the bundle). `SHOTS=1` additionally
 writes light/dark screenshots to `$OUT_DIR` (default `/tmp/fx-gui`).
 Needs a local Chrome; `CHROME_PATH` overrides the macOS default.
 
 The root `Makefile` (split into `makefiles/{build,test,deploy}.mk`) wraps all of
 this: `make build`, `make test` (go + a self-contained `test-api` that boots a
-throwaway server on its own port + the GUI walk), `make docker-*`.
+throwaway server on its own port + `test-tls` (HTTPS: `-tls-self`, generated
+certs, the HTTP→HTTPS 308, Secure cookies, security headers) + the GUI walk),
+`make docker-*`.
 
 ## Deployment
 

@@ -55,6 +55,7 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   a.CookieSecure,
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Now().Add(ttl),
 		MaxAge:   int(ttl.Seconds()),

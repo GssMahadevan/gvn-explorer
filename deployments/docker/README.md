@@ -133,15 +133,23 @@ env values fail at startup instead of falling back silently.
 | `RPS` / `R_BURST` | `20` / `60` | per-principal API rate limit (`RPS=0` disables) |
 | `AUTH_RPS` / `AUTH_BURST` | `3` / `10` | per-IP login rate limit (`AUTH_RPS=0` disables) |
 | `LOG_LEVEL` / `LOG_JSON` | `info` / `true` | structured logging |
+| `TLS_CERT` / `TLS_KEY` | unset | serve HTTPS on `ADDR` from a cert/key pair mounted into the container (set both; plain-HTTP requests on the port answer 308 → https) |
+| `TLS_SELF` | unset | `true` → HTTPS with an ephemeral self-signed cert generated at startup (browsers warn once; no files to mount) |
+| `COOKIE_SECURE` | `auto` | `Secure` attribute on the session cookie: auto (on while serving TLS), on (e.g. behind a TLS-terminating proxy), off |
+| `HSTS_DAYS` | `0` | emit `Strict-Transport-Security` (max-age = N days) on TLS responses |
 
 Everything else — tenants, users, groups, API keys, grants, expiries,
 suspension — is *runtime data* in `perms.db`, managed through the GUI
 or the API, never through env.
 
-The server speaks plain HTTP (`SameSite=Lax` cookies), so terminate
-TLS at your reverse proxy; give it `client_max_body_size` ≥ `MAX_MB`
-so uploads pass through. Every request carries an `X-Request-Id` that
-appears in both the API responses and the JSON logs.
+TLS is your choice of two shapes: keep plain HTTP and terminate TLS at
+your reverse proxy (give it `client_max_body_size` ≥ `MAX_MB` so uploads
+pass through; set `COOKIE_SECURE=on` so the session cookie claims
+Secure), or let the container serve HTTPS itself — mount a keypair
+(`-v ./tls:/tls:ro -e TLS_CERT=/tls/server.crt -e TLS_KEY=/tls/server.key`)
+or just set `TLS_SELF=true` for a throwaway self-signed cert. The image
+healthcheck follows whichever mode you picked. Every request carries an
+`X-Request-Id` that appears in both the API responses and the JSON logs.
 
 ## Upgrades
 

@@ -25,6 +25,11 @@ services:
       - ./data/root:/data/root
       - ./data/db:/data
     restart: unless-stopped
+    # To serve HTTPS from the container itself instead of a reverse proxy:
+    #   environment:  TLS_SELF: "true"                      # throwaway self-signed cert
+    #   …or your own: TLS_CERT: /tls/server.crt
+    #               TLS_KEY:  /tls/server.key
+    #   …and add to volumes: - ./tls:/tls:ro
 
   # Ready for when the db layer grows a Postgres backend (dialect +
   # migrations/postgres/ are already in the repo). Not used by the

@@ -52,5 +52,5 @@ ENV ADDR=":8080" \
 EXPOSE 8080
 VOLUME ["/data"]
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
-  CMD wget -qO /dev/null "http://127.0.0.1${ADDR}/" || exit 1
+  CMD wget -qO /dev/null "http://127.0.0.1${ADDR}/" || wget -qO /dev/null --no-check-certificate "https://127.0.0.1${ADDR}/"
 ENTRYPOINT ["/app/server"]

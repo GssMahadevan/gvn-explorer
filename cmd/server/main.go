@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,9 +19,9 @@ import (
 	"github.com/GssMahadevan/gvn-explorer/frontend"
 	"github.com/GssMahadevan/gvn-explorer/internal/acl"
 	"github.com/GssMahadevan/gvn-explorer/internal/audit"
-	"github.com/GssMahadevan/gvn-explorer/internal/drafts"
 	"github.com/GssMahadevan/gvn-explorer/internal/auth"
 	"github.com/GssMahadevan/gvn-explorer/internal/db"
+	"github.com/GssMahadevan/gvn-explorer/internal/drafts"
 	"github.com/GssMahadevan/gvn-explorer/internal/fsx"
 	"github.com/GssMahadevan/gvn-explorer/internal/handlers"
 )
@@ -75,7 +77,19 @@ func main() {
 	authBurst := flag.Int("auth-burst", envIntOr("AUTH_BURST", 10), "burst allowance for -auth-rps")
 	logLevel := flag.String("log-level", envOr("LOG_LEVEL", "info"), "log level: debug|info|warn|error")
 	logJSON := flag.Bool("log-json", envOr("LOG_JSON", "true") == "true", "emit JSON logs (false = human-readable text)")
+	tlsCert := flag.String("tls-cert", envOr("TLS_CERT", ""), "TLS certificate file; with -tls-key serves HTTPS on -addr")
+	tlsKey := flag.String("tls-key", envOr("TLS_KEY", ""), "TLS private key file")
+	tlsSelf := flag.Bool("tls-self", envOr("TLS_SELF", "") == "true", "serve HTTPS with a generated in-memory self-signed cert (browsers warn once; see scripts/gen-selfsigned.sh for a stable one)")
+	cookieSecure := flag.String("cookie-secure", envOr("COOKIE_SECURE", "auto"), "session cookie Secure attribute: auto (on when serving TLS) | on | off — set 'on' behind a TLS-terminating proxy")
+	hstsDays := flag.Int("hsts-days", envIntOr("HSTS_DAYS", 0), "emit Strict-Transport-Security (max-age=N days) on TLS responses; 0 disables")
 	flag.Parse()
+
+	switch strings.ToLower(*cookieSecure) {
+	case "auto", "on", "off":
+	default:
+		fmt.Fprintf(os.Stderr, "bad -cookie-secure %q (want auto|on|off)\n", *cookieSecure)
+		os.Exit(2)
+	}
 
 	// Structured logging: one JSON object per line for shipping/jq/grep,
 	// leveled via -log-level; every request line carries a correlation id
@@ -94,6 +108,36 @@ func main() {
 	}
 	log := slog.New(handler)
 	slog.SetDefault(log)
+
+	// TLS: explicit files win; -tls-self generates a throwaway self-signed
+	// cert in memory; neither means plain HTTP as before — TLS is purely
+	// additive, no existing deployment changes behaviour.
+	var tlsPair *tls.Certificate
+	switch {
+	case *tlsCert != "" || *tlsKey != "":
+		if *tlsCert == "" || *tlsKey == "" {
+			fmt.Fprintln(os.Stderr, "-tls-cert and -tls-key must be given together")
+			os.Exit(2)
+		}
+		c, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
+		if err != nil {
+			log.Error("load TLS keypair", "cert", *tlsCert, "key", *tlsKey, "err", err)
+			os.Exit(1)
+		}
+		tlsPair = &c
+	case *tlsSelf:
+		c, err := selfSignedCert()
+		if err != nil {
+			log.Error("generate self-signed cert", "err", err)
+			os.Exit(1)
+		}
+		tlsPair = &c
+		log.Warn("serving HTTPS with an ephemeral self-signed certificate (-tls-self): browsers warn once; for a stable one use scripts/gen-selfsigned.sh with -tls-cert/-tls-key")
+	}
+	// 'auto' follows the listener: cookies only claim Secure when they
+	// really travel over TLS, so plain-HTTP dev setups keep working.
+	cookieSecureOn := strings.EqualFold(*cookieSecure, "on") ||
+		(strings.EqualFold(*cookieSecure, "auto") && tlsPair != nil)
 
 	conn, err := db.Open("sqlite", *dbPath)
 	if err != nil {
@@ -128,6 +172,7 @@ func main() {
 		AuthRPS:    *authRPS,
 		AuthBurst:  *authBurst,
 	}
+	api.CookieSecure = cookieSecureOn
 	mux := http.NewServeMux()
 	api.Register(mux)
 
@@ -147,11 +192,28 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           withMiddleware(log, mux),
+		Handler:           securityHeaders(*hstsDays, withMiddleware(log, mux)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	go func() {
+		if tlsPair != nil {
+			ln, err := net.Listen("tcp", *addr)
+			if err != nil {
+				log.Error("listen", "addr", *addr, "err", err)
+				os.Exit(1)
+			}
+			srv.TLSConfig = &tls.Config{
+				MinVersion:   tls.VersionTLS12,
+				Certificates: []tls.Certificate{*tlsPair},
+			}
+			log.Info("server starting (https)", "addr", *addr, "note", "plain-HTTP requests on this port get a 308 to https")
+			if err := srv.ServeTLS(httpsRedirectListener(ln), "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("server error", "err", err)
+				os.Exit(1)
+			}
+			return
+		}
 		log.Info("server starting", "addr", *addr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("server error", "err", err)
