@@ -2,10 +2,16 @@
 // table works before any content is fetched (same policy GitHub uses):
 //   'yaml'   -> structured YAML view; edit mode runs the draft/publish flow
 //   'text'   -> file page: read-only viewer, editing in CodeMirror (FilePane)
+//   'image'  -> file page: previewed with a plain <img src=/fs/raw>
+//   'video'  -> file page: played with the browser's native <video controls>
+//              (the same controls YouTube shows; /fs/raw already answers
+//              Range requests, so seeking streams only the needed bytes)
 //   'download' -> everything else (binaries, unknown types): stream via /fs/raw
-// Extension-less files (README, Makefile, LICENSE) count as text; if the
-// server still sniffs them as binary (NUL bytes), the file page falls
-// back to a download prompt — is_binary is the safety net either way.
+// Only formats browsers actually decode natively count as image/video —
+// mkv/avi/tiff stay downloads rather than dead players. Extension-less
+// files (README, Makefile, LICENSE) count as text; if the server still
+// sniffs them as binary (NUL bytes), the file page falls back to a
+// download prompt — is_binary is the safety net either way.
 
 const TEXT_EXT = new Set([
   'md', 'markdown', 'txt', 'text', 'rtf', 'json', 'csv', 'tsv', 'log',
@@ -15,7 +21,15 @@ const TEXT_EXT = new Set([
   'sql', 'service', 'manifest', 'tpl', 'template',
 ]);
 
-export type FileKind = 'yaml' | 'text' | 'download';
+const IMAGE_EXT = new Set([
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'bmp', 'ico', 'svg',
+]);
+
+// formats Chrome, Safari and Android all decode natively (h264/aac in the
+// mp4/mov containers, vp8/9 in webm, theora in ogv)
+const VIDEO_EXT = new Set(['mp4', 'm4v', 'webm', 'mov', 'ogv']);
+
+export type FileKind = 'yaml' | 'text' | 'image' | 'video' | 'download';
 
 export function fileKind(name: string): FileKind {
   const base = name.toLowerCase();
@@ -23,7 +37,13 @@ export function fileKind(name: string): FileKind {
   if (dot <= 0) return 'text';
   const ext = base.slice(dot + 1);
   if (ext === 'yml' || ext === 'yaml') return 'yaml';
+  if (IMAGE_EXT.has(ext)) return 'image';
+  if (VIDEO_EXT.has(ext)) return 'video';
   return TEXT_EXT.has(ext) ? 'text' : 'download';
 }
+
+// text and yaml can be edited in the pane; media can only be viewed —
+// (used by the row menu to decide whether to offer "edit")
+export const isEditable = (kind: FileKind) => kind === 'yaml' || kind === 'text';
 
 export const rawUrl = (p: string) => '/api/v1/fs/raw?path=' + encodeURIComponent(p);

@@ -515,6 +515,75 @@ fs.mkdirSync(OUT, { recursive: true });
       return !!a && (a.getAttribute('href') || '') === '/api/v1/fs/raw?path=%2Fdeliverables%2Freport-q3.pdf';
     }));
 
+    // media files: image names open an in-browser preview (plain <img>
+    // streaming /fs/raw), video names open the browser's NATIVE player
+    // (<video controls>, the YouTube-style bar). Neither offers "edit" —
+    // media is view + download only (filekind policy).
+    await page.evaluate(() => document.querySelector('.ant-breadcrumb a')?.click());
+    await new Promise((r) => setTimeout(r, 1000));
+    await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'photos/')?.click(),
+    );
+    await new Promise((r) => setTimeout(r, 1000));
+    await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'pic.png')?.click(),
+    );
+    await openPane();
+    await page
+      .waitForFunction(
+        () => document.querySelector('[data-testid="media-img"]')?.complete ?? false,
+        { timeout: 8000 },
+      )
+      .catch(() => {});
+    check('image name click opens an in-browser preview that really decodes', await page.evaluate(() => {
+      const p = document.querySelector('[data-testid="file-pane"]');
+      const img = p?.querySelector('[data-testid="media-img"]');
+      return !!img && img.complete && img.naturalWidth === 8 &&
+        (img.getAttribute('src') || '') === '/api/v1/fs/raw?path=%2Fphotos%2Fpic.png' &&
+        !p.querySelector('.cm-editor') && !p.querySelector('[data-testid="pane-edit"]') &&
+        !!p.querySelector('[data-testid="pane-dl"]');
+    }));
+    await closePane();
+
+    await page.evaluate(() => document.querySelector('.ant-breadcrumb a')?.click());
+    await new Promise((r) => setTimeout(r, 1000));
+    await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'videos/')?.click(),
+    );
+    await new Promise((r) => setTimeout(r, 1000));
+    check(
+      'media row menu: download yes, edit no',
+      (await openRowMenu('clip')) &&
+        (await visibleMenuText()).includes('download') &&
+        !(await visibleMenuText()).includes('edit'),
+    );
+    await closeRowMenu();
+    await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'clip.mp4')?.click(),
+    );
+    await openPane();
+    await page
+      .waitForFunction(
+        () =>
+          (document.querySelector('[data-testid="media-video"]')?.readyState ?? 0) >= 1 ||
+          !!document.querySelector('[data-testid="media-error"]'),
+        { timeout: 8000 },
+      )
+      .catch(() => {});
+    check('video name click opens the native player, which really decodes the file', await page.evaluate(async () => {
+      const p = document.querySelector('[data-testid="file-pane"]');
+      const v = p?.querySelector('[data-testid="media-video"]');
+      if (!v || !v.hasAttribute('controls') || !!p.querySelector('[data-testid="pane-edit"]')) return false;
+      if ((v.getAttribute('src') || '') !== '/api/v1/fs/raw?path=%2Fvideos%2Fclip.mp4') return false;
+      try {
+        await v.play();
+      } catch (e) {
+        return false;
+      }
+      return v.videoWidth === 64;
+    }));
+    await closePane();
+
     // plain documents: the name click opens the VIEWER — markdown renders
     // like GitHub (Render/Code toggle, source read-only); editing is the
     // row menu's "edit", which gets a CodeMirror + markdown ribbon; save
@@ -1050,6 +1119,13 @@ fs.mkdirSync(OUT, { recursive: true });
       () => (document.querySelector('[data-testid="file-pane"] .mono')?.innerText ?? '').includes('/help/permissions.md'),
       { timeout: 8000 },
     ).catch(() => {});
+    // the header flips before the new doc's bytes arrive — wait for the
+    // rendered body too, or this check races the fetch
+    await page.waitForFunction(
+      () => /Expiring shares/.test(
+        document.querySelector('[data-testid="file-pane"] [data-testid="md-view"]')?.innerText ?? ''),
+      { timeout: 8000 },
+    ).catch(() => {});
     check('guide cross-links navigate the pane in-app', await page.evaluate(() => {
       const v = document.querySelector('[data-testid="file-pane"] [data-testid="md-view"]');
       return !!v && /Expiring shares/i.test(v.innerText);
@@ -1096,6 +1172,11 @@ fs.mkdirSync(OUT, { recursive: true });
       [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'api.md')?.click(),
     );
     await openPane();
+    await page.waitForFunction(
+      () => /REST API for non-browser/.test(
+        document.querySelector('[data-testid="file-pane"] [data-testid="md-view"]')?.innerText ?? ''),
+      { timeout: 8000 },
+    ).catch(() => {});
     check('embedded docs open rendered and read-only from the listing', await page.evaluate(() => {
       const p = document.querySelector('[data-testid="file-pane"]');
       const v = p?.querySelector('[data-testid="md-view"]');

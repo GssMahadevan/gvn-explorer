@@ -52,16 +52,21 @@ const fmtTs = (ts: number) => new Date(ts * 1000).toLocaleString();
 // The file page — a real browser pane, not a modal (one component serves
 // viewing AND editing, like GitHub's file pages). Default entry is the
 // VIEWER: markdown renders (with a Code toggle), other text is read-only
-// CodeMirror, YAML shows the read-only structured tree. Editing is an
-// explicit step: the Files row ⋮ menu offers "edit", the pane header has
+// CodeMirror, YAML shows the read-only structured tree, images preview as
+// <img> and movies play in the browser's native <video controls> — the
+// same player YouTube-class sites use, localized and hardware-decoded for
+// free; /fs/raw answers Range requests, so seeking only fetches bytes.
+// Editing is an explicit step: the Files row ⋮ menu offers "edit", the pane header has
 // an Edit button for convenience. Plain docs edit in CodeMirror with a
 // markdown ribbon and the base_mtime guard (409 on clobber). YAML edits
 // run the draft/publish model: every change autosaves to the server-side
 // draft; the file on disk only changes on publish. Drafting needs the w
-// bit; readers preview but cannot edit. Files outside the text allowlist
-// never open this pane — their row action is download (see filekind.ts);
-// the binary branch below is only the safety net for text-looking names
-// that sniff binary on content.
+// bit; readers preview but cannot edit. Media files never fetch text
+// content — they stream straight from /fs/raw and are download-only in
+// the row menu (see filekind.ts). Files outside every allowlist never
+// open this pane — their row action is download; the binary branch below
+// is only the safety net for text-looking names that sniff binary on
+// content.
 export default function FilePane({
   target,
   onClose,
@@ -78,12 +83,14 @@ export default function FilePane({
   const { path } = target;
   const kind = fileKind(path);
   const yaml = kind === 'yaml';
+  const media = kind === 'image' || kind === 'video';
   const md = /\.(md|markdown)$/i.test(path);
 
   const [mode, setMode] = useState<'view' | 'edit'>(target.mode);
   const [view, setView] = useState<'render' | 'code'>(md ? 'render' : 'code');
   const [busy, setBusy] = useState(true);
   const [binary, setBinary] = useState(false);
+  const [mediaErr, setMediaErr] = useState(false);
   const [canW, setCanW] = useState(false);
   const [mtime, setMtime] = useState<number | undefined>(undefined);
   const [fileText, setFileText] = useState(''); // bytes on disk
@@ -107,6 +114,15 @@ export default function FilePane({
     setBusy(true);
     setCommitErr('');
     setConflict('');
+    setMediaErr(false);
+    if (media) {
+      // images and movies stream straight from /fs/raw through the
+      // browser's own media stack — no text fetch, no draft, no edit.
+      setBinary(false);
+      setCanW(false);
+      setBusy(false);
+      return;
+    }
     (async () => {
       try {
         const c = await api<FsContent>('/api/v1/fs/content?path=' + encodeURIComponent(path));
@@ -223,7 +239,7 @@ export default function FilePane({
   };
 
   const statusTag = () => {
-    if (binary) return null;
+    if (binary || media) return null;
     if (mode === 'view') return canW ? null : <Tag>view-only</Tag>;
     if (!canW) return <Tag>read-only</Tag>;
     if (saveState === 'pending') return <Tag>auto-saving draft…</Tag>;
@@ -315,6 +331,42 @@ export default function FilePane({
 
       {busy ? (
         <div style={{ textAlign: 'center', margin: '60px auto' }}>loading…</div>
+      ) : media ? (
+        mediaErr ? (
+          <Alert
+            type="warning"
+            showIcon
+            data-testid="media-error"
+            message={
+              kind === 'image'
+                ? 'Preview failed: this browser could not load this image'
+                : 'Playback failed: this browser could not play this video'
+            }
+            description="The file itself is untouched — use download (top right) to fetch it and open it in another app."
+          />
+        ) : kind === 'image' ? (
+          <div data-testid="media-view" style={{ textAlign: 'center' }}>
+            <img
+              src={rawUrl(path)}
+              alt={path}
+              data-testid="media-img"
+              onError={() => setMediaErr(true)}
+              style={{ maxWidth: '100%', maxHeight: '72vh' }}
+            />
+          </div>
+        ) : (
+          <div data-testid="media-view" style={{ textAlign: 'center', background: '#000' }}>
+            <video
+              src={rawUrl(path)}
+              controls
+              playsInline
+              preload="metadata"
+              data-testid="media-video"
+              onError={() => setMediaErr(true)}
+              style={{ width: '100%', maxWidth: 960, maxHeight: '72vh' }}
+            />
+          </div>
+        )
       ) : binary ? (
         <Alert type="info" message="Binary file — use download to fetch it." />
       ) : (

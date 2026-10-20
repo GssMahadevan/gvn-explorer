@@ -43,10 +43,15 @@ fi
 
 # ---------- throwaway sandbox + fixture ----------
 WORK=$(mktemp -d /tmp/fx-gui-run.XXXXXX)
-mkdir -p "$WORK/root/deliverables" "$WORK/root/docs"
+mkdir -p "$WORK/root/deliverables" "$WORK/root/docs" "$WORK/root/photos" "$WORK/root/videos"
 printf 'PDF-1.4 fake quarterly report\n' > "$WORK/root/deliverables/report-q3.pdf"
 printf '# readme\nhello\n' > "$WORK/root/readme.md"
 printf 'release notes\n' > "$WORK/root/docs/notes.md"
+# media fixtures: real 8x8 PNG and a real 1s H.264 MP4 (both generated once
+# with ffmpeg and committed under scripts/gui/fixtures/) — the walk asserts
+# the browser actually loads the image and decodes/plays the video.
+cp scripts/gui/fixtures/pic.png "$WORK/root/photos/pic.png"
+cp scripts/gui/fixtures/clip.mp4 "$WORK/root/videos/clip.mp4"
 # YAML fixture for the structured tree editor: leading comment, inline
 # comment, block scalar and two documents must all survive the
 # tree-edit -> draft -> publish round trip.

@@ -14,7 +14,7 @@ import { FileAddOutlined, FolderAddOutlined, UploadOutlined } from '@ant-design/
 import type { ColumnsType } from 'antd/es/table';
 import { api, bits, fmtSize, qs } from '../api';
 import { useFlash } from '../flash';
-import { fileKind, rawUrl } from '../filekind';
+import { fileKind, isEditable, rawUrl } from '../filekind';
 import type { EntryView, FsList } from '../types';
 import type { FileTarget } from '../components/FilePane';
 import { useListView } from '../useListView';
@@ -207,8 +207,8 @@ export default function FilesPanel({
               ...(!x.entry.is_dir
                 ? [
                     // editing is an explicit menu step — the name click is
-                    // the viewer. Not offered for download-only files.
-                    ...(fileKind(x.entry.name) !== 'download'
+                    // the viewer. Not offered for media or download-only files.
+                    ...(isEditable(fileKind(x.entry.name))
                       ? [{ key: 'edit', label: 'edit', onClick: () => openFile({ path: x.entry.path, mode: 'edit' }) }]
                       : []),
                     { key: 'download', label: 'download', onClick: () => download(x.entry.path) },

@@ -595,7 +595,15 @@ Clicking a file either opens the **file page** or downloads, decided from
 the **name** alone — GitHub-style policy in `filekind.ts`: `.yml`/`.yaml`
 get the structured editor below, an allowlist of text extensions (plus
 extension-less files like `LICENSE`/`Makefile`) get the document view,
-everything else (binaries, `.pdf`, unknown types) never opens a page:
+images (`.png`/`.jpg`/`.gif`/`.webp`/`.avif`/`.svg`/…) are previewed
+in-browser, and movies (`.mp4`/`.m4v`/`.webm`/`.mov`/`.ogv`) play in a
+native `<video controls>` player — the same controls YouTube-class sites
+show, hardware-decoded and localized for free, seekable because `/fs/raw`
+answers Range requests. No player library: an evaluation of Video.js v10
+/ Media Chrome / Plyr showed none of them pays for itself when every
+video is a single progressive file from the same origin; formats no
+browser decodes (`.mkv`, `.avi`, `.tiff`) deliberately stay downloads.
+Everything else (binaries, `.pdf`, unknown types) never opens a page:
 the name itself links to `/fs/raw` (attachment disposition), and every
 file's ⋮ menu carries `download` too. The file page
 (`components/FilePane`) is a real pane, not a modal: it replaces the tab
@@ -604,9 +612,12 @@ viewing and editing, like GitHub's file pages. The name click is always
 the **viewer**: markdown files **render** (react-markdown + GFM, with a
 Render/Code toggle — the source side is read-only **CodeMirror 6**),
 other text files open read-only CodeMirror, YAML shows the structured
-tree read-only. Editing is an explicit step: every editable file's ⋮
-menu carries `edit`, and the viewer header has an Edit button for the
-case where you already know you want it. Text editing uses CodeMirror —
+tree read-only, images render straight from `/fs/raw` and movies play
+with native controls — media panes never fetch text content and never
+offer an editor. Editing is an explicit step: every editable file's ⋮
+menu carries `edit` (not media, not download-only files), and the viewer
+header has an Edit button for the case where you already know you want
+it. Text editing uses CodeMirror —
 the editor family behind GitHub's in-browser file editing, chosen over
 Monaco for a tenth the bundle size and real touch support; markdown
 files additionally get a formatting **ribbon** above the editor (bold /
@@ -721,18 +732,21 @@ https; fixtures are namespaced so runs never collide.
 
 `test_gui.sh` is self-contained: it builds `bin/server` and `frontend/dist`
 when missing, boots a real server against a throwaway sandbox root with
-seeded fixture tenants/users, then drives `scripts/gui/walk.js` — a
+seeded fixture tenants/users/files — including a real 8×8 PNG and a real
+H.264 MP4 under `scripts/gui/fixtures/` — then drives `scripts/gui/walk.js` — a
 puppeteer-core walk of the live UI (login, file table, the ⋮ row action
 menus, modal forms, the file page: viewer-by-default flows — rendered
 markdown + read-only Code source toggle, row-menu `edit` → markdown
 ribbon → save, YAML structured-view → edit with drill-down +
 draft-autosave → publish incl. comment/block-scalar preservation and the
-390px-width drawer/scroll regression, download links for non-text files,
+390px-width drawer/scroll regression, image preview that really decodes +
+native video player that really plays + media rows never offered `edit`,
+download links for non-media files,
 the active-filter wire format,
 flash center, per-file grant flow, the Events tab (all audit columns,
 the `action=` filter wire format, search scoping, details expansion),
 header menus, dark mode, sign-out)
-with 84 assertions plus a zero-console-error guard (which also proves the
+with 87 assertions plus a zero-console-error guard (which also proves the
 server's content-security-policy is compatible with the bundle). `SHOTS=1` additionally
 writes light/dark screenshots to `$OUT_DIR` (default `/tmp/fx-gui`).
 Needs a local Chrome; `CHROME_PATH` overrides the macOS default.
@@ -837,6 +851,6 @@ internal/audit/    append-only forensic event trail (authz/authn DML, fs_commit)
 internal/drafts/   per-path working copies for the draft/publish edit model
 internal/fsx/      sandboxed filesystem ops (list/read/write/mkdir/rename/delete)
 internal/handlers/ REST handlers + route table, JSON error envelope, rate limiters
-frontend/          React 19 + Ant Design GUI (Vite; list panels, per-entity form modals, row action menus, file page (FilePane): viewer default - rendered md / read-only CodeMirror / structured YAML, edit via row menu w/ markdown ribbon, YAML structured editor w/ draft+publish, download actions (filekind.ts policy), flash center; `npm run build` -> dist/ static bundle; webfs_disk.go/webfs_embed.go: GUI served from disk by default, embedded into release binaries under -tags embedweb)
+frontend/          React 19 + Ant Design GUI (Vite; list panels, per-entity form modals, row action menus, file page (FilePane): viewer default - rendered md / read-only CodeMirror / structured YAML / image preview / native <video> player, edit via row menu w/ markdown ribbon, YAML structured editor w/ draft+publish, download actions (filekind.ts policy), flash center; `npm run build` -> dist/ static bundle; webfs_disk.go/webfs_embed.go: GUI served from disk by default, embedded into release binaries under -tags embedweb)
 scripts/           test suites: test_files.sh (curl API regression), test_matrix.py (stdlib cross-tenant/ACL/path-fuzz matrix), test_gui.sh + gui/ (puppeteer GUI walk + screenshots), test_dist.sh (release-bundle smoke: unpack-and-run, embedded GUI+/help)
 ```
