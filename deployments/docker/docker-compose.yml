@@ -21,14 +21,16 @@ services:
       ADMIN: "system:admin:admin" # change me before first start
       LOG_LEVEL: "info"
       LOG_JSON: "true"
+      TLS_SELF: "false" # this dev stack stays plain HTTP; the image default is HTTPS with a self-signed cert
     volumes:
       - ./data/root:/data/root
       - ./data/db:/data
     restart: unless-stopped
-    # To serve HTTPS from the container itself instead of a reverse proxy:
-    #   environment:  TLS_SELF: "true"                      # throwaway self-signed cert
-    #   …or your own: TLS_CERT: /tls/server.crt
-    #               TLS_KEY:  /tls/server.key
+    # The image now serves HTTPS with a throwaway self-signed cert by default.
+    # To keep plain HTTP (this file), set TLS_SELF: "false".
+    # To use your own cert instead, set:
+    #   TLS_CERT: /tls/server.crt
+    #   TLS_KEY:  /tls/server.key
     #   …and add to volumes: - ./tls:/tls:ro
 
   # Ready for when the db layer grows a Postgres backend (dialect +

@@ -5,7 +5,9 @@ managed in the GUI (Tenants / Users / Groups tabs) or through the same
 API the GUI uses — see [api.md](api.md) for the raw calls.
 
 The examples assume a local instance at `http://localhost:8080` and a
-cookie jar from logging in:
+cookie jar from logging in. A default instance serves HTTPS with a
+self-signed cert — use `https://localhost:8080` and add `-k` to every
+curl below:
 
 ```sh
 curl -c jar -X POST localhost:8080/api/v1/auth/login \

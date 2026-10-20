@@ -29,7 +29,7 @@ sleep 0.5
 rm -rf $T/standalone-run; mkdir -p $T/standalone-run
 cp "$BIN" $T/standalone-run/gvn-explorer
 seed_files $T/standalone-run/data
-(cd $T/standalone-run && ADDR=:8186 ROOT=$T/standalone-run/data DB_PATH=$T/standalone-run/perms.db exec "$T/standalone-run/gvn-explorer" >server.log 2>&1) &
+(cd $T/standalone-run && ADDR=:8186 ROOT=$T/standalone-run/data DB_PATH=$T/standalone-run/perms.db TLS_SELF=false exec "$T/standalone-run/gvn-explorer" >server.log 2>&1) &
 trap 'pkill -f "$T/standalone-run/gvn-explorer" 2>/dev/null || true; docker rm -f fx-demo >/dev/null 2>&1 || true' EXIT
 wait_up http://localhost:8186
 grep -q 'address already in use' $T/standalone-run/server.log && { echo "port 8186 busy — stale demo server?"; exit 1; }
@@ -42,6 +42,7 @@ docker rm -f fx-demo >/dev/null 2>&1 || true
 rm -rf $T/docker-root $T/docker-state; seed_files $T/docker-root; mkdir -p $T/docker-state
 docker run -d --name fx-demo --pull always -p 8187:8080 \
   -v $T/docker-root:/data/root -v $T/docker-state:/data \
+  -e TLS_SELF=false \
   ghcr.io/gssmahadevan/gvn-explorer:latest >/dev/null
 wait_up http://localhost:8187
 FX_DEMO_URL=http://localhost:8187 node scripts/demo/record.js docker

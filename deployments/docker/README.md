@@ -116,6 +116,10 @@ docker run -d --name fx -p 8080:8080 \
   -e ADMIN='system:admin:change-me' file-explorer:dev
 ```
 
+That raw run serves **https** with a self-signed cert (the image
+default); add `-e TLS_SELF=false` for plain HTTP, or mount a real
+keypair via `TLS_CERT`/`TLS_KEY` as below.
+
 ## Configuration (env → flags)
 
 All flags have env defaults; `docker run -e` or compose `environment`
@@ -133,8 +137,8 @@ env values fail at startup instead of falling back silently.
 | `RPS` / `R_BURST` | `20` / `60` | per-principal API rate limit (`RPS=0` disables) |
 | `AUTH_RPS` / `AUTH_BURST` | `3` / `10` | per-IP login rate limit (`AUTH_RPS=0` disables) |
 | `LOG_LEVEL` / `LOG_JSON` | `info` / `true` | structured logging |
-| `TLS_CERT` / `TLS_KEY` | unset | serve HTTPS on `ADDR` from a cert/key pair mounted into the container (set both; plain-HTTP requests on the port answer 308 → https) |
-| `TLS_SELF` | unset | `true` → HTTPS with an ephemeral self-signed cert generated at startup (browsers warn once; no files to mount) |
+| `TLS_SELF` | `true` | HTTPS with an ephemeral self-signed cert generated at startup — this is the image default (browser warns once); `false` serves plain HTTP |
+| `TLS_CERT` / `TLS_KEY` | unset | serve HTTPS from a cert/key pair mounted into the container instead of the default self-signed cert (set both; plain-HTTP requests on the port answer 308 → https) |
 | `COOKIE_SECURE` | `auto` | `Secure` attribute on the session cookie: auto (on while serving TLS), on (e.g. behind a TLS-terminating proxy), off |
 | `HSTS_DAYS` | `0` | emit `Strict-Transport-Security` (max-age = N days) on TLS responses |
 
@@ -142,14 +146,18 @@ Everything else — tenants, users, groups, API keys, grants, expiries,
 suspension — is *runtime data* in `perms.db`, managed through the GUI
 or the API, never through env.
 
-TLS is your choice of two shapes: keep plain HTTP and terminate TLS at
-your reverse proxy (give it `client_max_body_size` ≥ `MAX_MB` so uploads
-pass through; set `COOKIE_SECURE=on` so the session cookie claims
-Secure), or let the container serve HTTPS itself — mount a keypair
-(`-v ./tls:/tls:ro -e TLS_CERT=/tls/server.crt -e TLS_KEY=/tls/server.key`)
-or just set `TLS_SELF=true` for a throwaway self-signed cert. The image
-healthcheck follows whichever mode you picked. Every request carries an
-`X-Request-Id` that appears in both the API responses and the JSON logs.
+TLS is on by default: the container generates a throwaway self-signed
+certificate at startup, so `https://<host>:8080` works out of the box
+(the browser warns once until you trust the cert). Two deliberate
+departures: terminate TLS at your reverse proxy instead — run with
+`TLS_SELF=false` and `COOKIE_SECURE=on`, and give the proxy
+`client_max_body_size` ≥ `MAX_MB` so uploads pass through — or serve
+a real cert yourself
+(`-v ./tls:/tls:ro -e TLS_CERT=/tls/server.crt -e TLS_KEY=/tls/server.key`).
+In every mode a plain-HTTP request on the TLS port gets a 308 to the
+https URL, and the image healthcheck follows whichever mode you picked.
+Every request carries an `X-Request-Id` that appears in both the API
+responses and the JSON logs.
 
 ## Upgrades
 

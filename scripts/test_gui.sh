@@ -66,7 +66,7 @@ YAML
 
 echo "== boot server :$PORT (root + db in $WORK) =="
 "$PWD/bin/server" -addr ":$PORT" -root "$WORK/root" -db "$WORK/perms.db" \
-  -admin system:admin:secret -web "$PWD/frontend/dist" > "$WORK/server.log" 2>&1 &
+  -admin system:admin:secret -web "$PWD/frontend/dist" -tls-self=false > "$WORK/server.log" 2>&1 &
 SRV=$!
 trap 'kill $SRV 2>/dev/null; rm -rf "$WORK"' EXIT
 for _ in $(seq 1 40); do curl -s -o /dev/null "$BASE_URL/api/v1/me" && break; sleep 0.25; done

@@ -18,11 +18,14 @@ Unpack, `cd` into the folder, and start it — no flags needed:
 ```
 
 It creates `./data/` (the file tree it exposes) and `./perms.db`
-(accounts, permissions, audit), then serves **http://localhost:8080**
-with a fresh super admin `system / admin / admin` — open the URL, log
-in, and change the admin password from the Users tab (or start with
-`-admin system:admin:<your-pass>` on a fresh install, since that
-bootstrap only runs while no users exist).
+(accounts, permissions, audit), then serves **https://localhost:8080**
+with a fresh super admin `system / admin / admin`. HTTPS is on by
+default with a throwaway self-signed certificate: the browser shows a
+one-time warning ("Advanced → Proceed"); the connection is still
+encrypted. For plain HTTP (e.g. behind a TLS-capable proxy) start with
+`-tls-self=false`. Open the URL, log in, and change the admin password
+from the Users tab (or start with `-admin system:admin:<your-pass>` on
+a fresh install, since that bootstrap only runs while no users exist).
 
 ## Usual knobs
 
@@ -35,6 +38,8 @@ bootstrap only runs while no users exist).
 | `-db` / `DB_PATH` | `perms.db` | SQLite sidecar (never stores file contents) |
 | `-admin` / `ADMIN` | `system:admin:admin` | bootstrap super admin (first start only) |
 | `-web` / `WEB_DIR` | `web` | serve the GUI from this on-disk directory instead of the one baked into the binary; point it at your own `frontend/dist` to hot-swap a GUI build (`-web ""` disables the GUI entirely) |
+| `-tls-self` / `TLS_SELF` | `true` | HTTPS with a generated self-signed cert; `-tls-self=false` serves plain HTTP |
+| `-tls-cert` + `-tls-key` / `TLS_CERT` + `TLS_KEY` | unset | HTTPS with your own cert/key pair instead |
 
 ## Backup & move
 

@@ -15,7 +15,8 @@ enforced purely by ACL grants.
 **Just want to try it?** Grab a prebuilt archive from the
 [Releases](https://github.com/GssMahadevan/gvn-explorer/releases) page
 (linux/windows/macOS × amd64/arm64, ~5 MB each), unpack, run the binary,
-open http://localhost:8080 and sign in as `system / admin / admin`.
+open https://localhost:8080 (self-signed cert: accept the one-time
+browser warning) and sign in as `system / admin / admin`.
 No build tools, no Docker; the archive's own README explains the rest.
 Container? `ghcr.io/gssmahadevan/gvn-explorer:latest` (multi-arch) — pull
 and run below under *Run from the published image*.
@@ -35,6 +36,11 @@ GO111MODULE=on go build -o bin/server ./cmd/server
 ./bin/server -addr :8080 -root ./data -db perms.db -admin system:admin:admin
 ```
 
+Zero flags now means **HTTPS**: the server generates a self-signed cert
+in memory and serves `https://localhost:8080` (browsers warn once — that's
+inherent to self-signed). Plain HTTP is the explicit opt-out:
+`-tls-self=false`. Full TLS story under *HTTPS* below.
+
 Flags (env fallbacks in caps; flags win):
 
 | flag    | env       | meaning                                              |
@@ -50,8 +56,8 @@ Flags (env fallbacks in caps; flags win):
 | -auth-burst | —     | burst allowance for -auth-rps (default 10)           |
 | -log-level | LOG_LEVEL | debug|info|warn|error (default info)               |
 | -log-json  | LOG_JSON  | JSON log lines, one object per line (default true; false = human text) |
-| -tls-cert / -tls-key | TLS_CERT / TLS_KEY | serve HTTPS on -addr from this cert/key pair (must be set together) |
-| -tls-self  | TLS_SELF  | HTTPS with an in-memory self-signed cert (no files; browsers warn once) |
+| -tls-cert / -tls-key | TLS_CERT / TLS_KEY | serve HTTPS from this cert/key pair instead of the default self-signed cert (must be set together) |
+| -tls-self  | TLS_SELF  | in-memory self-signed cert — **default true**: HTTPS out of the box; `-tls-self=false` serves plain HTTP |
 | -cookie-secure | COOKIE_SECURE | session cookie `Secure` flag: auto (on while serving TLS) / on / off |
 | -hsts-days | HSTS_DAYS | `Strict-Transport-Security` max-age in days on TLS responses (0 disables) |
 
@@ -74,7 +80,10 @@ docker run -d --name gvn -p 8080:8080 \
   ghcr.io/gssmahadevan/gvn-explorer:latest
 ```
 
-Then open http://localhost:8080. The two mounts are the whole design:
+Then open **https://localhost:8080** — the image serves HTTPS with a
+self-signed cert by default (accept the browser's one-time warning; add
+`-e TLS_SELF=false` to the run command for plain HTTP). The two mounts
+are the whole design:
 
 | mount      | what lives there                                                    |
 |------------|----------------------------------------------------------------------|
@@ -82,7 +91,8 @@ Then open http://localhost:8080. The two mounts are the whole design:
 | `/data`      | `perms.db`: tenants/users/groups/ACLs/sessions/API keys/audit/drafts — the **only state to back up** |
 
 Image defaults are `ROOT=/data/root`, `DB_PATH=/data/perms.db`,
-`ADMIN=system:admin:admin`, `LOG_JSON=true`; the container health-checks
+`ADMIN=system:admin:admin`, `LOG_JSON=true`, `TLS_SELF=true` (self-signed
+HTTPS); the container health-checks
 itself and logs JSON to stdout (`docker logs -f gvn`). Every server flag has
 its uppercase env counterpart (same table as above) — e.g. `-e ROOT=/data/root`
 is the default already, so pointing the app at another host directory is just
@@ -96,15 +106,19 @@ the full operator notes live in [`deployments/docker/README.md`](deployments/doc
 
 ## HTTPS (self-signed or your own cert)
 
-The listener serves TLS itself — no reverse proxy required. Quick path:
+**HTTPS is the default.** With no flags at all the server generates a
+self-signed certificate in memory and serves encrypted traffic; old
+`http://` links still work via an instant redirect (see below). Plain
+HTTP is the explicit opt-out:
 
 ```sh
-./bin/server -tls-self      # → https on the same -addr, throwaway self-signed cert
+./bin/server                    # → https on -addr, self-signed cert (the default)
+./bin/server -tls-self=false    # → plain HTTP, exactly as in pre-TLS versions
 ```
 
-The container does the same thing with `-e TLS_SELF=true`. Browsers show a
-one-time warning (unknown issuer — unavoidable for any self-signed cert);
-`curl -k` or `--cacert` covers scripts.
+The container behaves the same (`TLS_SELF=false` to opt out). Browsers show
+a one-time warning for any self-signed cert; `curl -k` or `--cacert`
+covers scripts.
 
 For a *stable* cert — one that survives restarts and can be added to the
 OS trust store so the warning disappears — generate one on disk and point
@@ -136,12 +150,14 @@ Behaviour when TLS is on:
   self-signed setup pinned in the browser is awkward to undo.
 - TLS 1.2 and up only.
 
-Everything here is additive: with no TLS flags the server is plain HTTP
-exactly as before, and `make test-api` (HTTP) plus `make test-tls`
-(both cert paths, the 308, Secure cookies, security headers) keep both
-sides honest. What the app does against the standard *web attacks* —
-XSS, CSRF, clickjacking, path traversal, SQL injection, MIME confusion —
-is summarized under *Web attack surface* further down.
+Heads-up for existing deployments: because the default flipped, anything
+that depended on plain HTTP (proxies, scripts, monitoring) should set
+`TLS_SELF=false` explicitly — with it the server is byte-identical to the
+pre-TLS listener. `make test-api` (HTTP) plus `make test-tls` (default
+HTTPS, the opt-out, both cert paths, the 308, Secure cookies, security
+headers) keep both sides honest. What the app does against the standard
+*web attacks* — XSS, CSRF, clickjacking, path traversal, SQL injection,
+MIME confusion — is summarized under *Web attack surface* further down.
 
 ## Auth
 
@@ -707,7 +723,8 @@ Needs a local Chrome; `CHROME_PATH` overrides the macOS default.
 
 The root `Makefile` (split into `makefiles/{build,test,deploy}.mk`) wraps all of
 this: `make build`, `make test` (go + a self-contained `test-api` that boots a
-throwaway server on its own port + `test-tls` (HTTPS: `-tls-self`, generated
+throwaway server on its own port + `test-tls` (HTTPS: the default
+self-signed mode, the `-tls-self=false` opt-out, generated
 certs, the HTTP→HTTPS 308, Secure cookies, security headers) + the GUI walk),
 `make docker-*`.
 
@@ -717,7 +734,7 @@ Container image + compose live in `deployments/docker/` (see its README for
 volume/env details):
 
 ```sh
-make docker-up     # build + start; app on http://localhost:8080
+make docker-up     # build + start; app on http://localhost:8080 (the compose file opts out of the TLS default)
 make docker-test   # run the curl suite against the running stack
 make docker-down
 ```

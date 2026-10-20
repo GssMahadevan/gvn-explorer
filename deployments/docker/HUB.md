@@ -19,8 +19,11 @@ docker run -d --name file-explorer \
   yourorg/file-explorer:1
 ```
 
-Open http://localhost:8080 and sign in with tenant `acme`, user `admin`,
-password `change-me`.
+Open **https://localhost:8080** and sign in with tenant `acme`, user
+`admin`, password `change-me`. HTTPS is on out of the box with a
+self-signed certificate — the browser shows a one-time "not private"
+warning; click through (the connection is encrypted). Prefer plain HTTP
+behind your own proxy? Add `-e TLS_SELF=false` to the run command.
 
 ## Why run this
 
@@ -85,8 +88,8 @@ the image.
 | `AUTH_BURST` | `10` | burst allowance for `AUTH_RPS` |
 | `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
 | `LOG_JSON` | `true` | JSON log lines (`false` = human-readable) |
-| `TLS_CERT` / `TLS_KEY` | unset | serve HTTPS instead of HTTP; point both at a cert/key pair you mount into the container |
-| `TLS_SELF` | unset | `true` → HTTPS with a throwaway self-signed cert (browser warns once; nothing to mount) |
+| `TLS_SELF` | `true` | HTTPS with an auto-generated self-signed cert (browser warns once); set `false` for plain HTTP |
+| `TLS_CERT` / `TLS_KEY` | unset | serve HTTPS with your own cert/key pair instead of the default self-signed one |
 | `COOKIE_SECURE` | `auto` | `Secure` flag on the session cookie: auto / on / off |
 | `HSTS_DAYS` | `0` | send `Strict-Transport-Security` (days) on HTTPS responses |
 
@@ -133,8 +136,10 @@ the health endpoint (also used by the image's HEALTHCHECK).
 
 ## TLS and reverse proxies
 
-The server speaks plain HTTP (cookie sessions with `SameSite=Lax`), so
-terminate TLS at your reverse proxy:
+TLS is on by default (a self-signed certificate generated at startup,
+cookie sessions `SameSite=Lax`, `Secure` flag automatically on). For the
+classic shape — plain HTTP + TLS at your reverse proxy — run the
+container with `TLS_SELF=false` and `COOKIE_SECURE=on`:
 
 ```yaml
 # nginx sketch
@@ -155,8 +160,9 @@ appears in the access logs — handy when debugging through a proxy.
   if the bytes must live elsewhere.
 - **Postgres** is a planned backend (a `postgres` service profile ships
   with the repo), not wired into the server yet.
-- **No built-in TLS/OIDC/LDAP** — plain-HTTP + local accounts behind
-  your proxy and auth, if you have one.
+- **No built-in CA-issued TLS / OIDC / LDAP** — the built-in TLS uses a
+  self-signed (or your own) certificate; accounts are local, behind your
+  proxy and auth if you have one.
 
 ## Image internals
 

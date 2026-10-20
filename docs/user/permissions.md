@@ -5,7 +5,9 @@ tab for the browsed directory, or a file row's "permissions" action) or
 via `PUT /api/v1/perms` — same upsert endpoint either way.
 
 Setup assumed: instance at `http://localhost:8080`, logged-in cookie jar
-`jar` (see [tenants-users-groups.md](tenants-users-groups.md)).
+`jar` (see [tenants-users-groups.md](tenants-users-groups.md)). A default
+instance serves HTTPS with a self-signed cert — use `https://` and add
+`-k` to every curl below.
 
 ## The model in one paragraph
 

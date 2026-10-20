@@ -77,9 +77,9 @@ func main() {
 	authBurst := flag.Int("auth-burst", envIntOr("AUTH_BURST", 10), "burst allowance for -auth-rps")
 	logLevel := flag.String("log-level", envOr("LOG_LEVEL", "info"), "log level: debug|info|warn|error")
 	logJSON := flag.Bool("log-json", envOr("LOG_JSON", "true") == "true", "emit JSON logs (false = human-readable text)")
-	tlsCert := flag.String("tls-cert", envOr("TLS_CERT", ""), "TLS certificate file; with -tls-key serves HTTPS on -addr")
+	tlsCert := flag.String("tls-cert", envOr("TLS_CERT", ""), "TLS certificate file; with -tls-key serves HTTPS on -addr instead of the default self-signed cert")
 	tlsKey := flag.String("tls-key", envOr("TLS_KEY", ""), "TLS private key file")
-	tlsSelf := flag.Bool("tls-self", envOr("TLS_SELF", "") == "true", "serve HTTPS with a generated in-memory self-signed cert (browsers warn once; see scripts/gen-selfsigned.sh for a stable one)")
+	tlsSelf := flag.Bool("tls-self", envOr("TLS_SELF", "true") == "true", "HTTPS with a generated in-memory self-signed cert — ON by default; pass -tls-self=false (or TLS_SELF=false) for plain HTTP")
 	cookieSecure := flag.String("cookie-secure", envOr("COOKIE_SECURE", "auto"), "session cookie Secure attribute: auto (on when serving TLS) | on | off — set 'on' behind a TLS-terminating proxy")
 	hstsDays := flag.Int("hsts-days", envIntOr("HSTS_DAYS", 0), "emit Strict-Transport-Security (max-age=N days) on TLS responses; 0 disables")
 	flag.Parse()
@@ -109,9 +109,10 @@ func main() {
 	log := slog.New(handler)
 	slog.SetDefault(log)
 
-	// TLS: explicit files win; -tls-self generates a throwaway self-signed
-	// cert in memory; neither means plain HTTP as before — TLS is purely
-	// additive, no existing deployment changes behaviour.
+	// TLS is the default: without any flag the server generates a
+	// self-signed cert in memory (-tls-self defaults true). Explicit
+	// files win; -tls-self=false opts out to plain HTTP, which stays
+	// byte-identical to the pre-TLS server.
 	var tlsPair *tls.Certificate
 	switch {
 	case *tlsCert != "" || *tlsKey != "":
@@ -132,7 +133,7 @@ func main() {
 			os.Exit(1)
 		}
 		tlsPair = &c
-		log.Warn("serving HTTPS with an ephemeral self-signed certificate (-tls-self): browsers warn once; for a stable one use scripts/gen-selfsigned.sh with -tls-cert/-tls-key")
+		log.Info("serving HTTPS with an ephemeral self-signed certificate: browsers warn once; scripts/gen-selfsigned.sh makes a stable one, -tls-self=false serves plain HTTP")
 	}
 	// 'auto' follows the listener: cookies only claim Secure when they
 	// really travel over TLS, so plain-HTTP dev setups keep working.
