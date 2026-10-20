@@ -756,7 +756,9 @@ this: `make build`, `make test` (go + a self-contained `test-api` that boots a
 throwaway server on its own port + `test-tls` (HTTPS: the default
 self-signed mode, the `-tls-self=false` opt-out, generated
 certs, the HTTP→HTTPS 308, Secure cookies, security headers) +
-`test-matrix` (the cross-tenant / permission / path-fuzz Python matrix above)
+`test-matrix` (the cross-tenant / permission / path-fuzz Python matrix above,
+plus `test-matrix-purego` running it against the `-tags sqlite_purego`
+MIPS build)
 + the GUI walk),
 `make docker-*`.
 
@@ -772,7 +774,9 @@ make docker-down
 ```
 
 Three-stage Dockerfile (node GUI build → `CGO_ENABLED=0` Go binary — the
-SQLite driver `modernc.org/sqlite` is pure Go → small Alpine runtime).
+SQLite driver `modernc.org/sqlite` is pure Go → small Alpine runtime;
+32-bit MIPS builds swap it for `ncruces/go-sqlite3` via
+`-tags sqlite_purego`, see `internal/db/driver_purego.go`).
 All state lives under `/data`: mount the managed file tree at `/data/root`
 and the SQLite/drafts dir at `/data`; config is env-only (`ADDR`, `ROOT`,
 `DB_PATH`, `ADMIN`, `WEB_DIR`, `LOG_*`). The compose file also carries a
@@ -806,10 +810,16 @@ The first run creates a `docker-container`-driver buildx builder
 cache, so repeat pushes are fast. Verify with
 `docker buildx imagetools inspect <image>`.
 
-**Bare binaries** — `make dist VERSION=v0.1.0` cross-builds all six platforms
-(linux/windows/darwin × amd64/arm64) with `-tags embedweb`, which bakes
+**Bare binaries** — `make dist VERSION=v0.1.0` cross-builds all eight platforms
+(linux/windows/darwin × amd64/arm64, plus linux/mips + linux/mipsle for
+OpenWrt-class routers) with `-tags embedweb`, which bakes
 the GUI bundle (see `frontend/webfs_embed.go`) *and* the `/help` docs
-into the binary — each `dist/bundles/` archive is just the binary +
+into the binary. Every artifact is `CGO_ENABLED=0`: fully static, runs on
+musl (OpenWrt) as-is. The MIPS targets additionally get
+`GOMIPS=softfloat` (no FPU on those SoCs) and `-tags sqlite_purego`
+(modernc has no 32-bit-MIPS code; the ncruces driver is arch-independent
+and passes the same 170-check matrix — `make test-matrix-purego` proves
+it on this machine). Each `dist/bundles/` archive is just the binary +
 `deployments/binary/README.md`. Genuinely one file: `make test-dist`
 unpacks this machine's archive, starts it with zero flags and asserts
 the GUI and `/help` come out of the binary (and that no `web/` dir

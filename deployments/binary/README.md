@@ -41,6 +41,35 @@ a fresh install, since that bootstrap only runs while no users exist).
 | `-tls-self` / `TLS_SELF` | `true` | HTTPS with a generated self-signed cert; `-tls-self=false` serves plain HTTP |
 | `-tls-cert` + `-tls-key` / `TLS_CERT` + `TLS_KEY` | unset | HTTPS with your own cert/key pair instead |
 
+## On an OpenWrt router (MIPS)
+
+The releases include static binaries for 32-bit MIPS routers:
+
+- `gvn-explorer-…-linux-mipsle` — little-endian MIPS (MediaTek mt762x,
+  the most common consumer MIPS SoCs)
+- `gvn-explorer-…-linux-mips` — big-endian MIPS (older Atheros/Broadcom)
+
+Not sure which? `opkg print-architecture` on the router prints
+`mipsel_…` (→ mipsle) or `mips_…` (→ mips). No FPU / softfloat is fine,
+and nothing else needs installing — the binary is fully static and the
+GUI is inside it. Typical setup with the USB drive mounted at
+`/mnt/sda1`:
+
+```sh
+cp gvn-explorer-linux-mipsle /mnt/sda1/      # run from the stick, not from flash
+/mnt/sda1/gvn-explorer-linux-mipsle \
+    -root /mnt/sda1/share -db /mnt/sda1/gvn/perms.db -addr :8080
+```
+
+(:80 is usually taken by the router's own LuCI UI.)
+
+The binary is ~19 MB — on a 16 MB-flash router it must live on the USB
+drive (or in `/tmp`), and on routers with ≤64 MB RAM it's worth adding
+swap on the stick. Start it from `/etc/rc.local` (append the command
+with `&`) or a small procd init script. Everything else — tenants for
+the family groups, one shared media folder, expiring shares — works
+exactly as in the built-in help.
+
 ## Backup & move
 
 Stop the server, copy `data/` + `perms.db` next to the new binary, start

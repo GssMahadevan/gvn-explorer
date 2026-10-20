@@ -15,9 +15,13 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-
-	_ "modernc.org/sqlite"
 )
+
+// The SQLite driver itself is imported from a build-tagged file
+// (driver_modernc.go / driver_purego.go): modernc is the default, and
+// -tags sqlite_purego swaps in an arch-independent pure-Go port so the
+// server cross-compiles for 32-bit MIPS (the common OpenWrt targets,
+// which modernc cannot generate code for).
 
 // DB wraps *sql.DB behind the engine's Dialect: the same `?`-placeholder SQL
 // is rewritten per engine where needed, and Insert retrieves new ids the way
