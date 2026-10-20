@@ -22,9 +22,10 @@ type Entry struct {
 }
 
 var (
-	ErrExists   = errors.New("already exists")
-	ErrNotDir   = errors.New("not a directory")
-	ErrNotEmpty = errors.New("directory not empty")
+	ErrExists        = errors.New("already exists")
+	ErrNotDir        = errors.New("not a directory")
+	ErrNotEmpty      = errors.New("directory not empty")
+	ErrParentMissing = errors.New("parent does not exist")
 )
 
 // Tree is a sandbox rooted at an absolute directory.
@@ -149,7 +150,7 @@ func (t *Tree) Mkdir(logical string) error {
 	}
 	if err := os.Mkdir(abs, 0o755); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("parent does not exist")
+			return ErrParentMissing
 		}
 		return err
 	}

@@ -699,9 +699,25 @@ shape-identical to the sqlite baseline: BIGINT ids, text/unix timestamps,
 GO111MODULE=on go test ./...                     # httptest API suite
 BASE_URL=http://localhost:8095 ADMIN_TENANT=system ADMIN_PASS=secret \
   ./scripts/test_files.sh                        # curl regression suite
+python3 scripts/test_matrix.py --base-url http://localhost:8095 \
+  --admin-tenant system --admin-user admin --admin-pass admin
+                                                 # cross-tenant/ACL/path matrix
 ./scripts/test-tls.sh                            # HTTPS/self-signed smoke
 ./scripts/test_gui.sh                            # headless-Chrome GUI walk
 ```
+
+`test_matrix.py` is a dependency-free (stdlib-only) API matrix checker: it
+provisions throwaway tenants/users/groups/files under a random run-id, then
+verifies that principals, grants, groups, API keys and audit rows never cross
+tenant boundaries; that the r/w/d bits, nearest-ancestor inheritance, zero-grant
+subtrees, user-overrides-group, expiry and suspension behave exactly as the
+permission docs promise; and that hostile path inputs (`../`, `%2e%2e`, double
+encodings, NUL, metacharacters, emoji, over-long names) are cleanly rejected
+or cleanly handled — never a 5xx, never an escape above the file root. The
+`Api` class inside is the single adapter between checks and wire format, so
+pointing the suite at another project with the same contract is a one-class
+port. `--only cross,acl,paths` runs a subset; `--insecure` covers self-signed
+https; fixtures are namespaced so runs never collide.
 
 `test_gui.sh` is self-contained: it builds `bin/server` and `frontend/dist`
 when missing, boots a real server against a throwaway sandbox root with
@@ -725,7 +741,9 @@ The root `Makefile` (split into `makefiles/{build,test,deploy}.mk`) wraps all of
 this: `make build`, `make test` (go + a self-contained `test-api` that boots a
 throwaway server on its own port + `test-tls` (HTTPS: the default
 self-signed mode, the `-tls-self=false` opt-out, generated
-certs, the HTTP→HTTPS 308, Secure cookies, security headers) + the GUI walk),
+certs, the HTTP→HTTPS 308, Secure cookies, security headers) +
+`test-matrix` (the cross-tenant / permission / path-fuzz Python matrix above)
++ the GUI walk),
 `make docker-*`.
 
 ## Deployment
@@ -820,5 +838,5 @@ internal/drafts/   per-path working copies for the draft/publish edit model
 internal/fsx/      sandboxed filesystem ops (list/read/write/mkdir/rename/delete)
 internal/handlers/ REST handlers + route table, JSON error envelope, rate limiters
 frontend/          React 19 + Ant Design GUI (Vite; list panels, per-entity form modals, row action menus, file page (FilePane): viewer default - rendered md / read-only CodeMirror / structured YAML, edit via row menu w/ markdown ribbon, YAML structured editor w/ draft+publish, download actions (filekind.ts policy), flash center; `npm run build` -> dist/ static bundle; webfs_disk.go/webfs_embed.go: GUI served from disk by default, embedded into release binaries under -tags embedweb)
-scripts/           test suites: test_files.sh (curl API regression), test_gui.sh + gui/ (puppeteer GUI walk + screenshots), test_dist.sh (release-bundle smoke: unpack-and-run, embedded GUI+/help)
+scripts/           test suites: test_files.sh (curl API regression), test_matrix.py (stdlib cross-tenant/ACL/path-fuzz matrix), test_gui.sh + gui/ (puppeteer GUI walk + screenshots), test_dist.sh (release-bundle smoke: unpack-and-run, embedded GUI+/help)
 ```

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/GssMahadevan/gvn-explorer/internal/acl"
@@ -97,6 +98,12 @@ func mapFsErr(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusConflict, "not_empty", "directory is not empty")
 	case errors.Is(err, fsx.ErrNotDir):
 		writeError(w, http.StatusBadRequest, "not_a_dir", "path is not a directory")
+	case errors.Is(err, fsx.ErrParentMissing):
+		writeError(w, http.StatusConflict, "parent_missing", "parent directory does not exist")
+	case errors.Is(err, syscall.ENAMETOOLONG):
+		// the filesystem's own limit is the authoritative one: surface it as
+		// a clean rejection instead of an internal error
+		writeError(w, http.StatusBadRequest, "bad_path", "name too long")
 	default:
 		return false
 	}
