@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"github.com/GssMahadevan/gvn-explorer/internal/acl"
 	"github.com/GssMahadevan/gvn-explorer/internal/audit"
 	"github.com/GssMahadevan/gvn-explorer/internal/auth"
+	"github.com/GssMahadevan/gvn-explorer/internal/fsx"
 	"github.com/GssMahadevan/gvn-explorer/internal/query"
 )
 
@@ -71,14 +74,77 @@ func (a *API) handleTenantsCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "validation", "name required")
 		return
 	}
+	if !auth.HomeSafe(b.Name) {
+		writeError(w, http.StatusUnprocessableEntity, "validation",
+			"name must be 1-32 chars of lowercase letters, digits or dashes (a-z, 0-9, -), start with a letter or digit, and not the reserved word help")
+		return
+	}
 	t, err := a.Auth.CreateTenant(r.Context(), b.Name, strings.TrimSpace(b.Description))
 	if err != nil {
 		writeError(w, http.StatusConflict, "exists", "tenant name taken")
 		return
 	}
+	if err := a.provisionHome(r.Context(), t.Name, t.ID); err != nil {
+		// The tenant row exists; the home is repairable (the startup
+		// backfill finishes it), so this is a loud log, not a rollback.
+		slog.Error("home provisioning", "tenant", t.Name, "err", err)
+	}
 	a.audit(r, audit.Event{Action: "tenant_create", TenantID: t.ID,
 		TargetType: "tenant", TargetID: t.ID, TargetName: t.Name})
 	writeJSON(w, http.StatusCreated, t)
+}
+
+// provisionHome: every tenant owns the directory /{name}. Creating a
+// tenant creates it, plus one ordinary visible grant: the tenant's members
+// get r on their home — by the usual inheritance that covers the whole
+// home subtree, and it is the only membership default there is. The grant
+// is provisioned exactly once — an admin who revokes it stays revoked.
+// The hard "only members, ever" boundary lives in acl.Effective
+// (HomeOwner), not in these rows: the rows only decide what members get.
+func (a *API) provisionHome(ctx context.Context, name string, tid int64) error {
+	if err := a.FS.Mkdir("/" + name); err != nil && !errors.Is(err, fsx.ErrExists) {
+		return err
+	}
+	return a.ACL.Ensure(ctx, "/"+name, "tenant", tid, true, false, false)
+}
+
+// BootstrapHomes: called once at server start. Every existing tenant whose
+// name can back a directory but has no home yet gets one plus its default
+// browse grant (fresh installs: zero work; upgrades of older servers: the
+// backfill). There is deliberately no world grant on "/": nearest-ancestor
+// inheritance would make that read every shared-zone file for every user
+// and break the deny-by-default core of the model. The default view comes
+// from the home grant itself (members can list and read their own tree),
+// and shared-zone openness is whatever admins grant to the "all" principal
+// per path, one explicit row at a time.
+func (a *API) BootstrapHomes(ctx context.Context) error {
+	tenants, _, err := a.Auth.ListTenants(ctx, query.List{Sort: "name"})
+	if err != nil {
+		return err
+	}
+	for _, t := range tenants {
+		if !auth.HomeSafe(t.Name) {
+			slog.Warn("tenant name cannot back a home directory; leaving it unpartitioned", "tenant", t.Name)
+			continue
+		}
+		home := "/" + t.Name
+		if _, err := a.FS.Stat(home); err == nil {
+			// Home already provisioned once — never re-impose defaults an
+			// admin may have revoked. But the partition rule is name-based,
+			// so a legacy top-level dir that matches a tenant name became a
+			// home the moment this binary started: say so if members cannot
+			// browse it, because that is surprising and easily fixed.
+			if has, err := a.ACL.HasGrant(ctx, home, "tenant", t.ID); err == nil && !has {
+				slog.Warn("home is partitioned but no member grant exists: grant r to the tenant principal to let members browse it",
+					"tenant", t.Name, "path", home)
+			}
+			continue
+		}
+		if err := a.provisionHome(ctx, t.Name, t.ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // handleTenantsUpdate: PUT /api/v1/tenants/{id} {"description":...}
@@ -284,8 +350,42 @@ func (a *API) handlePermsPut(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		pid, ptid = g.ID, g.TenantID
+	case "tenant":
+		// "any user in tenant T": like user/group principals, a tenant
+		// admin may only target their own tenant; cross-tenant rows are
+		// super's prerogative (and never inside a home — see below).
+		if !u.IsSuper && !strings.EqualFold(b.Principal, u.Tenant) {
+			writeError(w, http.StatusForbidden, "forbidden", "grants may only target your own tenant")
+			return
+		}
+		tid, err := a.Auth.TenantID(r.Context(), b.Principal)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "no_such_tenant", b.Principal)
+			return
+		}
+		pid, ptid = tid, tid
+		tenant = b.Principal
+	case "all":
+		// world rows: every authenticated user. Reserved principal_id 0
+		// (no entity has id 0). Allowed on shared-zone paths for any
+		// admin who can manage them; refused inside homes below.
+		pid, ptid = 0, 0
 	default:
-		writeError(w, http.StatusBadRequest, "bad_request", "principal_type must be user or group")
+		writeError(w, http.StatusBadRequest, "bad_request",
+			"principal_type must be user, group, tenant or all")
+		return
+	}
+	// Tenant homes are for members — absolute, super included. Inside
+	// /{T} every principal must be a member of T: a user/group row from T,
+	// or the tenant principal T itself. "all" and foreign principals are
+	// refused here so the partition in acl.Effective can never be
+	// contradicted by a grant an admin creates.
+	if owner, ownerID, err := a.ACL.HomeOwner(r.Context(), p); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	} else if owner != "" && ptid != ownerID {
+		writeError(w, http.StatusUnprocessableEntity, "validation",
+			"grants inside the tenant home /"+owner+" may only target that tenant's members")
 		return
 	}
 	gr, err := a.ACL.Upsert(r.Context(), p, b.PrincipalType, pid, b.Read, b.Write, b.Delete, exp)
@@ -298,10 +398,20 @@ func (a *API) handlePermsPut(w http.ResponseWriter, r *http.Request) {
 	if exp != nil {
 		details["expires_at"] = exp.Format(time.RFC3339)
 	}
+	targetName := tenant + "/" + b.Principal
+	switch b.PrincipalType {
+	case "all":
+		targetName = "all authenticated users"
+		gr.PrincipalName, gr.PrincipalTenant = "*", "*"
+	case "tenant":
+		targetName = "tenant:" + b.Principal
+	}
 	a.audit(r, audit.Event{Action: "perm_set", TenantID: ptid, TargetType: "grant",
-		TargetID: gr.ID, TargetName: tenant + "/" + b.Principal, Path: p, Details: details})
-	gr.PrincipalTenant = tenant
-	gr.PrincipalName = b.Principal
+		TargetID: gr.ID, TargetName: targetName, Path: p, Details: details})
+	if b.PrincipalType != "all" {
+		gr.PrincipalTenant = tenant
+		gr.PrincipalName = b.Principal
+	}
 	writeJSON(w, http.StatusOK, gr)
 }
 
@@ -342,7 +452,7 @@ type userBody struct {
 	Tenant      string `json:"tenant"` // required for super admins; ignored for tenant admins
 	Description string `json:"description"`
 	IsAdmin     bool   `json:"is_admin"`
-	Expiry      // expires_days / expires_at: customer accounts with a lifespan
+	Expiry             // expires_days / expires_at: customer accounts with a lifespan
 }
 
 // resolveCreateTenant decides which tenant a new user/group belongs to:

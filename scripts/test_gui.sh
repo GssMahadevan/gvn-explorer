@@ -31,9 +31,10 @@ step() { # step <name> <cmd...> — run, show output indented, count pass/fail
 # ---------- build ----------
 echo "== build =="
 step "go build bin/server" env GO111MODULE=on go build -o bin/server ./cmd/server
-if [ ! -d frontend/dist ]; then
-  step "frontend build" sh -c 'npm --prefix frontend ci --silent && npm --prefix frontend run build'
+if [ ! -d frontend/node_modules ]; then
+  step "npm ci (frontend)" npm --prefix frontend ci --silent
 fi
+step "frontend build" npm --prefix frontend run build
 if [ ! -d scripts/gui/node_modules/puppeteer-core ] || [ ! -d scripts/gui/node_modules/jsqr ]; then
   step "npm install (scripts/gui)" npm --prefix scripts/gui install --silent
 fi

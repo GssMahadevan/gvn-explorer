@@ -11,15 +11,55 @@ instance serves HTTPS with a self-signed cert — use `https://` and add
 
 ## The model in one paragraph
 
-A grant is a row `(path, principal, bits)` — principal is a user or a
-group (always `tenant/name`), bits are `read`, `write`, `delete`. Your
-effective permission on a path comes from the **nearest ancestor** that
-has an explicit grant for you (directly or via one of your groups):
-a user grant **wins over** any group grant at the same level; several
-group grants **union**; no grant anywhere on the way up = **deny**.
+A grant is a row `(path, principal, bits)` — principal is a user, a group,
+**every member of a tenant** (`tenant`), or **every signed-in user** (`all`);
+users and groups are always `tenant/name`, bits are `read`, `write`,
+`delete`. Your effective permission on a path comes from the **nearest
+ancestor** that has an explicit grant for you (directly, via one of your
+groups, via your tenant's membership, or via a world grant): at the same
+level a user grant **wins over** any group grant, groups **union**, and
+both win over `tenant`, which wins over `all` — the more specific layer
+shadows the broader ones; no grant anywhere on the way up = **deny**.
 `GET /api/v1/fs` only ever lists what you can read, so "you don't see
 it" is the same thing as "you may not read it". Super admins bypass
 file ACLs; tenant admins do not.
+
+## Granting to a whole tenant, or to everyone
+
+One row can address a whole community instead of enumerating people:
+
+```sh
+# every member of acme reads /shared/specs
+curl -b jar -X PUT localhost:8080/api/v1/perms -H 'Content-Type: application/json' \
+  -d '{"path":"/shared/specs","principal_type":"tenant","principal":"acme","read":true}'
+# anyone signed in at all can read the public announcement
+curl -b jar -X PUT localhost:8080/api/v1/perms -H 'Content-Type: application/json' \
+  -d '{"path":"/public/news.txt","principal_type":"all","principal":"*","read":true}'
+```
+
+The Permissions panel labels such rows "acme (all members)" and
+"* all signed-in users", and they revoke like any other row. Only super
+admins may address *other* tenants (or everyone); a tenant admin's `tenant`
+grants naturally only ever reach their own. A zero grant works against
+these too: an all-bits-false row for one user on a nearer path carves
+that user out of a `tenant` or `all` grant without touching anyone else.
+
+## Tenant home directories
+
+Each tenant automatically has a home directory `/{tenant-name}` — for
+`acme` that is `/acme`. It arrives with one ordinary grant row addressed
+to `tenant: acme` (read-only), so **every member can read it by default**
+and the tenant's own admin can upgrade that row to `rw` or revoke it like
+any grant. The home is then a hard partition: only members of that tenant
+(and super admins) can reach inside it — to everyone else the directory
+does not even appear in listings, no matter what other grants exist. And
+inside a home, every grant must address that tenant's own members:
+granting to a foreign user, another tenant or `all` there is refused
+(422), even for super admins — use the shared zones outside the homes for
+content addressed that broadly. Nothing else is world-readable by default:
+shared areas open only through explicit per-path grants like the ones
+above. (See [tenants-users-groups.md](tenants-users-groups.md) for how
+homes are created and what names are allowed.)
 
 ## Everyday examples
 

@@ -79,3 +79,17 @@ export const fmtSize = (n: number): string =>
 
 export const bits = (p: { read: boolean; write: boolean; delete: boolean }): string =>
   (p.read ? 'r' : '-') + (p.write ? 'w' : '-') + (p.delete ? 'd' : '-');
+
+// Human label for who a grant row addresses — user/group rows name their
+// tenant and principal; the pseudo-principals address everyone or a whole
+// tenant's members. Used in table cells and in flash messages, so a
+// revoked grant can be described exactly as it was displayed.
+export const grantLabel = (g: {
+  principal_type: string;
+  principal_tenant: string;
+  principal_name: string;
+}): string => {
+  if (g.principal_type === 'all') return '* all signed-in users';
+  if (g.principal_type === 'tenant') return `${g.principal_name} (all members)`;
+  return `${g.principal_tenant}/${g.principal_name}`;
+};

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Alert, Button, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { api, bits, qs } from '../api';
+import { api, bits, grantLabel, qs } from '../api';
 import type { Grant, Me, PermsList } from '../types';
 import { useListView } from '../useListView';
 import { useFlash } from '../flash';
@@ -32,9 +32,7 @@ export default function PermsPanel({ path, me }: { path: string; me: Me }) {
       showSorterTooltip: false,
       render: (_, g) => (
         <Space size={4}>
-          <span className="mono">
-            {g.principal_tenant}/{g.principal_name}
-          </span>
+          <span className="mono">{grantLabel(g)}</span>
           {g.principal_active === false && <Tag color="red">inactive principal</Tag>}
         </Space>
       ),
@@ -82,9 +80,7 @@ export default function PermsPanel({ path, me }: { path: string; me: Me }) {
               onClick: async () => {
                 try {
                   await api('/api/v1/perms/' + g.id, { method: 'DELETE' });
-                  flash.ok(
-                    `revoked ${g.principal_type} ${g.principal_tenant}/${g.principal_name} (${bits(g)}) on ${path}`,
-                  );
+                  flash.ok(`revoked ${grantLabel(g)} (${bits(g)}) on ${path}`);
                   lv.reload();
                 } catch (e) {
                   flash.err((e as Error).message);
@@ -127,7 +123,7 @@ export default function PermsPanel({ path, me }: { path: string; me: Me }) {
                 eff?.source ? ` (inherited from ${eff.source})` : ' (no access)'
               }`
         }
-        description="grants apply to this path and inherit down; a grant with all bits off excludes the subtree for that principal. only the platform super admin bypasses ACLs."
+        description="grants apply to this path and inherit down; a grant with all bits off excludes the subtree for that principal. grants may address a user, a group, every member of a tenant, or all signed-in users. inside a tenant's home directory only that tenant's members can be granted at all. only the platform super admin bypasses ACLs."
       />
 
       <Table

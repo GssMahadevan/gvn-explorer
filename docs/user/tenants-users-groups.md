@@ -38,12 +38,34 @@ curl -b jar -X POST localhost:8080/api/v1/tenants \
   -d '{"name":"acme","description":"customer acme"}'
 ```
 
+New tenant names must be able to back a directory: lowercase letters,
+digits and `-`, starting alphanumeric, at most 32 characters, and
+`help` (the documentation path) is reserved. A name that doesn't fit is
+refused with 422. (Tenants created by older versions may have other
+names; they work normally, their top-level directories just stay
+ordinary shared space.)
+
+**Every tenant automatically has a home directory** at `/{name}` —
+creating the tenant creates `/acme` and one ordinary grant row giving all
+acme members read on it. The home is private by construction: only acme
+members (and super admins) can see or open anything inside, and to
+everyone else `/acme` doesn't even appear in listings. Inside the home
+all grants must address acme's own members; shared content across
+communities lives outside homes, opened by explicit grants
+([permissions.md](permissions.md)). If a top-level directory named
+`acme` already existed when the tenant was created, it simply becomes
+the home. The default member-read grant is a row like any other: acme's
+own tenant admin can upgrade it (e.g. to read+write so members can
+collaborate) or revoke it — revoking hides the home from members but
+never touches the data.
+
 **Suspending** a tenant is the kill switch for a whole customer: no
 logins, live sessions and API keys of its users stop at the next
 request — but rows, grants and history are untouched, and
 reactivating restores everything. Deleting a tenant is permanent and
-cascades to its users, groups, memberships and grants. You cannot
-suspend your own tenant (no self-lockout).
+cascades to its users, groups, memberships and grants; its home
+directory stays on disk as ordinary shared space until you remove it.
+You cannot suspend your own tenant (no self-lockout).
 
 ## Users
 

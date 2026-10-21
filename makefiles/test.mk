@@ -39,11 +39,17 @@ test-tls: build-server
 test-matrix: build-server
 	@dir=$$(mktemp -d); \
 	./bin/server -addr :$(MATRIX_PORT) -root $$dir/root -db $$dir/perms.db -tls-self=false \
-		-admin system:admin:admin >$$dir/server.log 2>&1 & pid=$$!; \
+		-admin system:admin:admin -rps 0 >$$dir/server.log 2>&1 & pid=$$!; \
 	sleep 0.7; \
 	python3 ./scripts/test_matrix.py --base-url http://localhost:$(MATRIX_PORT) \
 		--admin-tenant system --admin-user admin --admin-pass admin; rc=$$?; \
 	kill $$pid 2>/dev/null; rm -rf $$dir; exit $$rc
+
+# -rps 0: the matrix is a functional contract, not a load test — its own
+# volume (the homes suite runs ~100 fast per-principal calls) trips the
+# default 20rps bucket into intermittent 429s. The auth limiter stays at
+# its default: the pair suite's concurrency-guard check is written
+# against the per-IP 3rps bucket it documents.
 
 # The same matrix against the -tags sqlite_purego build (the ncruces
 # arch-independent driver used for the MIPS release binaries): proves the
@@ -52,7 +58,7 @@ test-matrix-purego:
 	@go build -trimpath -tags sqlite_purego -o bin/server-purego ./cmd/server
 	@dir=$$(mktemp -d); \
 	./bin/server-purego -addr :$(PUREGO_PORT) -root $$dir/root -db $$dir/perms.db -tls-self=false \
-		-admin system:admin:admin >$$dir/server.log 2>&1 & pid=$$!; \
+		-admin system:admin:admin -rps 0 >$$dir/server.log 2>&1 & pid=$$!; \
 	sleep 0.7; \
 	python3 ./scripts/test_matrix.py --base-url http://localhost:$(PUREGO_PORT) \
 		--admin-tenant system --admin-user admin --admin-pass admin; rc=$$?; \

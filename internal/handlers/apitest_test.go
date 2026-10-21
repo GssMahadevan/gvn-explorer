@@ -25,6 +25,7 @@ import (
 
 type env struct {
 	srv   *httptest.Server
+	api   *API         // for startup steps a real server runs (BootstrapHomes)
 	admin *http.Client // super admin in tenant "acme"
 }
 
@@ -59,7 +60,7 @@ func newEnvLimits(t *testing.T, rps float64, rburst int, authRPS float64, authBu
 	api.Register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return &env{srv: srv, admin: login(t, srv, "acme", "admin", "pw")}
+	return &env{srv: srv, api: &api, admin: login(t, srv, "acme", "admin", "pw")}
 }
 
 func login(t *testing.T, srv *httptest.Server, tenant, user, pass string) *http.Client {

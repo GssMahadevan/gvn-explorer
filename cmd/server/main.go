@@ -178,6 +178,12 @@ func main() {
 		AuthConcurrency: *authConcurrency,
 	}
 	api.CookieSecure = cookieSecureOn
+	// Tenant homes: provision legacy tenants and the shared-root world
+	// grant once, before any request is served (see API.BootstrapHomes).
+	if err := api.BootstrapHomes(context.Background()); err != nil {
+		log.Error("home bootstrap", "err", err)
+		os.Exit(1)
+	}
 	mux := http.NewServeMux()
 	api.Register(mux)
 

@@ -26,7 +26,7 @@ type API struct {
 	Auth       *auth.Store
 	ACL        *acl.Store
 	FS         *fsx.Tree
-	Events     *audit.Store // forensic trail for authz/authn DML
+	Events     *audit.Store  // forensic trail for authz/authn DML
 	Drafts     *drafts.Store // working copies for the draft/publish edit model
 	SessionTTL time.Duration
 	MaxFileMB  int // read/write size limit

@@ -186,12 +186,15 @@ Cookies are `SameSite=Lax`.
 
 ## Permission model
 
-Grants are rows `(path, principal_type user|group, principal_id, r/w/d bits)`;
-`principal_id` points at a users/groups row, which carries the tenant, so the
-same name in two tenants is two distinct grant subjects. Effective perms for a
-path = **nearest ancestor** with an explicit grant: user grants win over group
-grants at the same level; multiple group grants union; no grant anywhere =
-deny. Example:
+Grants are rows `(path, principal_type, principal, r/w/d bits)`. Four
+principal types exist: `user` and `group` (a person or a named set of people,
+always resolved inside one tenant, so the same name in two tenants is two
+distinct grant subjects), and two **pseudo-principals**: `tenant` addresses
+every member of one tenant at once, and `all` addresses every signed-in user
+of the instance. Effective perms for a path = **nearest ancestor** with an
+explicit grant for you: at each level `user` wins over `group` wins over
+`tenant` wins over `all` (the more specific layer shadows the broader ones);
+multiple group grants union; no grant anywhere = deny. Example:
 
 ```sh
 curl -b jar -X PUT localhost:8080/api/v1/perms \
@@ -201,14 +204,38 @@ curl -b jar -X PUT localhost:8080/api/v1/perms \
 
 gives `acme/readers` read on `/docs` and everything below, unless overridden
 deeper. `tenant` defaults to the caller's tenant; tenant admins may only ever
-target their own. `GET /api/v1/fs` hides entries the caller cannot read. A
-**zero grant** (everything false) on a nearer path intentionally *excludes* a
-subtree: inheritance stops at the nearest ancestor with any grant row for the
-principal, so `{"path":"/secret","principal_type":"group","principal":"readers","read":false}`
-removes `/secret` from readers' listings even when they hold read on `/`.
+target their own. A `tenant` grant is addressed by the tenant's name
+(`{"principal_type":"tenant","principal":"acme"}`), and `all` takes no name
+(`{"principal_type":"all","principal":"*"}`). `GET /api/v1/fs` hides entries
+the caller cannot read. A **zero grant** (everything false) on a nearer path
+intentionally *excludes* a subtree: inheritance stops at the nearest ancestor
+with any grant row for the principal, so `{"path":"/secret","principal_type":"group","principal":"readers","read":false}`
+removes `/secret` from readers' listings even when they hold read on `/` —
+the same exclusion works against a `tenant` or `all` row for exactly one
+user.
 
 Group membership is always resolved inside the group's own tenant — adding
 "alice" to `globex/staff` can never enroll `acme/alice`.
+
+## Tenant home directories
+
+Creating a tenant (`POST /api/v1/tenants`) provisions a home directory at
+`/{tenant-name}` and a read grant for `principal_type:tenant` on it — an
+ordinary, visible, revocable grant row, so the tenant's own admin can
+upgrade it to `rw` or revoke it like any other. The home is then a hard
+**partition**: only that tenant's members (and the super admin) can reach
+anything inside it, whatever grant rows elsewhere say; to everyone else the
+directory does not even appear in listings. Inside a home, every grant must
+address that tenant's own members — grants for foreign users, foreign
+tenants or `all` are refused with 422 there, even for the super admin.
+Outside homes nothing is world-readable by default: shared zones open only
+through explicit per-path `tenant`/`all` grants. A top-level directory that
+already matches a tenant's name becomes that tenant's home at startup.
+New tenant names must be able to back a directory: lowercase `a-z0-9-`,
+starting alphanumerically, ≤ 32 chars, and `help` is reserved (422
+otherwise); pre-existing tenants with other names keep working, their
+top-level directories are simply ordinary shared directories.
+
 
 ## Expiring access (customer shares)
 
@@ -548,11 +575,16 @@ the PUT below, and searchable/sortable through the list contract.
 
 - `GET/POST /api/v1/tenants`, `PUT /api/v1/tenants/{id} {"description"}`,
   `POST /api/v1/tenants/{id}/active {"active"}`, `DELETE /api/v1/tenants/{id}` —
-  **super admin only**; deleting a tenant cascades to its users, groups,
+  **super admin only**; creating a tenant also provisions its home directory
+  `/{name}` (member read, see *Tenant home directories*); new names must be
+  directory-safe (lowercase `a-z0-9-`, start alphanumeric, ≤32 chars, `help`
+  reserved — 422 otherwise); deleting a tenant cascades to its users, groups,
   memberships and every ACL grant that targets them
 - `GET/PUT /api/v1/perms`, `DELETE /api/v1/perms/{id}` — view grants + your
   effective bits (any user); mutate with admin rights, tenant-scoped for
-  tenant admins; grants may carry `expires_days`/`expires_at`
+  tenant admins; `principal_type` is `user`/`group` (named, in a tenant),
+  `tenant` (every member of one tenant) or `all` (every signed-in user);
+  grants may carry `expires_days`/`expires_at`
 - `GET/POST /api/v1/users`, `PUT /api/v1/users/{id} {"description"}`,
   `DELETE /api/v1/users/{id}`, `POST /api/v1/users/{id}/password`,
   `POST /api/v1/users/{id}/active {"active"}` —

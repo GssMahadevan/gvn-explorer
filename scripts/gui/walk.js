@@ -1107,6 +1107,98 @@ fs.mkdirSync(OUT, { recursive: true });
     await mouseClick('.ant-modal button', '^revoke$');
     await new Promise((r) => setTimeout(r, 900));
     check('grant revoked', !(await visiblePanelText()).includes('acme/alice'));
+
+    // ---- pseudo-principals: the same modal addresses "everyone" or a
+    // whole tenant's members; the form must shed the fields that make no
+    // sense for those, and the table rows must stay readable + revocable
+    const ptypePos = await page.evaluate(() => {
+      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+      const s = m?.querySelector('[data-testid="grant-ptype"]');
+      if (!s) return null;
+      const q = s.getBoundingClientRect();
+      return { x: q.x + q.width / 2, y: q.y + q.height / 2 };
+    });
+    check('grant modal was closed by the revoke flow', ptypePos === null);
+    await mouseClick('button', '^Grant access$');
+    await waitModal();
+    const pt2 = await page.evaluate(() => {
+      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+      const s = m?.querySelector('[data-testid="grant-ptype"]');
+      if (!s) return null;
+      const q = s.getBoundingClientRect();
+      return { x: q.x + q.width / 2, y: q.y + q.height / 2 };
+    });
+    check('principal type selector offers the pseudo-principals', await (async () => {
+      if (!pt2) return false;
+      await page.mouse.click(pt2.x, pt2.y);
+      await new Promise((r) => setTimeout(r, 700));
+      const t = await page.evaluate(() =>
+        [...document.querySelectorAll('.ant-select-dropdown')]
+          .filter((d) => d.offsetParent !== null)
+          .map((d) => d.textContent)
+          .join(' '),
+      );
+      return /all signed-in users/.test(t) && /all members of a tenant/.test(t);
+    })());
+    check('switch to "all signed-in users"', pt2 && (await pickOption(pt2.x, pt2.y, 'all signed-in users')));
+    check('world grant needs no names — those fields disappear', await page.evaluate(() => {
+      const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+      return !!m && !m.querySelector('[data-testid="grant-tenant"]') && !m.querySelector('[data-testid="grant-principal"]');
+    }));
+    await mouseClick('.ant-modal button', '^Save grant$');
+    await new Promise((r) => setTimeout(r, 1400));
+    check('world grant row is labelled for humans',
+      (await visiblePanelText()).includes('* all signed-in users'));
+    check('world grant flash matches the row label', await page.evaluate(() => {
+      const b = document.querySelector('[data-testid="flash-bar"]');
+      return !!b && /grant saved: \* all signed-in users/.test(b.innerText);
+    }));
+    check('world grant revokes like any row', await (async () => {
+      if (!(await openRowMenu('all signed-in users'))) return false;
+      await menuClick('revoke');
+      await waitModal();
+      await mouseClick('.ant-modal button', '^revoke$');
+      await new Promise((r) => setTimeout(r, 900));
+      // the panel's own help text says "all signed-in users" too — match
+      // the row label's leading '*', which only a grant row renders
+      return !(await visiblePanelText()).includes('* all signed-in users');
+    })());
+    check('tenant grant targets the tenant picked in the form', await (async () => {
+      await mouseClick('button', '^Grant access$');
+      await waitModal();
+      const p = await page.evaluate(() => {
+        const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+        const s = m?.querySelector('[data-testid="grant-ptype"]');
+        if (!s) return null;
+        const q = s.getBoundingClientRect();
+        return { x: q.x + q.width / 2, y: q.y + q.height / 2 };
+      });
+      if (!p || !(await pickOption(p.x, p.y, 'all members of a tenant'))) return false;
+      if (!(await modalText()).includes('Target tenant')) return false;
+      // the tenant picker IS the target now: aim it at acme, whose alice
+      // just lost her personal grant — this one replaces it for everyone
+      const tpos = await page.evaluate(() => {
+        const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+        const s = m?.querySelector('[data-testid="grant-tenant"]');
+        if (!s) return null;
+        const q = s.getBoundingClientRect();
+        return { x: q.x + q.width / 2, y: q.y + q.height / 2 };
+      });
+      if (!tpos || !(await pickOption(tpos.x, tpos.y, 'acme'))) return false;
+      if ((await modalText()).includes('Principal name')) return false; // no name field either
+      await mouseClick('.ant-modal button', '^Save grant$');
+      await new Promise((r) => setTimeout(r, 1400));
+      return (await visiblePanelText()).includes('acme (all members)');
+    })());
+    check('tenant grant revokes like any row', await (async () => {
+      if (!(await openRowMenu('acme \\(all members\\)'))) return false;
+      await menuClick('revoke');
+      await waitModal();
+      await mouseClick('.ant-modal button', '^revoke$');
+      await new Promise((r) => setTimeout(r, 900));
+      return !(await visiblePanelText()).includes('acme (all members)');
+    })());
+
     await page.evaluate(() => fetch('/api/v1/fs?path=%2Fwalk-perms.md', { method: 'DELETE' }));
     await page.evaluate(() => {
       const i = document.querySelector('input[placeholder="search name"]');

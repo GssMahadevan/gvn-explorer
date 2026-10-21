@@ -19,6 +19,11 @@ must never get wrong:
          secrets, redeem-once/expiry/revoke semantics, tenant scoping,
          and the login-concurrency guard (-auth-concurrency) refusing a
          burst of simultaneous bcrypts with 503 + Retry-After.
+  homes  tenant home directories (/{tenant}) and the pseudo-principals:
+         the hard member-only partition (invisible to outsiders even
+         through listings), the default member grant as an ordinary
+         visible/revocable row, and tenant/world grants in the shared
+         zone — including zero-grant exclusions beating a world row.
 
 Standard library only — no pip installs. Works over plain HTTP or over
 https with a self-signed cert (--insecure).
@@ -232,6 +237,9 @@ class Api:
     def delete_grant(self, gid):
         return self.c.call("DELETE", "/api/v1/perms/%d" % gid)
 
+    def list_grants(self, path):
+        return self.c.call("GET", "/api/v1/perms?path=" + enc(path))
+
     def events(self):
         return self.c.call("GET", "/api/v1/events?limit=200")
 
@@ -313,6 +321,7 @@ class Fix:
         self.crew, self.shared = "crew" + rid, "shared" + rid
         self.pw = "Matrix-" + rid + "!x1"
         self.mx, self.fx, self.ct = "/mx" + rid, "/fx" + rid, "/ct"
+        self.hz = "/hz" + rid
         self.uid, self.gid, self.tid, self.sess = {}, {}, {}, {}
         self.super = None
         # pairing fixtures (ids of opened invites, uids of accounts they
@@ -412,7 +421,8 @@ def teardown(x, keep):
         sup.delete_user(uid)
     for tid in x.tid.values():
         sup.delete_tenant(tid)
-    for p in (x.mx, x.fx, x.ct, "/up-" + x.rid, "/out-" + x.rid):
+    for p in (x.mx, x.fx, x.ct, x.hz, "/up-" + x.rid, "/out-" + x.rid,
+              "/" + x.ta, "/" + x.tb):  # the homes are plain dirs once the tenants are gone
         rm_tree(sup, p)
 
 
@@ -793,8 +803,8 @@ def suite_paths(x, rep):
            st == 200 and cd.startswith("attachment;"))
     sup.write(fx + "/no-viewer.zip", "PK not really a zip body\n")
     st, cd = sup.raw_dispo(fx + "/no-viewer.zip", ask_inline=True)
-    rep.ck("raw dispo=inline refused outside the allowlist (zip -> attachment)",
-           st == 200 and cd.startswith("attachment;"))
+    rep.ck("raw dispo=inline refused outside the allowlist (zip -> attachment) "
+           "(st=%d cd=%r)" % (st, cd), st == 200 and cd.startswith("attachment;"))
 
     # --- rename: '..' refused like everywhere else; an absolute target
     # stays inside the sandbox root
@@ -973,8 +983,114 @@ def suite_pair(x, rep):
              "normal login works again immediately after the burst")
 
 
+def suite_homes(x, rep):
+    """Tenant homes + pseudo-principals. Homes are name-based: /{tenant}
+    belongs to its tenant's members and super, whatever grant rows say.
+    Membership defaults (and shared-zone openness) are ordinary visible
+    grant rows addressed to the 'tenant' and 'all' pseudo-principals."""
+    print("== homes: tenant home directories and pseudo-principals", flush=True)
+    sup, a, b, c = x.super, x.sess["alice"], x.sess["bob"], x.sess["carol"]
+    # mallory's setup session was killed by the acl suite's suspend test;
+    # this suite needs a live plain-member session
+    m = fresh(x)
+    st, _, _ = m.login(x.ta, x.mallory, x.pw)
+    if st != 200:
+        rep.ck("re-login mallory for the homes suite (got %d)" % st, False)
+        return
+    ha, hb, hz = "/" + x.ta, "/" + x.tb, x.hz
+
+    # a brand-new tenant arrives with its home and a member-readable default
+    rep.want(sup.ls(ha), (200,), "creating a tenant also created its home")
+    rep.want(m.ls(ha), (200,), "a member can list their home")
+    rep.want(m.write(ha + "/mine.txt", "M"), (403,), "the home default is read-only")
+
+    # the hard partition: a foreign member gets 403 no matter what rows say
+    rep.want(c.ls(ha), (403,), "a foreign member cannot list the home")
+    rep.want(c.raw(ha + "/any.txt"), (403,), "nor read a file inside it")
+
+    # the default is an ordinary row, labelled with the tenant's own name
+    st, body, _ = a.list_grants(ha)  # alice: tenant admin of ta
+    rows = (body or {}).get("grants", []) if st == 200 else []
+    own = [g for g in rows if g["principal_type"] == "tenant"]
+    rep.ck("the default is one visible tenant row named for the tenant",
+           st == 200 and len(own) == 1 and own[0]["principal_name"] == x.ta
+           and own[0]["read"] and not own[0]["write"])
+
+    # inside a home every grant must address that tenant's members — no
+    # exceptions, not even for super
+    rep.want(sup.grant(ha, "user", x.carol, read=True, tenant=x.tb), (422,),
+             "a foreign user cannot be granted inside a home")
+    rep.want(sup.grant(ha, "tenant", x.tb, read=True), (422,),
+             "a foreign tenant cannot be granted inside a home")
+    rep.want(sup.grant(ha, "all", "*", read=True), (422,),
+             "the world principal cannot be granted inside a home")
+
+    # with root opened to a member, their listing shows their home and
+    # foreign homes are not merely denied, they are invisible
+    rep.want(sup.grant("/", "user", x.mallory, read=True, tenant=x.ta), (200,),
+             "super may still grant in the shared zone")
+    st, obj, _ = m.ls("/")
+    names_ = [e["entry"]["name"] for e in (obj or {}).get("entries", [])] if st == 200 else []
+    rep.ck("a permitted listing includes the member's own home "
+           "(st=%d names=%r)" % (st, names_), st == 200 and x.ta in names_)
+    rep.ck("foreign homes never appear in a listing", x.tb not in names_)
+
+    # the 'tenant' principal in the shared zone: one row for a whole tenant
+    rep.want(sup.mkdir(hz), (200, 201), "shared-zone dir for pseudo-grant probes")
+    rep.want(sup.write(hz + "/share.txt", "HZ"), (200,), "shared file written")
+    rep.want(sup.grant(hz, "tenant", x.ta, read=True), (200,),
+             "super may grant shared content to an entire tenant")
+    rep.want(m.raw(hz + "/share.txt"), (200,), "every member of that tenant reads it")
+    rep.want(c.raw(hz + "/share.txt"), (403,), "members of other tenants do not")
+    rep.want(b.grant(hz, "tenant", x.ta, read=True), (403,),
+             "a tenant admin may not address another tenant")
+
+    # the 'all' principal: world-open shared content, and per-user zero
+    # rows still shadow it (nearest-ancestor, per-layer shadowing)
+    rep.want(sup.grant(hz, "all", "*", read=True), (200,),
+             "super may open a shared path to every user")
+    rep.want(c.raw(hz + "/share.txt"), (200,), "the world grant reaches a stranger")
+    rep.want(sup.grant(hz, "user", x.carol, read=False, tenant=x.tb), (200,),
+             "a zero-grant row for one user is still expressible")
+    rep.want(c.raw(hz + "/share.txt"), (403,), "the exclusion shadows the world row for that user")
+    rep.want(b.raw(hz + "/share.txt"), (200,), "and only for that user")
+
+    # the home default is a row like any other: the tenant's own admin can
+    # upgrade it and revoke it, and members feel it immediately. dave is a
+    # second ta member with no grants of his own: only the tenant row
+    # reaches the home for him.
+    dave = "dave" + x.rid
+    st, obj, _ = sup.create_user(dave, x.pw, tenant=x.ta)
+    if st != 201:
+        rep.ck("created dave (ungranted probe member) — got %d" % st, False)
+        return
+    x.uid[(x.ta, dave)] = obj["id"]
+    dapi = fresh(x)
+    dapi.login(x.ta, dave, x.pw)
+    rep.want(dapi.ls(ha), (200,), "a member with no personal grants still reaches the home")
+    rep.want(a.grant(ha, "tenant", x.ta, read=True, write=True), (200,),
+             "the tenant's own admin may upgrade its members' home grant")
+    rep.want(dapi.write(ha + "/dave.txt", "D"), (200,), "the upgrade is live at once")
+    st, body, _ = a.list_grants(ha)
+    rows = (body or {}).get("grants", []) if st == 200 else []
+    gid = next((g["id"] for g in rows if g["principal_type"] == "tenant"), 0)
+    rep.want(a.delete_grant(gid), (204,),
+             "the tenant's own admin may revoke the home default")
+    rep.want(dapi.ls(ha), (403,), "revoking the default hides the home from members")
+    # nothing was destroyed: super still sees the members' file inside
+    st, obj, _ = sup.ls(ha)
+    dn = [e["entry"]["name"] for e in (obj or {}).get("entries", [])] if st == 200 else []
+    rep.ck("revocation hides nothing from super, data intact (names=%r)" % dn,
+           st == 200 and "dave.txt" in dn)
+
+    # new tenant names must be able to back a directory
+    rep.want(sup.create_tenant("Bad Name"), (422,), "tenant names with spaces are refused")
+    rep.want(sup.create_tenant("UPPER"), (422,), "tenant names must be lowercase")
+    rep.want(sup.create_tenant("help"), (422,), "the documentation path is reserved")
+
+
 SUITES = {"cross": suite_cross, "acl": suite_acl, "paths": suite_paths,
-          "pair": suite_pair}
+          "pair": suite_pair, "homes": suite_homes}
 
 
 def main():
@@ -988,7 +1104,7 @@ def main():
     ap.add_argument("--admin-pass", default="admin")
     ap.add_argument("--insecure", action="store_true",
                     help="skip TLS verification (for self-signed certs)")
-    ap.add_argument("--only", default="cross,acl,paths,pair",
+    ap.add_argument("--only", default="cross,acl,paths,pair,homes",
                     help="comma-separated subset of: " + ",".join(SUITES))
     ap.add_argument("--keep", action="store_true",
                     help="leave all fixtures in place after the run")

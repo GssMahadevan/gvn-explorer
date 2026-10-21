@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 
@@ -67,6 +68,19 @@ func NewStore(conn *db.DB) *Store { return &Store{DB: conn} }
 const tsFmt = time.RFC3339Nano
 
 // ---- tenants ----
+
+// homeNameRe is the shape a tenant name must have to back a home
+// directory: a lowercase path-safe segment (letters, digits, dashes).
+var homeNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+
+// HomeSafe reports whether a tenant name may back a home directory. "help"
+// is reserved: it is the embedded documentation tree. New tenants are
+// validated against this at creation; the partition rule (acl.HomeOwner)
+// and the startup home backfill use the same predicate, so legacy rows
+// with other names are consistently never treated as homes.
+func HomeSafe(name string) bool {
+	return name != "help" && homeNameRe.MatchString(name)
+}
 
 func (s *Store) CreateTenant(ctx context.Context, name, description string) (Tenant, error) {
 	now := time.Now().UTC()
@@ -183,12 +197,14 @@ func (s *Store) tenantIDByName(ctx context.Context, name string) (int64, error) 
 }
 
 // DeleteTenant drops the tenant and, with it, its users/groups/memberships
-// (FK cascade) plus every ACL grant that targeted one of its principals.
+// (FK cascade) plus every ACL grant that targeted one of its principals —
+// including grants addressed to the tenant principal itself (its home row).
 func (s *Store) DeleteTenant(ctx context.Context, id int64) error {
 	_, err := s.DB.ExecContext(ctx, `
 		DELETE FROM perms WHERE
 			(principal_type='user'  AND principal_id IN (SELECT id FROM users  WHERE tenant_id=?)) OR
-			(principal_type='group' AND principal_id IN (SELECT id FROM groups WHERE tenant_id=?))`, id, id)
+			(principal_type='group' AND principal_id IN (SELECT id FROM groups WHERE tenant_id=?)) OR
+			(principal_type='tenant' AND principal_id=?)`, id, id, id)
 	if err != nil {
 		return err
 	}

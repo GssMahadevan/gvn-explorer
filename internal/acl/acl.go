@@ -18,7 +18,7 @@ import (
 type Grant struct {
 	ID              int64      `json:"id"`
 	Path            string     `json:"path"`
-	PrincipalType   string     `json:"principal_type"` // "user" | "group"
+	PrincipalType   string     `json:"principal_type"` // "user" | "group" | "tenant" | "all"
 	PrincipalID     int64      `json:"principal_id"`
 	PrincipalName   string     `json:"principal_name,omitempty"`
 	PrincipalTenant string     `json:"principal_tenant,omitempty"`
@@ -107,6 +107,33 @@ func (s *Store) Upsert(ctx context.Context, path, ptype string, pid int64, r, w,
 		Expired: expiresAt != nil && expiresAt.Before(time.Now())}, nil
 }
 
+// Ensure inserts the grant unless this exact (path, principal) row already
+// exists, never touching an existing one. Used to provision defaults once:
+// a default an admin later revokes stays revoked across restarts.
+func (s *Store) Ensure(ctx context.Context, path, ptype string, pid int64, r, w, d bool) error {
+	_, err := s.DB.ExecContext(ctx, `
+		INSERT INTO perms (path, principal_type, principal_id, can_read, can_write, can_delete, created_at)
+		VALUES (?,?,?,?,?,?,?)
+		ON CONFLICT (path, principal_type, principal_id) DO NOTHING`,
+		path, ptype, pid, b2i(r), b2i(w), b2i(d), time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+// HasGrant reports whether the exact (path, principal) row exists.
+func (s *Store) HasGrant(ctx context.Context, path, ptype string, pid int64) (bool, error) {
+	var id int64
+	err := s.DB.QueryRowContext(ctx,
+		"SELECT id FROM perms WHERE path=? AND principal_type=? AND principal_id=?",
+		path, ptype, pid).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *Store) Delete(ctx context.Context, id int64) error {
 	res, err := s.DB.ExecContext(ctx, "DELETE FROM perms WHERE id = ?", id)
 	if err != nil {
@@ -119,18 +146,30 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 }
 
 // grantFrom is shared by the grant listing and its COUNT companion.
+// Principal labels: a user/group row shows its name and tenant; a tenant
+// row shows the tenant it targets; a world row shows the reserved "*" so
+// the UI can label it as "all users".
 const grantFrom = `FROM perms p
-	      LEFT JOIN users u ON p.principal_type='user'  AND u.id = p.principal_id
-	      LEFT JOIN groups g ON p.principal_type='group' AND g.id = p.principal_id
+	      LEFT JOIN users u ON p.principal_type='user'    AND u.id = p.principal_id
+	      LEFT JOIN groups g ON p.principal_type='group'  AND g.id = p.principal_id
+	      LEFT JOIN tenants th ON p.principal_type='tenant' AND th.id = p.principal_id
 	      LEFT JOIN tenants tu ON tu.id = u.tenant_id
 	      LEFT JOIN tenants tg ON tg.id = g.tenant_id`
 
+const principalNameSQL = `COALESCE(u.username, g.name, th.name,
+	         CASE WHEN p.principal_type='all' THEN '*' END, '?')`
+const principalTenantSQL = `COALESCE(tu.name, tg.name, th.name,
+	         CASE WHEN p.principal_type='all' THEN '*' END, '?')`
+
 const grantSelect = `SELECT p.id, p.path, p.principal_type, p.principal_id,
 	         p.can_read, p.can_write, p.can_delete, p.expires_at,
-	         COALESCE(u.username, g.name, '?'),
-	         COALESCE(tu.name, tg.name, '?'),
-	         CASE WHEN p.principal_type='user' THEN COALESCE(u.active,0) ELSE COALESCE(g.active,0) END,
-	         COALESCE(u.tenant_id, g.tenant_id, 0)
+	         ` + principalNameSQL + `,
+	         ` + principalTenantSQL + `,
+	         CASE WHEN p.principal_type='user' THEN COALESCE(u.active,0)
+	              WHEN p.principal_type='group' THEN COALESCE(g.active,0)
+	              WHEN p.principal_type='tenant' THEN COALESCE(th.active,0)
+	              ELSE 1 END,
+	         COALESCE(u.tenant_id, g.tenant_id, th.id, 0)
 	      `
 
 func scanGrants(rows *sql.Rows) ([]Grant, error) {
@@ -169,13 +208,13 @@ func (s *Store) ListByPath(ctx context.Context, path string, o query.List) ([]Gr
 		like := o.Like()
 		switch o.Col {
 		case "principal":
-			conds = append(conds, `(COALESCE(u.username, g.name) LIKE ? ESCAPE '\')`)
+			conds = append(conds, `(`+principalNameSQL+` LIKE ? ESCAPE '\')`)
 			args = append(args, like)
 		case "tenant":
-			conds = append(conds, `(COALESCE(tu.name, tg.name) LIKE ? ESCAPE '\')`)
+			conds = append(conds, `(`+principalTenantSQL+` LIKE ? ESCAPE '\')`)
 			args = append(args, like)
 		default: // "" = every searchable column
-			conds = append(conds, `(COALESCE(u.username, g.name) LIKE ? ESCAPE '\' OR COALESCE(tu.name, tg.name) LIKE ? ESCAPE '\')`)
+			conds = append(conds, `(`+principalNameSQL+` LIKE ? ESCAPE '\' OR `+principalTenantSQL+` LIKE ? ESCAPE '\')`)
 			args = append(args, like, like)
 		}
 	}
@@ -184,7 +223,7 @@ func (s *Store) ListByPath(ctx context.Context, path string, o query.List) ([]Gr
 	if err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*) "+grantFrom+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	order := map[string]string{"principal": "COALESCE(u.username, g.name)", "type": "p.principal_type", "expires": "p.expires_at"}[o.Sort]
+	order := map[string]string{"principal": principalNameSQL, "type": "p.principal_type", "expires": "p.expires_at"}[o.Sort]
 	q := grantSelect + grantFrom + where + " ORDER BY " + order + o.Order() + ", p.id"
 	if o.Limit > 0 {
 		q += " LIMIT ? OFFSET ?"
@@ -224,16 +263,38 @@ func (s *Store) GrantByID(ctx context.Context, id int64) (Grant, error) {
 // Resolution order, walking ancestors deepest-first:
 //  1. explicit grants for the user at this level  (wins over groups here)
 //  2. union of the user's group grants at this level
-//  3. continue up; no grants anywhere = deny everything.
+//  3. grants to the caller's own tenant ("any member of tenant T")
+//  4. world grants ("any authenticated user")
+//  5. continue up; no grants anywhere = deny everything.
+//
+// Each layer shadows the less specific ones at the same level, which is
+// what makes zero-grant exclusion work: an explicit all-zero row for the
+// user at a path denies there even when a group/tenant/world row at the
+// same path would allow. That per-layer structure is also the seam a
+// future explicit deny (negative bits per user/group/tenant) plugs into:
+// the subtraction happens inside a layer, not between them.
+//
+// Before any grant is consulted, the tenant-home partition applies: a path
+// whose first segment names a HomeSafe tenant belongs to that tenant
+// exclusively — see HomeOwner.
 //
 // Grants whose expires_at has passed are treated as if absent entirely
 // (they neither grant bits nor stop inheritance).
 //
-// Only platform super admins bypass. Tenant admins do NOT: the file tree is
-// shared across tenants, so their file access follows grants like anyone else.
+// Only platform super admins bypass. Tenant admins do NOT: the shared tree
+// outside homes is cross-tenant by design, so their file access follows
+// grants like anyone else's.
 func (s *Store) Effective(ctx context.Context, a *auth.Store, path string, u auth.User) (Bits, error) {
 	if u.IsSuper {
 		return Bits{Read: true, Write: true, Delete: true}, nil
+	}
+	if owner, _, err := s.HomeOwner(ctx, path); err != nil {
+		return Bits{}, err
+	} else if owner != "" && owner != u.Tenant {
+		// Hard partition: inside someone else's home a non-member has no
+		// bits at all, whatever rows exist. Callers see 403s; the list
+		// entry filter hides the home directory itself entirely.
+		return Bits{}, nil
 	}
 	groupIDs, err := a.GroupIDsFor(ctx, u.ID)
 	if err != nil {
@@ -260,8 +321,57 @@ func (s *Store) Effective(ctx context.Context, a *auth.Store, path string, u aut
 				return bits, nil
 			}
 		}
+		// 3. the caller's own-tenant rows: "any user in tenant T".
+		bits, found, err = s.collect(ctx, p, "tenant", []int64{u.TenantID})
+		if err != nil {
+			return Bits{}, err
+		}
+		if found {
+			bits.Source = p
+			return bits, nil
+		}
+		// 4. world rows: "any authenticated user". Stored under the
+		// reserved principal_id 0 — no user, group or tenant has id 0.
+		bits, found, err = s.collect(ctx, p, "all", []int64{0})
+		if err != nil {
+			return Bits{}, err
+		}
+		if found {
+			bits.Source = p
+			return bits, nil
+		}
 	}
 	return Bits{}, nil
+}
+
+// HomeOwner: if the first segment of path is (or lies under) a tenant home,
+// returns that tenant's name and id. Name-based on purpose: the boundary
+// exists the moment the tenant row does — before/without any directory —
+// and names that fail auth.HomeSafe (legacy rows, reserved "help") are
+// never homes, consistently with creation-time validation and the startup
+// backfill. Returns ("", 0, nil) for unpartitioned paths.
+func (s *Store) HomeOwner(ctx context.Context, path string) (string, int64, error) {
+	if path == "/" {
+		return "", 0, nil
+	}
+	seg := path[1:]
+	if i := strings.IndexByte(seg, '/'); i >= 0 {
+		seg = seg[:i]
+	}
+	if !auth.HomeSafe(seg) {
+		return "", 0, nil
+	}
+	var name string
+	var id int64
+	err := s.DB.QueryRowContext(ctx, "SELECT name, id FROM tenants WHERE name = ?", seg).
+		Scan(&name, &id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", 0, nil
+	}
+	if err != nil {
+		return "", 0, err
+	}
+	return name, id, nil
 }
 
 func (s *Store) collect(ctx context.Context, path, ptype string, ids []int64) (Bits, bool, error) {

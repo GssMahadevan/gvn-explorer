@@ -126,7 +126,7 @@ Permissions, users, groups, tenants, factors — details and examples in
 
 | area | endpoints |
 |------|-----------|
-| grants | `GET /perms?path=` (grants + your `effective` bits) · `PUT /perms` (upsert; `read/write/delete`, `expires_days`/`expires_at`) · `DELETE /perms/{id}` |
+| grants | `GET /perms?path=` (grants + your `effective` bits) · `PUT /perms` (upsert; `principal_type` `user`/`group`/`tenant`/`all`, `read/write/delete`, `expires_days`/`expires_at`) · `DELETE /perms/{id}` |
 | tenants | `GET/POST /tenants`, `PUT /tenants/{id}` (description), `POST /tenants/{id}/active`, `DELETE /tenants/{id}` — **super admin only** |
 | users | `GET/POST /users`, `PUT /users/{id}` (description), `POST /users/{id}/password`, `POST /users/{id}/active {"active"}`, `DELETE /users/{id}` |
 | groups | `GET/POST /groups`, `PUT /groups/{id}`, `POST /groups/{id}/active`, `DELETE /groups/{id}`, `POST /groups/{id}/members {"username"}`, `DELETE /groups/{id}/members/{userId}` |
