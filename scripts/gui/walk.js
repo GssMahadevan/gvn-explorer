@@ -29,7 +29,14 @@ fs.mkdirSync(OUT, { recursive: true });
     console.log(`  ${cond ? 'PASS' : 'FAIL'} ${name}`);
   };
 
-  const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new' });
+  // --ignore-certificate-errors lets the same walk run against a TLS
+  // instance that serves a self-signed cert (the Android phone box, the
+  // demo server); it is a no-op for http:// targets.
+  const browser = await puppeteer.launch({
+    executablePath: CHROME,
+    headless: 'new',
+    args: ['--ignore-certificate-errors'],
+  });
   const page = await browser.newPage();
   page.on('console', (m) => m.type() === 'error' && !/Failed to load resource/.test(m.text()) && errors.push(m.text()));
   page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
