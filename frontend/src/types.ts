@@ -52,6 +52,40 @@ export interface PermsList {
   grants: Grant[];
 }
 
+// Clipboard feed (GET/POST /api/v1/clipboards): a tenant-wide named
+// link feed; link_path is its place in the home's virtual clipboards
+// tree. items is the live-item count the server reports.
+export interface Clip {
+  id: number;
+  tenant: string;
+  name: string;
+  mime: string;
+  created_by: string;
+  created_at: number;
+  items: number;
+  link_path?: string;
+}
+
+// One link in a feed (GET /api/v1/clipboards/{id}/items, and the
+// target behind a /tenants/{T}/clipboards/... tree entry). dead links
+// stay listed, flagged; readable is the caller's current read bit on
+// the target — unreadable live links are never listed at all.
+export interface ClipItem {
+  id: number;
+  path: string;
+  content_type: string;
+  posted_by: string;
+  posted_at: number;
+  expires_at: number;
+  posted_at_ms?: number;
+  expires_at_ms?: number;
+  link_path: string;
+  dead: boolean;
+  readable: boolean;
+  size: number;
+  mod_time_ms: number;
+}
+
 // Entity/ACL documents (GET /api/v1/export, POST /api/v1/import). The
 // shape is deliberately loose: the server validates every document, the
 // GUI only renders and relays it. Grant lines are the PUT /perms input

@@ -652,6 +652,61 @@ t "$AJ" "help draft discard refused" 403 DELETE "/api/v1/fs/draft?path=/help/REA
 t "$AJ" "helpshadow mkdir ok" 201 POST /api/v1/fs/mkdir "{\"path\":\"/helpshadow-$SFX\"}"
 t "$AJ" "helpshadow delete ok" 204 DELETE "/api/v1/fs?path=/helpshadow-$SFX"
 
+echo "== clipboards: tenant link feeds + virtual tree =="
+t "$AJ" "create clipboard" 201 POST /api/v1/clipboards "{\"name\":\"clip-$SFX\",\"mime\":\"text/plain\"}"
+CID=$(jq -r '.id' /tmp/resp.json)
+t "$AJ" "duplicate clipboard name" 409 POST /api/v1/clipboards "{\"name\":\"clip-$SFX\"}"
+t "$AJ" "clipboard bad mime" 422 POST /api/v1/clipboards "{\"name\":\"cx-$SFX\",\"mime\":\"application/zip\"}"
+t "$AJ" "clipboard bad name" 422 POST /api/v1/clipboards "{\"name\":\"Bad $SFX\"}"
+t "$AJ" "clipboard list" 200 GET /api/v1/clipboards
+check "clipboard list contains the feed" "$(jq -e --arg n "clip-$SFX" 'any(.[]; .name==$n)' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "clipboard target file" 200 POST /api/v1/fs/write "{\"path\":\"/clip-tgt-$SFX.txt\",\"content\":\"clip body\"}"
+t "$AJ" "post item" 201 PUT "/api/v1/clipboards/$CID/items" "{\"path\":\"/clip-tgt-$SFX.txt\"}"
+LINK=$(jq -r '.link_path' /tmp/resp.json)
+LBASE=${LINK##*/}
+case "$LINK" in "/tenants/system/clipboards/clip-$SFX/"*) _lp=0;; *) _lp=1;; esac
+check "post returns a link path" "$_lp" "got: $LINK"
+t "$AJ" "post directory as target refused" 400 PUT "/api/v1/clipboards/$CID/items" '{"path":"/"}'
+t "$AJ" "post missing target refused" 404 PUT "/api/v1/clipboards/$CID/items" "{\"path\":\"/nope-$SFX\"}"
+t "$AJ" "post virtual path as target refused" 400 PUT "/api/v1/clipboards/$CID/items" "{\"path\":\"$LINK\"}"
+t "$AJ" "item list" 200 GET "/api/v1/clipboards/$CID/items"
+check "item records content_type" "$(jq -e '.[0].content_type | startswith("text/plain")' /tmp/resp.json >/dev/null; echo $?)"
+# the virtual tree: home injects the feed folder; every level lists from the DB;
+# reading through a link serves the target through the normal fs pipeline.
+t "$AJ" "home shows clipboards folder" 200 GET "/api/v1/fs?path=/tenants/system"
+check "clipboards folder in home listing" "$(jq -e 'any(.entries[]; .entry.name=="clipboards" and .entry.is_dir==true)' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "feed index listing" 200 GET "/api/v1/fs?path=/tenants/system/clipboards"
+check "feed listed as directory" "$(jq -e --arg n "clip-$SFX" 'any(.entries[]; .entry.name==$n and .entry.is_dir==true)' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "feed item listing" 200 GET "/api/v1/fs?path=/tenants/system/clipboards/clip-$SFX"
+check "link listed with target basename" "$(jq -e --arg n "$LBASE" 'any(.entries[]; (.entry.name|endswith($n)))' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "read through the link" 200 GET "/api/v1/fs/content?path=$LINK"
+check "link content is the target body" "$(jq -e '.content=="clip body"' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "raw through the link" 200 GET "/api/v1/fs/raw?path=$LINK"
+t "$AJ" "default tenant grant on feed path" 200 GET "/api/v1/perms?path=/tenants/system/clipboards/clip-$SFX"
+check "feed carries exactly the default tenant read grant" "$(jq -e '(.grants|length)==1 and .grants[0].principal_type=="tenant" and .effective.read==true' /tmp/resp.json >/dev/null; echo $?)"
+# fs writes must never touch the virtual tree
+t "$AJ" "write into virtual tree refused" 403 POST /api/v1/fs/write "{\"path\":\"/tenants/system/clipboards/x\",\"content\":\"x\"}"
+t "$AJ" "mkdir in virtual tree refused" 403 POST /api/v1/fs/mkdir '{"path":"/tenants/system/clipboards/sub"}'
+t "$AJ" "delete in virtual tree refused" 403 DELETE "/api/v1/fs?path=/tenants/system/clipboards/clip-$SFX"
+# foreign tenant: the feed is not even nameable, and the tree is sealed
+t "$UJ" "user creates own feed" 201 POST /api/v1/clipboards "{\"name\":\"myclip-$SFX\"}"
+UCID=$(jq -r '.id' /tmp/resp.json)
+t "$UJ" "foreign feed not nameable" 404 GET "/api/v1/clipboards/$CID/items"
+t "$UJ" "foreign tree sealed" 403 GET "/api/v1/fs?path=/tenants/system/clipboards"
+# the user inherits r on / from the group (line "grant r on / to group"),
+# so exclusion is done the real way: a zero-grant row on that same layer.
+t "$AJ" "zero-grant on the target excludes the user" 200 PUT /api/v1/perms "{\"path\":\"/clip-tgt-$SFX.txt\",\"principal_type\":\"group\",\"principal\":\"$GROUP\",\"tenant\":\"$T\",\"read\":false}"
+t "$UJ" "post without read on target refused" 403 PUT "/api/v1/clipboards/$UCID/items" "{\"path\":\"/clip-tgt-$SFX.txt\"}"# dead links stay, honestly flagged
+t "$AJ" "remove the target" 204 DELETE "/api/v1/fs?path=/clip-tgt-$SFX.txt"
+t "$AJ" "item list after target removal" 200 GET "/api/v1/clipboards/$CID/items"
+check "dead link still listed with dead=true" "$(jq -e '.[0].dead==true' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "reading a dead link" 404 GET "/api/v1/fs/content?path=$LINK"
+# delete: grants go with the feed
+t "$AJ" "delete clipboard" 204 DELETE "/api/v1/clipboards/$CID"
+t "$AJ" "grants removed with the feed" 200 GET "/api/v1/perms?path=/tenants/system/clipboards/clip-$SFX"
+check "no grants left" "$(jq -e '.grants|length==0' /tmp/resp.json >/dev/null; echo $?)"
+t "$UJ" "user deletes own feed" 204 DELETE "/api/v1/clipboards/$UCID"
+
 echo "== session lifecycle =="
 t "$UJ" "logout" 204 POST /api/v1/auth/logout
 t "$UJ" "fs after logout" 401 GET /api/v1/fs?path=/

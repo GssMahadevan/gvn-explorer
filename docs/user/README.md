@@ -21,6 +21,7 @@ Start here, by what you want to do:
 | give someone access to a folder, or cut it off later | [Permissions](permissions.md) |
 | hand out time-limited access to a customer | [Permissions → expiring shares](permissions.md#expiring-shares-the-customer-flow) |
 | pair a TV, console or walk-up device by QR code | [Pairing a device](pairing.md) |
+| get a file (or a note) over to my other device | [Cross-device clipboards](clipboards.md) |
 | let a device / CI job talk to the server | [API keys and devices](api-keys.md) |
 | script the whole thing with curl | [REST API for non-browser clients](api.md) |
 | save the setup as text, or copy it to another instance | [API → documents (export / import)](api.md#documents-export--import) |

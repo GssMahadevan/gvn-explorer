@@ -16,6 +16,7 @@ import (
 	"github.com/GssMahadevan/gvn-explorer/internal/acl"
 	"github.com/GssMahadevan/gvn-explorer/internal/audit"
 	"github.com/GssMahadevan/gvn-explorer/internal/auth"
+	"github.com/GssMahadevan/gvn-explorer/internal/clip"
 	"github.com/GssMahadevan/gvn-explorer/internal/db"
 	"github.com/GssMahadevan/gvn-explorer/internal/drafts"
 	"github.com/GssMahadevan/gvn-explorer/internal/fsx"
@@ -30,8 +31,13 @@ type API struct {
 	FS         *fsx.Tree
 	Events     *audit.Store  // forensic trail for authz/authn DML
 	Drafts     *drafts.Store // working copies for the draft/publish edit model
+	Clips      *clip.Store   // cross-device link feeds (see internal/clip)
 	SessionTTL time.Duration
 	MaxFileMB  int // read/write size limit
+
+	// ClipTTL is the lifetime given to posted links (-clip-ttl); the
+	// per-feed item cap lives on clip.Store.MaxItems.
+	ClipTTL time.Duration
 
 	// Rate limits, token buckets per principal and per source IP;
 	// a non-positive rps/burst disables the respective bucket.

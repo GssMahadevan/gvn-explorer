@@ -123,6 +123,25 @@ for `.yaml`/`.yml` the commit re-validates server-side and refuses
 invalid YAML with `422` (draft stays, file untouched). Each commit
 records an `fs_commit` audit event.
 
+## Clipboards (link feeds)
+
+A device hand-off holds links, not copies (user guide:
+[clipboards.md](clipboards.md)). The feeds of **your** tenant only:
+
+| method | path | body / notes |
+|--------|------|--------------|
+| GET | `/clipboards` | your tenant's feeds (entity-list contract) |
+| POST | `/clipboards` | `{"name","mime?"}` — name `[a-z0-9][a-z0-9-]{0,31}`, `mime` from `*/*` `text/plain` `image/*` `video/*` `audio/*` `application/pdf` (default `*/*`) |
+| DELETE | `/clipboards/{id}` | creator or tenant admin; the feed's grant rows go with it |
+| PUT | `/clipboards/{id}/items` | `{"path"}` — post a link; needs your current `r` on the target; reply carries its `link_path` |
+| GET | `/clipboards/{id}/items` | live items newest-first; unreadable targets hidden, dead ones flagged `"dead":true` |
+
+Each feed also lives in the filesystem as a read-only tree,
+`/tenants/{T}/clipboards/{feed}/{id}-{basename}` — the whole file API
+(list, `/content`, `/raw`) works there and resolves to the target with
+its own ACL re-checked per read; the tree's write verbs answer
+`read_only`. Foreign feed ids are `404`; foreign homes `403`.
+
 ## Admin API
 
 Permissions, users, groups, tenants, factors — details and examples in
@@ -178,8 +197,8 @@ folder is a convention, not a special feature.
 ## The contract is tested, not folklore
 
 The server's regression suite (in the source repo:
-`scripts/test_files.sh`) runs ~420 curl assertions against a live
+`scripts/test_files.sh`) runs ~470 curl assertions against a live
 server — auth, expiry, suspension, CSRF, ACL inheritance, pagination,
-rate limits, and the export/import round trip. If you have the
-checkout, grepping that file is the fastest way to see any call's
+rate limits, clipboards, and the export/import round trip. If you have
+the checkout, grepping that file is the fastest way to see any call's
 exact request/response.

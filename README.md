@@ -57,6 +57,8 @@ Flags (env fallbacks in caps; flags win):
 | -auth-rps | —       | login requests/sec per source IP, 0 disables (default 3) |
 | -auth-burst | —     | burst allowance for -auth-rps (default 10)           |
 | -auth-concurrency | — | max simultaneous password hashes (login + join); extras get an instant `503` + `Retry-After` (default 4) |
+| -clip-ttl | CLIP_TTL | lifetime of a posted clipboard link before lazy purge (default 24h) |
+| -clip-max-items | CLIP_MAX_ITEMS | live links allowed per clipboard, 0 disables the cap (default 50) |
 | -log-level | LOG_LEVEL | debug|info|warn|error (default info)               |
 | -log-json  | LOG_JSON  | JSON log lines, one object per line (default true; false = human text) |
 | -tls-cert / -tls-key | TLS_CERT / TLS_KEY | serve HTTPS from this cert/key pair instead of the default self-signed cert (must be set together) |
@@ -360,6 +362,36 @@ double-redeem. Claim errors answer distinctly: unknown `404`, expired
 defaults to 10 minutes (30 s … 24 h), the generated password and the
 optional API key are shown once on the join screen, and the new account
 deliberately carries **zero grants** until someone grants it paths.
+
+## Cross-device clipboards
+
+The phone-to-laptop hand-off. A clipboard is a **named link feed per
+tenant** — links to files, never copies of them — and it appears as a
+read-only folder inside the tenant home: `/tenants/{T}/clipboards/`.
+The GUI shares any file into a feed from its ⋮ menu (**share to
+clipboard**), saves typed/pasted text as a real file and shares it
+(**Clip text**), and the open-file page has a **Copy** button for the
+device's system clipboard (text and images; link-copy fallback
+elsewhere). Browsing needs no special client: `GET /fs`, `/content` and
+`/raw` answer inside the tree with the normal machinery — a link entry
+resolves to the target and streams through the same ACL check, range
+support and ETags.
+
+| endpoint | meaning |
+|----------|---------|
+| `GET /api/v1/clipboards` | the caller tenant's feeds (entity-list contract) |
+| `POST /api/v1/clipboards` `{"name","mime?"}` | create a feed (any member; `mime` from an explicit allowlist, default `*/*`); the feed arrives with a visible tenant-wide `r` grant on its path |
+| `DELETE /api/v1/clipboards/{id}` | delete a feed (creator or tenant admin); its grant rows go with it |
+| `PUT /api/v1/clipboards/{id}/items` `{"path"}` | post a link — requires the poster's current **read** on the target |
+| `GET /api/v1/clipboards/{id}/items` | live items, newest first — targets the caller cannot read are hidden, dead ones listed with `"dead":true` |
+
+Every read of a link **re-checks the target's ACL** — a share can never
+outrank the file's own grants — and a removed target stays listed but
+reads as a clean 404. The tree rejects every fs write verb
+(`read_only`), foreign tenants get 404 on feed ids and 403 inside the
+home. Feeds are bounded: `-clip-max-items` live links per feed
+(default 50) and `-clip-ttl` link lifetime (default `24h`), purged
+lazily on read — no background job. (User guide: `/help/clipboards.md`.)
 
 ## Suspension (`active` flag)
 
@@ -907,10 +939,13 @@ download links for non-media files,
 the active-filter wire format,
 flash center, per-file grant flow, the JSON document pair (export modal
 from the row menu and the Permissions panel, Apply JSON with the live
-diff preview writing a real grant), the Events tab (all audit columns,
+diff preview writing a real grant), the cross-device clipboard round
+trip (row-menu share dialog → the home's virtual clipboards tree →
+opening a link shows the real file → system-clipboard copy →
+text-paste clipboard), the Events tab (all audit columns,
 the `action=` filter wire format, search scoping, details expansion),
 header menus, dark mode, sign-out)
-with 117 assertions plus a zero-console-error guard (which also proves the
+with 131 assertions plus a zero-console-error guard (which also proves the
 server's content-security-policy is compatible with the bundle). `SHOTS=1` additionally
 writes light/dark screenshots to `$OUT_DIR` (default `/tmp/fx-gui`).
 Needs a local Chrome; `CHROME_PATH` overrides the macOS default.

@@ -164,6 +164,25 @@ class Api:
     def draft_commit(self, path):
         return self.c.call("POST", "/api/v1/fs/draft/commit", {"path": path})
 
+    # --- clipboards (tenant link feeds)
+    def clip_list(self):
+        return self.c.call("GET", "/api/v1/clipboards")
+
+    def clip_create(self, name, mime=None):
+        b = {"name": name}
+        if mime:
+            b["mime"] = mime
+        return self.c.call("POST", "/api/v1/clipboards", b)
+
+    def clip_delete(self, cid):
+        return self.c.call("DELETE", "/api/v1/clipboards/%d" % cid)
+
+    def clip_post(self, cid, path):
+        return self.c.call("PUT", "/api/v1/clipboards/%d/items" % cid, {"path": path})
+
+    def clip_items(self, cid):
+        return self.c.call("GET", "/api/v1/clipboards/%d/items" % cid)
+
     # --- tenants (super admin)
     def list_tenants(self):
         return self.c.call("GET", "/api/v1/tenants?limit=500")
@@ -331,7 +350,7 @@ class Fix:
         self.crew, self.shared = "crew" + rid, "shared" + rid
         self.pw = "Matrix-" + rid + "!x1"
         self.mx, self.fx, self.ct = "/mx" + rid, "/fx" + rid, "/ct"
-        self.hz = "/hz" + rid
+        self.hz, self.cz = "/hz" + rid, "/cz" + rid
         self.uid, self.gid, self.tid, self.sess = {}, {}, {}, {}
         self.super = None
         # pairing fixtures (ids of opened invites, uids of accounts they
@@ -431,7 +450,7 @@ def teardown(x, keep):
         sup.delete_user(uid)
     for tid in x.tid.values():
         sup.delete_tenant(tid)
-    for p in (x.mx, x.fx, x.ct, x.hz, "/up-" + x.rid, "/out-" + x.rid,
+    for p in (x.mx, x.fx, x.ct, x.hz, x.cz, "/up-" + x.rid, "/out-" + x.rid,
               "/tenants/" + x.ta, "/tenants/" + x.tb):  # the homes are plain dirs once the tenants are gone
         rm_tree(sup, p)
 
@@ -1190,8 +1209,116 @@ def suite_homes(x, rep):
     rep.want(sup.create_tenant("tenants"), (422,), "the home namespace name is reserved")
 
 
+def suite_clips(x, rep):
+    """Clipboards: cross-device link feeds. Two faces of one truth — the
+    REST endpoints and the virtual read-only tree inside the home. A link
+    is only ever as strong as the target file's ACL: posting requires
+    read, opening re-checks read, a removed target reads as dead, and
+    only the creator, a tenant admin or super may delete a feed."""
+    print("== clips: cross-device clipboard feeds", flush=True)
+    sup, a = x.super, x.sess["alice"]  # alice: tenant admin of ta
+    m = fresh(x)
+    st, _, _ = m.login(x.ta, x.mallory, x.pw)
+    if st != 200:
+        rep.ck("re-login mallory for the clips suite (got %d)" % st, False)
+        return
+    c = x.sess["carol"]  # plain member of the foreign tenant tb
+    ha, cz = "/tenants/" + x.ta, x.cz
+    feed = "feed-" + x.rid
+    fpath = ha + "/clipboards/" + feed
+
+    # fixture: home default (the homes suite may have revoked it) and one
+    # shared-zone file that only mallory can read
+    rep.want(a.grant(ha, "tenant", x.ta, read=True), (200,),
+             "restore the tenant home default for this suite")
+    rep.want(sup.mkdir(cz), (200, 201), "shared-zone directory for the clip target")
+    rep.want(sup.write(cz + "/t.txt", "CLIP-BODY"), (200,), "clip target written")
+
+    # any member may create a feed; validation is strict, names unique
+    st, obj, _ = m.clip_create(feed, "text/plain")
+    rep.ck("a plain member created a feed (st=%d)" % st, st == 201 and isinstance(obj, dict))
+    fid = (obj or {}).get("id", 0)
+    rep.want(m.clip_create(feed), (409,), "feed names are unique per tenant")
+    rep.want(m.clip_create("Bad Name"), (422,), "feed names must be safe directory names")
+    rep.want(m.clip_create("cx" + x.rid, "application/zip"), (422,),
+             "only the explicitly allowed media kinds are accepted")
+
+    # posting requires read on the target right now: ed (no grants) is
+    # refused, mallory (granted by her own tenant admin) may post.
+    ed = "ed" + x.rid
+    st, obj, _ = sup.create_user(ed, x.pw, tenant=x.ta)
+    if st != 201:
+        rep.ck("created ed (ungranted ta member) — got %d" % st, False)
+        return
+    x.uid[(x.ta, ed)] = obj["id"]
+    e = fresh(x)
+    e.login(x.ta, ed, x.pw)
+    rep.want(e.clip_post(fid, cz + "/t.txt"), (403,),
+             "a member who cannot read the target cannot post it")
+    rep.want(a.grant(cz, "user", x.mallory, read=True, tenant=x.ta), (200,),
+             "the tenant admin grants mallory read on the target")
+    st, obj, _ = m.clip_post(fid, cz + "/t.txt")
+    link = (obj or {}).get("link_path", "") if isinstance(obj, dict) else ""
+    rep.ck("the post answers with its tree link path (st=%d link=%r)" % (st, link),
+           st == 201 and link.startswith(fpath + "/") and link.endswith("-t.txt"))
+
+    # the virtual tree mirrors the feed: home shows the folder, the
+    # index shows the feed, opening a link serves the target bytes
+    hn = names(m, ha)
+    rep.ck("the home listing shows the clipboards folder (names=%r)" % hn,
+           hn is not None and "clipboards" in hn)
+    fn = names(m, ha + "/clipboards")
+    rep.ck("the feed index lists the feed (names=%r)" % fn, fn is not None and feed in fn)
+    ln = names(m, fpath)
+    rep.ck("the feed lists the link under the target's name (names=%r)" % ln,
+           ln is not None and any(n.endswith("-t.txt") for n in ln))
+    st, _, body = m.raw(link)
+    rep.ck("opening the link reads the target through the normal raw pipeline "
+           "(st=%d body=%r)" % (st, body[:16]), st == 200 and body == b"CLIP-BODY")
+
+    # the feed arrived with exactly the default tenant read row — the
+    # Perms panel starts from the truth
+    st, body, _ = a.list_grants(fpath)
+    rows = (body or {}).get("grants", []) if st == 200 else []
+    rep.ck("a new feed carries exactly one tenant read row (rows=%r)" % rows,
+           len(rows) == 1 and rows[0]["principal_type"] == "tenant" and rows[0]["read"])
+
+    # an unreadable target hides the link from that member entirely, and
+    # opening it stays refused (target ACL gates every read)
+    ln2 = names(e, fpath)
+    rep.ck("the member without read never sees the link (names=%r)" % ln2,
+           ln2 is not None and not any(n.endswith("-t.txt") for n in ln2))
+    rep.want(e.raw(link), (403,), "opening a link without read on the target is refused")
+
+    # foreign tenants: the feed is not even nameable, the tree is sealed
+    rep.want(c.clip_items(fid), (404,), "a foreign member cannot name the feed")
+    rep.want(c.ls(fpath), (403,), "the feed tree is sealed to its tenant")
+    st, lst, _ = c.clip_list()
+    rep.ck("a foreign tenant's own list shows none of ta's feeds (st=%d)" % st,
+           st == 200 and all(cc.get("tenant") != x.ta for cc in lst or []))
+
+    # dead links stay listed, honestly flagged; opening one is a clean 404
+    rep.want(sup.rm(cz + "/t.txt"), (204,), "target deleted")
+    st, lst, _ = m.clip_items(fid)
+    rep.ck("the link stays listed with dead=true (st=%d lst=%r)" % (st, lst),
+           st == 200 and len(lst or []) == 1 and lst[0]["dead"] is True)
+    rep.want(m.raw(link), (404,), "opening a dead link answers 404")
+
+    # the virtual tree refuses every fs write verb, even from super
+    rep.want(m.write(fpath, "x"), (403,), "writing to a feed path is refused")
+    rep.want(sup.mkdir(fpath + "/x"), (403,), "mkdir inside the tree is refused even for super")
+
+    # delete rights: the creator and tenant admin yes, a plain member no;
+    # the feed's grant rows vanish with it
+    rep.want(e.clip_delete(fid), (403,), "a non-creating plain member cannot delete a feed")
+    rep.want(a.clip_delete(fid), (204,), "the tenant admin may delete it")
+    st, body, _ = a.list_grants(fpath)
+    rows = (body or {}).get("grants", []) if st == 200 else []
+    rep.ck("the feed's grant rows go with it (rows=%r)" % rows, st == 200 and not rows)
+
+
 SUITES = {"cross": suite_cross, "acl": suite_acl, "paths": suite_paths,
-          "pair": suite_pair, "homes": suite_homes}
+          "pair": suite_pair, "homes": suite_homes, "clips": suite_clips}
 
 
 def main():
@@ -1205,7 +1332,7 @@ def main():
     ap.add_argument("--admin-pass", default="admin")
     ap.add_argument("--insecure", action="store_true",
                     help="skip TLS verification (for self-signed certs)")
-    ap.add_argument("--only", default="cross,acl,paths,pair,homes",
+    ap.add_argument("--only", default="cross,acl,paths,pair,homes,clips",
                     help="comma-separated subset of: " + ",".join(SUITES))
     ap.add_argument("--keep", action="store_true",
                     help="leave all fixtures in place after the run")

@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Segmented, Space, Tag, Typography } from 'antd';
-import { ArrowLeftOutlined, DownloadOutlined, EditOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, CopyOutlined, DownloadOutlined, EditOutlined } from '@ant-design/icons';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ApiError, api } from '../api';
 import { useFlash } from '../flash';
+import { copyImageFrom, copyText } from '../cliputil';
 import { fileKind, rawInlineUrl, rawUrl } from '../filekind';
 import type { PermsList } from '../types';
 import DocEditor from './DocEditor';
@@ -245,6 +246,30 @@ export default function FilePane({
     }
   };
 
+  // the system-clipboard button: text files copy their bytes, images
+  // copy through the Clipboard API (png works everywhere that supports
+  // it at all), everything else — and every browser that refuses the
+  // clipboard — gets the honest fallback: the file's link, which any
+  // other device can open. This is the hand-off half of the
+  // cross-device clipboards feature; sharing half is the row menu.
+  const copyOut = async () => {
+    if (kind === 'image') {
+      if (await copyImageFrom(rawUrl(path))) {
+        flash.ok('copied the image to the system clipboard');
+        return;
+      }
+    }
+    if (!media && !binary) {
+      if (await copyText(fileText)) {
+        flash.ok('copied the file text to the system clipboard');
+        return;
+      }
+    }
+    const link = window.location.origin + rawUrl(path);
+    if (await copyText(link)) flash.info('this browser cannot copy that file — copied its link instead: ' + link);
+    else flash.err('no clipboard access in this browser — the file link is: ' + link);
+  };
+
   const statusTag = () => {
     if (binary || media) return null;
     if (mode === 'view') return canW ? null : <Tag>view-only</Tag>;
@@ -323,6 +348,9 @@ export default function FilePane({
             Edit
           </Button>
         )}
+        <Button size="small" icon={<CopyOutlined />} onClick={copyOut} data-testid="pane-copy">
+          Copy
+        </Button>
         <Button size="small" icon={<DownloadOutlined />} href={rawUrl(path)} data-testid="pane-dl" />
         {mode === 'edit' &&
           (yaml ? (

@@ -18,6 +18,7 @@ import (
 	"github.com/GssMahadevan/gvn-explorer/internal/acl"
 	"github.com/GssMahadevan/gvn-explorer/internal/audit"
 	"github.com/GssMahadevan/gvn-explorer/internal/auth"
+	"github.com/GssMahadevan/gvn-explorer/internal/clip"
 	"github.com/GssMahadevan/gvn-explorer/internal/db"
 	"github.com/GssMahadevan/gvn-explorer/internal/drafts"
 	"github.com/GssMahadevan/gvn-explorer/internal/fsx"
@@ -53,8 +54,8 @@ func newEnvLimits(t *testing.T, rps float64, rburst int, authRPS float64, authBu
 		t.Fatalf("bootstrap admin: %v", err)
 	}
 	api := API{DB: conn, Auth: as, ACL: acl.NewStore(conn), Events: audit.NewStore(conn),
-		Drafts: drafts.NewStore(conn),
-		FS:     tree, SessionTTL: time.Hour, MaxFileMB: 1,
+		Drafts: drafts.NewStore(conn), Clips: clip.NewStore(conn),
+		FS: tree, SessionTTL: time.Hour, MaxFileMB: 1, ClipTTL: 24 * time.Hour,
 		RPS: rps, RBurst: rburst, AuthRPS: authRPS, AuthBurst: authBurst}
 	mux := http.NewServeMux()
 	api.Register(mux)

@@ -42,6 +42,10 @@ func draftPath(w http.ResponseWriter, r *http.Request, raw string) (string, bool
 		helpReadOnly(w)
 		return "", false
 	}
+	if _, _, ok := clipboardsSub(p); ok {
+		clipReadOnly(w)
+		return "", false
+	}
 	return p, true
 }
 

@@ -21,6 +21,7 @@ import (
 	"github.com/GssMahadevan/gvn-explorer/internal/acl"
 	"github.com/GssMahadevan/gvn-explorer/internal/audit"
 	"github.com/GssMahadevan/gvn-explorer/internal/auth"
+	"github.com/GssMahadevan/gvn-explorer/internal/clip"
 	"github.com/GssMahadevan/gvn-explorer/internal/db"
 	"github.com/GssMahadevan/gvn-explorer/internal/drafts"
 	"github.com/GssMahadevan/gvn-explorer/internal/fsx"
@@ -64,6 +65,19 @@ func envFloatOr(key string, def float64) float64 {
 	return def
 }
 
+// envDurOr is the duration variant (Go duration syntax: "90s", "24h").
+func envDurOr(key string, def time.Duration) time.Duration {
+	if v, ok := os.LookupEnv(key); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s: invalid duration %q\n", key, v)
+			os.Exit(2)
+		}
+		return d
+	}
+	return def
+}
+
 func main() {
 	// Flags win over env vars; every knob is env-settable so the Docker
 	// image needs nothing but -e (see deployments/docker/README.md).
@@ -73,6 +87,8 @@ func main() {
 	adminFlag := flag.String("admin", envOr("ADMIN", "system:admin:admin"), "bootstrap super admin as tenant:user:pass (used only when no users exist)")
 	webDir := flag.String("web", envOr("WEB_DIR", "web"), "static GUI directory (empty to disable)")
 	maxMB := flag.Int("max-mb", envIntOr("MAX_MB", 10), "max file size for read/write/edit in MB")
+	clipTTL := flag.Duration("clip-ttl", envDurOr("CLIP_TTL", 24*time.Hour), "lifetime of a posted clipboard link before lazy purge")
+	clipMaxItems := flag.Int("clip-max-items", envIntOr("CLIP_MAX_ITEMS", 50), "live links allowed per clipboard (0 disables the cap)")
 	rps := flag.Float64("rps", envFloatOr("RPS", 20), "requests/sec per principal on API endpoints (0 disables rate limiting)")
 	rburst := flag.Int("rburst", envIntOr("R_BURST", 60), "burst allowance for -rps")
 	authRPS := flag.Float64("auth-rps", envFloatOr("AUTH_RPS", 3), "login requests/sec per source IP (0 disables)")
@@ -162,16 +178,20 @@ func main() {
 		log.Error("bootstrap admin", "err", err)
 		os.Exit(1)
 	}
+	clipStore := clip.NewStore(conn)
+	clipStore.MaxItems = *clipMaxItems
 
 	api := handlers.API{
-		DB:        conn,
+		DB:         conn,
 		Auth:       authStore,
 		ACL:        acl.NewStore(conn),
 		Events:     audit.NewStore(conn),
 		Drafts:     drafts.NewStore(conn),
+		Clips:      clipStore,
 		FS:         tree,
 		SessionTTL: 24 * time.Hour,
 		MaxFileMB:  *maxMB,
+		ClipTTL:    *clipTTL,
 		RPS:        *rps,
 		RBurst:     *rburst,
 		AuthRPS:    *authRPS,

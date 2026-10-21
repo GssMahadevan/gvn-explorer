@@ -1498,6 +1498,158 @@ fs.mkdirSync(OUT, { recursive: true });
     await page.evaluate(() => document.querySelector('.ant-breadcrumb a')?.click());
     await new Promise((r) => setTimeout(r, 600));
 
+    // ---- clipboards (Batch E): share a file into a tenant feed, then
+    // browse the home's virtual clipboards tree and open the link —
+    // the GUI never learned anything special about links; the server
+    // renders the tree and content resolves through to the target ----
+    await openRowMenu('readme\\.md');
+    await menuClick('share to clipboard');
+    let shareModal = false;
+    try {
+      await waitModal();
+      shareModal = /Share to a clipboard/i.test(await modalText());
+    } catch { /* checked below */ }
+    check('file row menu opens the share-to-clipboard dialog', shareModal);
+    await fillModal('clipboard name (lowercase, e.g. work-notes)', 'walk-notes');
+    await mouseClick('.ant-modal button', 'Share');
+    check('sharing posts a link and names it in the home tree', await page
+      .waitForFunction(() => /shared \/readme\.md → \/tenants\/system\/clipboards\/walk-notes\//
+        .test(document.body.innerText), { timeout: 6000 })
+      .then(() => true).catch(() => false));
+    await page.evaluate(() => document.querySelector('.ant-breadcrumb a')?.click());
+    await new Promise((r) => setTimeout(r, 800));
+    await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'tenants/')?.click(),
+    );
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('tbody button')].some((b) => b.textContent === 'system/'),
+      { timeout: 6000 },
+    ).catch(() => {});
+    await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'system/')?.click(),
+    );
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('tbody button')].some((b) => b.textContent === 'clipboards/'),
+      { timeout: 6000 },
+    ).catch(() => {});
+    check('the tenant home lists a clipboards folder (injected by the server)', await page.evaluate(() =>
+      [...document.querySelectorAll('tbody tr.ant-table-row')].some(
+        (x) => x.offsetParent !== null && /clipboards\//.test(x.innerText)),
+    ));
+    await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'clipboards/')?.click(),
+    );
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('tbody button')].some((b) => b.textContent === 'walk-notes/'),
+      { timeout: 6000 },
+    ).catch(() => {});
+    check('the feed index lists the shared feed as a folder', await page.evaluate(() =>
+      [...document.querySelectorAll('tbody tr.ant-table-row')].some(
+        (x) => x.offsetParent !== null && /walk-notes\//.test(x.innerText)),
+    ));
+    await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'walk-notes/')?.click(),
+    );
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('tbody button')].some((b) => /-readme\.md$/.test(b.textContent)),
+      { timeout: 6000 },
+    ).catch(() => {});
+    check('the feed lists the link under a recognisable name', await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].some((b) => /-readme\.md$/.test(b.textContent)),
+    ));
+    check('inside the tree: no folder/file/upload, a read-only tag stands in', await page.evaluate(() => {
+      const labels = [...document.querySelectorAll('button')]
+        .filter((b) => b.offsetParent !== null)
+        .map((b) => b.textContent.trim());
+      return !labels.includes('Folder') && !labels.includes('File') && !labels.includes('Upload') &&
+        labels.some((t) => /clipboards · read-only/.test(t) || /shared clipboards/.test(document.body.innerText));
+    }));
+    check('link rows offer no rename/delete — the feed owns the link', await (async () => {
+      if (!(await openRowMenu('-readme\\.md'))) return false;
+      const t = await visibleMenuText();
+      await closeRowMenu();
+      return !/rename|delete/i.test(t) && /permissions/i.test(t);
+    })());
+    await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].find((b) => /-readme\.md$/.test(b.textContent))?.click(),
+    );
+    await openPane();
+    await page.waitForFunction(
+      () => /hello/.test(document.querySelector('[data-testid="file-pane"] [data-testid="md-view"]')?.innerText ?? ''),
+      { timeout: 8000 },
+    ).catch(() => {});
+    check('opening the link shows the target file itself (resolve through)', await page.evaluate(() => {
+      const p = document.querySelector('[data-testid="file-pane"]');
+      return !!p && /clipboards\/walk-notes\/\d+-readme\.md/.test(p.innerText) &&
+        /hello/.test(p.querySelector('[data-testid="md-view"]')?.innerText ?? '');
+    }));
+    await page.evaluate(() => document.querySelector('[data-testid="pane-copy"]')?.click());
+    // headless chrome usually grants clipboard writes to localhost; if it
+    // refuses, the honest fallback (copy the link) is equally correct —
+    // either way the click must report which one happened.
+    check('the copy button hands the file to the system clipboard (or says it copied the link)', await page
+      .waitForFunction(() => /copied (the file text to the system clipboard|its link)/
+        .test(document.body.innerText), { timeout: 5000 })
+      .then(() => true).catch(() => false));
+    await closePane();
+
+    // the paste side: text typed into the GUI becomes a real file in a
+    // writable directory, shared into a fresh feed — nothing hidden
+    await page.evaluate(() => document.querySelector('.ant-breadcrumb a')?.click());
+    await new Promise((r) => setTimeout(r, 800));
+    await click('button', 'Clip text');
+    try {
+      await waitModal();
+      check('the toolbar offers a new-text-clipboard dialog', /text clipboard/i.test(await modalText()));
+    } catch {
+      check('the toolbar offers a new-text-clipboard dialog', false);
+    }
+    await page.evaluate(() => {
+      const ta = [...document.querySelectorAll('.ant-modal textarea')].find((x) => x.offsetParent !== null);
+      if (!ta) return;
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(ta, 'a note from the GUI walk');
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await fillModal('clipboard name (lowercase, e.g. work-notes)', 'walk-text');
+    await mouseClick('.ant-modal button', 'Share');
+    check('pasted text is saved to a real file and shared', await page
+      .waitForFunction(() => /shared \/text-[a-z0-9]+\.txt → \/tenants\/system\/clipboards\/walk-text\//
+        .test(document.body.innerText), { timeout: 6000 })
+      .then(() => true).catch(() => false));
+    await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'tenants/')?.click(),
+    );
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('tbody button')].some((b) => b.textContent === 'system/'),
+      { timeout: 6000 },
+    ).catch(() => {});
+    await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'system/')?.click(),
+    );
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('tbody button')].some((b) => b.textContent === 'clipboards/'),
+      { timeout: 6000 },
+    ).catch(() => {});
+    await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'clipboards/')?.click(),
+    );
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('tbody button')].some((b) => b.textContent === 'walk-text/'),
+      { timeout: 6000 },
+    ).catch(() => {});
+    check('the new text feed appears in the tenant index', await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].some((b) => b.textContent === 'walk-text/'),
+    ));
+    await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'walk-text/')?.click(),
+    );
+    check('the text feed holds its link, visible in the tree', await page
+      .waitForFunction(() => [...document.querySelectorAll('tbody button')].some(
+        (b) => /-text-[a-z0-9]+\.txt$/.test(b.textContent)), { timeout: 6000 })
+      .then(() => true).catch(() => false));
+    await page.evaluate(() => document.querySelector('.ant-breadcrumb a')?.click());
+    await new Promise((r) => setTimeout(r, 600));
+
     // settings modal: dark mode toggle applies and persists
     await openMenu('.app-user');
     await clickMenuItem('Settings');

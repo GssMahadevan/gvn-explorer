@@ -43,6 +43,15 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/pairings/{id}", a.requireAdmin(a.handlePairingsDelete))
 	mux.HandleFunc("POST /api/v1/join", a.perIP(a.authSlots.wrap(a.handleJoin)))
 
+	// clipboards: cross-device link feeds (design in internal/clip and
+	// internal/handlers/clip.go). Any member may create and post;
+	// browsing/previewing also works through /fs* on the virtual tree.
+	mux.HandleFunc("GET /api/v1/clipboards", a.requireAuth(a.handleClipsList))
+	mux.HandleFunc("POST /api/v1/clipboards", a.requireAuth(a.handleClipsCreate))
+	mux.HandleFunc("DELETE /api/v1/clipboards/{id}", a.requireAuth(a.handleClipsDelete))
+	mux.HandleFunc("PUT /api/v1/clipboards/{id}/items", a.requireAuth(a.handleClipItemAdd))
+	mux.HandleFunc("GET /api/v1/clipboards/{id}/items", a.requireAuth(a.handleClipItems))
+
 	// file explorer
 	mux.HandleFunc("GET /api/v1/fs", a.requireAuth(a.handleList))
 	mux.HandleFunc("GET /api/v1/fs/content", a.requireAuth(a.handleContent))

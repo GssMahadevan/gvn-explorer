@@ -10,18 +10,21 @@ import {
   Typography,
   Upload,
 } from 'antd';
-import { FileAddOutlined, FolderAddOutlined, UploadOutlined } from '@ant-design/icons';
+import { FileAddOutlined, FolderAddOutlined, SnippetsOutlined, UploadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { api, bits, fmtSize, qs } from '../api';
 import { useFlash } from '../flash';
 import { fileKind, isEditable, rawUrl } from '../filekind';
+import { isClipsPath } from '../cliputil';
 import type { Doc, EntryView, FsList } from '../types';
 import type { FileTarget } from '../components/FilePane';
+import type { ClipFlow } from '../components/ClipShareModal';
 import { useListView } from '../useListView';
 import ListSearch from '../components/ListSearch';
 import RowActions from '../components/RowActions';
 import DateTime from '../components/DateTime';
 import DocJsonModal from '../components/DocJsonModal';
+import ClipShareModal from '../components/ClipShareModal';
 
 // Files panel: breadcrumb browser + server-paged entry table (dirs first
 // is done by the backend). Clicking a file name opens the file PAGE in
@@ -51,6 +54,7 @@ export default function FilesPanel({
   const [newName, setNewName] = useState('');
   const [rename, setRename] = useState<{ from: string; to: string } | null>(null);
   const [doc, setDoc] = useState<Doc | null>(null);
+  const [clipFlow, setClipFlow] = useState<ClipFlow | null>(null);
 
   // the file page reports writes through filesEpoch; refresh our table
   const firstEpoch = useRef(true);
@@ -61,7 +65,12 @@ export default function FilesPanel({
   }, [filesEpoch]);
 
   const rows = lv.payload?.entries ?? [];
-  const ro = cur === '/help' || cur.startsWith('/help/'); // built-in docs: read-only
+  const embeddedHere = cur === '/help' || cur.startsWith('/help/'); // built-in docs
+  // the tenant's clipboards subtree is rendered from the DB: browsing and
+  // previewing work through the normal endpoints, but no fs write verb
+  // touches it (the server refuses — we simply don't offer it)
+  const clipsHere = isClipsPath(cur);
+  const ro = embeddedHere || clipsHere;
   const download = (p: string) => {
     const a = document.createElement('a');
     a.href = rawUrl(p);
@@ -194,6 +203,21 @@ export default function FilesPanel({
       title: '',
       width: 56,
       render: (_, x) => {
+        // inside a tenant's clipboards tree the links belong to the
+        // feeds: no rename/delete/edit/share there — permissions (the
+        // feed rows are real grant rows) and download (the link
+        // resolves through to the target) are all a link offers
+        if (isClipsPath(x.entry.path))
+          return (
+            <RowActions
+              actions={[
+                { key: 'perms', label: 'permissions', onClick: () => showPerms(x.entry.path) },
+                ...(x.entry.is_dir
+                  ? []
+                  : [{ key: 'download', label: 'download', onClick: () => download(x.entry.path) }]),
+              ]}
+            />
+          );
         const embedded = x.entry.path === '/help' || x.entry.path.startsWith('/help/');
         if (embedded)
           return x.entry.is_dir ? null : (
@@ -226,6 +250,13 @@ export default function FilesPanel({
                       ? [{ key: 'edit', label: 'edit', onClick: () => openFile({ path: x.entry.path, mode: 'edit' }) }]
                       : []),
                     { key: 'download', label: 'download', onClick: () => download(x.entry.path) },
+                    // sharing posts a link in a tenant feed: the file
+                    // itself stays exactly where its own ACLs put it
+                    {
+                      key: 'share',
+                      label: 'share to clipboard',
+                      onClick: () => setClipFlow({ mode: 'file', path: x.entry.path }),
+                    },
                   ]
                 : []),
               {
@@ -279,9 +310,12 @@ export default function FilesPanel({
         <span className="grow" />
         <ListSearch state={lv.state} patch={lv.patch} placeholder="search name" />
         {ro ? (
-          <Tag color="blue">built-in docs · read-only</Tag>
+          <Tag color="blue">{clipsHere ? 'shared clipboards · read-only' : 'built-in docs · read-only'}</Tag>
         ) : (
           <>
+            <Button icon={<SnippetsOutlined />} onClick={() => setClipFlow({ mode: 'text', dir: cur })}>
+              Clip text
+            </Button>
             <Button icon={<FolderAddOutlined />} onClick={() => setNewKind('dir')}>
               Folder
             </Button>
@@ -365,6 +399,12 @@ export default function FilesPanel({
       </Modal>
 
       <DocJsonModal doc={doc} onClose={() => setDoc(null)} />
+
+      <ClipShareModal
+        flow={clipFlow}
+        onClose={() => setClipFlow(null)}
+        onDone={() => lv.reload()}
+      />
     </>
   );
 }

@@ -64,7 +64,10 @@ granting to a foreign user, another tenant or `all` there is refused
 content addressed that broadly. Nothing else is world-readable by default:
 shared areas open only through explicit per-path grants like the ones
 above. (See [tenants-users-groups.md](tenants-users-groups.md) for how
-homes are created and what names are allowed.)
+homes are created and what names are allowed.) Every home also shows a
+read-only `clipboards/` folder — the tenant's shared cross-device link
+feeds, rendered from the feed list rather than from disk
+([clipboards.md](clipboards.md)).
 
 ## Everyday examples
 
@@ -158,5 +161,7 @@ omits — with a live diff preview before anything is written
 
 ## What to read next
 
+- [clipboards.md](clipboards.md) — cross-device link feeds inside the
+  home, gated by exactly these grants
 - [api-keys.md](api-keys.md) — giving devices the same permissions
 - [api.md](api.md) — the raw REST API

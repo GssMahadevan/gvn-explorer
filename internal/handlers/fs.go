@@ -58,6 +58,10 @@ func (a *API) handleList(w http.ResponseWriter, r *http.Request) {
 		a.listHelp(w, r, p, sub, o)
 		return
 	}
+	if tn, rest, ok := clipboardsSub(p); ok {
+		a.listClipboards(w, r, p, tn, rest, o)
+		return
+	}
 	if !a.check(w, r, p, true, false, false) {
 		return
 	}
@@ -68,6 +72,21 @@ func (a *API) handleList(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "internal", "list failed")
 		}
 		return
+	}
+	// A tenant home shows its virtual clipboards feed folder (rendered
+	// from the DB, like /help). A real directory of that name is
+	// shadowed by it — the same documented trade-off as help/.
+	if tn, isHome := tenantHomeOf(p); isHome {
+		if _, err := a.Auth.TenantByName(r.Context(), tn); err == nil {
+			keep := entries[:0]
+			for _, e := range entries {
+				if e.Name != clipboardsDirName {
+					keep = append(keep, e)
+				}
+			}
+			entries = append(keep, fsx.Entry{Name: clipboardsDirName,
+				Path: p + "/" + clipboardsDirName, IsDir: true})
+		}
 	}
 	// Hide entries the caller cannot read.
 	u := userFrom(r.Context())
@@ -179,6 +198,17 @@ func (a *API) handleContent(w http.ResponseWriter, r *http.Request) {
 		a.helpContent(w, r, p, sub)
 		return
 	}
+	if tn, rest, ok := clipboardsSub(p); ok {
+		if !a.resolveClipItem(w, r, tn, rest) {
+			return
+		}
+		// the request now addresses the real target: re-read p and let
+		// the normal pipeline (ACL, size guard, binary guard) answer.
+		if p, err = logicalPath(r); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_path", err.Error())
+			return
+		}
+	}
 	if !a.check(w, r, p, true, false, false) {
 		return
 	}
@@ -241,6 +271,15 @@ func (a *API) handleRaw(w http.ResponseWriter, r *http.Request) {
 	if sub, ok := helpSub(p); ok {
 		a.helpRaw(w, r, p, sub)
 		return
+	}
+	if tn, rest, ok := clipboardsSub(p); ok {
+		if !a.resolveClipItem(w, r, tn, rest) {
+			return
+		}
+		if p, err = logicalPath(r); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_path", err.Error())
+			return
+		}
 	}
 	if !a.check(w, r, p, true, false, false) {
 		return
@@ -331,6 +370,10 @@ func (a *API) handleMkdir(w http.ResponseWriter, r *http.Request) {
 		helpReadOnly(w)
 		return
 	}
+	if _, _, ok := clipboardsSub(p); ok {
+		clipReadOnly(w)
+		return
+	}
 	if !a.check(w, r, p, false, true, false) {
 		return
 	}
@@ -372,6 +415,10 @@ func (a *API) handleWrite(w http.ResponseWriter, r *http.Request) {
 	}
 	if isHelpPath(p) {
 		helpReadOnly(w)
+		return
+	}
+	if _, _, ok := clipboardsSub(p); ok {
+		clipReadOnly(w)
 		return
 	}
 	if !a.check(w, r, p, false, true, false) {
@@ -435,6 +482,14 @@ func (a *API) handleRename(w http.ResponseWriter, r *http.Request) {
 		helpReadOnly(w)
 		return
 	}
+	if _, _, virt := clipboardsSub(from); virt {
+		clipReadOnly(w)
+		return
+	}
+	if _, _, virt := clipboardsSub(to); virt {
+		clipReadOnly(w)
+		return
+	}
 	if !a.check(w, r, from, false, false, true) || !a.check(w, r, to, false, true, false) {
 		return
 	}
@@ -464,6 +519,10 @@ func (a *API) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	if isHelpPath(p) {
 		helpReadOnly(w)
+		return
+	}
+	if _, _, ok := clipboardsSub(p); ok {
+		clipReadOnly(w)
 		return
 	}
 	if !a.check(w, r, p, false, false, true) {
@@ -509,6 +568,10 @@ func (a *API) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	if isHelpPath(target) {
 		helpReadOnly(w)
+		return
+	}
+	if _, _, ok := clipboardsSub(target); ok {
+		clipReadOnly(w)
 		return
 	}
 	if !a.check(w, r, target, false, true, false) {
