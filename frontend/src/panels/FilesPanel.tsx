@@ -20,6 +20,7 @@ import type { FileTarget } from '../components/FilePane';
 import { useListView } from '../useListView';
 import ListSearch from '../components/ListSearch';
 import RowActions from '../components/RowActions';
+import DateTime from '../components/DateTime';
 
 // Files panel: breadcrumb browser + server-paged entry table (dirs first
 // is done by the backend). Clicking a file name opens the file PAGE in
@@ -74,7 +75,7 @@ export default function FilesPanel({
     cur === '/' && !lv.state.q && !rows.some((x) => x.entry.path === '/help')
       ? [
           {
-            entry: { name: 'help', path: '/help', is_dir: true, size: 0, mod_time: '' },
+            entry: { name: 'help', path: '/help', is_dir: true, size: 0, mod_time: '', mod_time_ms: 0 },
             perms: { read: true, write: false, delete: false },
           },
           ...rows,
@@ -168,11 +169,9 @@ export default function FilesPanel({
       sortOrder: lv.sortOrder('mtime'),
       showSorterTooltip: false,
       width: 210,
-      render: (_, x) => {
+      render: (_, x) =>
         // embedded docs carry no real mtime (zero time) — label them honestly
-        const d = new Date(x.entry.mod_time);
-        return d.getFullYear() > 1 ? d.toLocaleString() : 'built-in';
-      },
+        x.entry.mod_time_ms > 0 ? <DateTime v={x.entry.mod_time_ms} /> : 'built-in',
     },
     {
       title: 'perms',

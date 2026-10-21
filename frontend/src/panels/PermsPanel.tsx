@@ -7,6 +7,7 @@ import { useListView } from '../useListView';
 import { useFlash } from '../flash';
 import ListSearch from '../components/ListSearch';
 import RowActions from '../components/RowActions';
+import DateTime from '../components/DateTime';
 import GrantForm from '../components/forms/GrantForm';
 
 // Permissions panel: grants on a target path (a directory — or one file via
@@ -60,7 +61,7 @@ export default function PermsPanel({ path, me }: { path: string; me: Me }) {
         g.expired ? (
           <Tag color="red">expired</Tag>
         ) : g.expires_at ? (
-          new Date(g.expires_at).toLocaleDateString()
+          <DateTime v={g.expires_at} dateOnly />
         ) : (
           <Typography.Text type="secondary">never</Typography.Text>
         ),

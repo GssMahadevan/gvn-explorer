@@ -5,6 +5,7 @@ import { api, qs } from '../api';
 import type { EventRow, Me, Tenant } from '../types';
 import { useListView } from '../useListView';
 import ListSearch from '../components/ListSearch';
+import DateTime from '../components/DateTime';
 
 // The audit trail (append-only `events` table) as a full-featured table:
 // every column, server-side paging/search/sort (limit/offset/q/col/sort/
@@ -71,8 +72,8 @@ export default function EventsTable({ me, visible }: { me: Me; visible: boolean 
       sorter: true,
       sortOrder: lv.sortOrder('ts'),
       showSorterTooltip: false,
-      width: 180,
-      render: (_, e) => new Date(e.ts * 1000).toLocaleString(),
+      width: 210,
+      render: (_, e) => <DateTime v={e.ts_ms} />,
     },
     {
       title: 'actor',

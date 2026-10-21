@@ -15,8 +15,14 @@ import (
 )
 
 type Event struct {
-	ID         int64          `json:"id"`
-	TS         int64          `json:"ts"` // unix seconds
+	ID int64 `json:"id"`
+	// TS is canonical storage: unix milliseconds (see migration 0006).
+	// The wire view keeps two numbers: "ts" stays unix seconds — the
+	// contract curl scripts and tests have always parsed — while "ts_ms"
+	// carries the exact instant, so same-second events are orderable.
+	TS         int64          `json:"-"`
+	TsSec      int64          `json:"ts"`
+	TsMs       int64          `json:"ts_ms"`
 	Time       time.Time      `json:"time"`
 	ActorID    *int64         `json:"actor_id,omitempty"`    // nil for unauthenticated attempts
 	Actor      string         `json:"actor,omitempty"`       // "tenant/username" snapshot
@@ -30,6 +36,13 @@ type Event struct {
 	IP         string         `json:"ip,omitempty"`
 }
 
+// stamp fills the wire view from the canonical millisecond TS.
+func (ev *Event) stamp() {
+	ev.TsMs = ev.TS
+	ev.TsSec = ev.TS / 1000
+	ev.Time = time.UnixMilli(ev.TS).UTC()
+}
+
 type Store struct{ DB *db.DB }
 
 func NewStore(conn *db.DB) *Store { return &Store{DB: conn} }
@@ -38,7 +51,7 @@ func NewStore(conn *db.DB) *Store { return &Store{DB: conn} }
 // keys, passwords) must never be placed in it by callers.
 func (s *Store) Record(ctx context.Context, ev Event) error {
 	if ev.TS == 0 {
-		ev.TS = time.Now().Unix()
+		ev.TS = time.Now().UnixMilli()
 	}
 	details := ""
 	if ev.Details != nil {
@@ -64,7 +77,7 @@ type Filter struct {
 	Action     string
 	TargetType string
 	Target     string // exact target_name match
-	Since      int64  // unix seconds lower bound
+	Since      int64  // unix milliseconds lower bound
 	Q          string // case-insensitive substring
 	Col        string // restrict Q: actor | action | target | path; "" = all
 	Sort       string // ts | actor | action | target | path (default ts)
@@ -166,7 +179,7 @@ func (s *Store) List(ctx context.Context, tenantID int64, f Filter) ([]Event, in
 		if details != "" {
 			_ = json.Unmarshal([]byte(details), &ev.Details)
 		}
-		ev.Time = time.Unix(ev.TS, 0).UTC()
+		ev.stamp()
 		out = append(out, ev)
 	}
 	return out, total, rows.Err()

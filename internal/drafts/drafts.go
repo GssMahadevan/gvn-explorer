@@ -18,7 +18,11 @@ type Draft struct {
 	Path      string `json:"path"`
 	Content   string `json:"content"`
 	UpdatedBy string `json:"updated_by"`
-	UpdatedAt int64  `json:"updated_at"`
+	// "updated_at" keeps its unix-seconds wire contract (migration 0006
+	// moved storage to ms); "updated_at_ms" carries the exact save time,
+	// which is what the GUI's auto-save line shows.
+	UpdatedAt   int64 `json:"updated_at"`
+	UpdatedAtMs int64 `json:"updated_at_ms"`
 }
 
 type Store struct{ DB *db.DB }
@@ -31,19 +35,20 @@ func (s *Store) Get(ctx context.Context, path string) (Draft, bool, error) {
 	var d Draft
 	err := s.DB.QueryRowContext(ctx,
 		"SELECT path, content, updated_by, updated_at FROM file_drafts WHERE path = ?", path).
-		Scan(&d.Path, &d.Content, &d.UpdatedBy, &d.UpdatedAt)
+		Scan(&d.Path, &d.Content, &d.UpdatedBy, &d.UpdatedAtMs)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Draft{}, false, nil
 	}
 	if err != nil {
 		return Draft{}, false, err
 	}
+	d.UpdatedAt = d.UpdatedAtMs / 1000
 	return d, true, nil
 }
 
 // Put creates or replaces the working copy for a path (last writer wins).
 func (s *Store) Put(ctx context.Context, path, content, updatedBy string) (Draft, error) {
-	now := time.Now().Unix()
+	now := time.Now().UnixMilli()
 	_, err := s.DB.ExecContext(ctx, `INSERT INTO file_drafts (path, content, updated_by, updated_at)
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT (path) DO UPDATE SET
@@ -52,7 +57,8 @@ func (s *Store) Put(ctx context.Context, path, content, updatedBy string) (Draft
 	if err != nil {
 		return Draft{}, err
 	}
-	return Draft{Path: path, Content: content, UpdatedBy: updatedBy, UpdatedAt: now}, nil
+	return Draft{Path: path, Content: content, UpdatedBy: updatedBy,
+		UpdatedAt: now / 1000, UpdatedAtMs: now}, nil
 }
 
 // Delete discards a working copy. Discarding nothing is not an error:

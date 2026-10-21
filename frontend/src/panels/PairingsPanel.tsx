@@ -23,6 +23,7 @@ import { useListView } from '../useListView';
 import { useFlash } from '../flash';
 import ListSearch from '../components/ListSearch';
 import RowActions from '../components/RowActions';
+import DateTime, { fmtLocal } from '../components/DateTime';
 
 // Pairings panel: open short-lived join invites (QR + short code), watch
 // their status, revoke unused ones. An invite redeems itself into a plain
@@ -146,8 +147,8 @@ export default function PairingsPanel({ me }: { me: Me }) {
       sorter: true,
       sortOrder: lv.sortOrder('created'),
       showSorterTooltip: false,
-      width: 150,
-      render: (_, p) => new Date(p.created_at).toLocaleString(),
+      width: 210,
+      render: (_, p) => <DateTime v={p.created_at} />,
     },
     {
       title: 'expires',
@@ -155,11 +156,11 @@ export default function PairingsPanel({ me }: { me: Me }) {
       sorter: true,
       sortOrder: lv.sortOrder('expires'),
       showSorterTooltip: false,
-      width: 150,
+      width: 210,
       render: (_, p) =>
         p.status === 'pending' ? (
           <span style={{ color: new Date(p.expires_at).getTime() - Date.now() < 60_000 ? '#d4380d' : undefined }}>
-            {new Date(p.expires_at).toLocaleTimeString()}
+            <DateTime v={p.expires_at} />
           </span>
         ) : (
           ''
@@ -325,7 +326,7 @@ export default function PairingsPanel({ me }: { me: Me }) {
               </a>
             </Typography.Text>{' '}
             and type the code. Valid until{' '}
-            {shown && new Date(shown.pairing.expires_at).toLocaleTimeString()}.
+            {shown ? fmtLocal(shown.pairing.expires_at) : ''}.
           </Typography.Text>
         </div>
       </Modal>

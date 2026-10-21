@@ -407,6 +407,13 @@ curl -b jar 'localhost:8080/api/v1/events?limit=50&action=perm_set'
 #          plus the standard list params (q, col, sort, dir, limit, offset)
 ```
 
+Timestamps carry two precisions: `ts` stays unix seconds (the original
+contract) while `ts_ms` gives the exact instant, and `time` renders the
+same moment as RFC3339 UTC with fractional seconds. Storage, ordering and
+the `since=` filter (which may cut *inside* a second) work in
+milliseconds — two events in one second, or a draft saved under a second
+ago, are no longer aliases of each other.
+
 Admin rights; super admins see all tenants. Newest first. A failed audit
 write is logged loudly but never blocks the operation itself. The GUI
 mirrors this API one-for-one as the **Events tab** (see Web GUI): all
@@ -528,7 +535,7 @@ directories always sort first regardless of `dir`.
 | GET    | /api/v1/fs/content?path=| JSON text view                        | r            |
 | GET    | /api/v1/fs/raw?path=    | download bytes (`&dispo=inline` for the browser's own pdf/image/audio/video viewer — honoured only for an explicit allowlist) | r            |
 | POST   | /api/v1/fs/mkdir        | `{"path"}`                            | w on path    |
-| POST   | /api/v1/fs/write        | `{"path","content"}` (+ optional `"base_mtime":<unix>`) | w on path |
+| POST   | /api/v1/fs/write        | `{"path","content"}` (+ optional `"base_mtime"`/`"base_mtime_ms"`) | w on path |
 | POST   | /api/v1/fs/rename       | `{"from","to"}`                       | d on from, w on to |
 | POST   | /api/v1/fs/upload       | multipart `path=<dir>, file=<f>`      | w on target  |
 | DELETE | /api/v1/fs?path=        | file, or empty dir                    | d on path    |
@@ -541,6 +548,10 @@ directories always sort first regardless of `dir`.
 reports): if the file has changed since, the write is refused with
 `409 conflict` instead of clobbering newer bytes — the GUI uses this to
 keep two writers from silently overwriting each other's plain-text edits.
+Both precisions are published (`mtime`/`mtime_ms` on the content view,
+`mod_time_ms` on listing entries, `updated_at_ms` on drafts), and
+`base_mtime_ms` guards at the exact one — it wins if both forms are
+supplied.
 
 **Draft/publish** backs the YAML config editor: GUI edits autosave to a
 per-path working copy, and the file on disk changes only when the draft
@@ -648,7 +659,11 @@ sort by ts/actor/action/target/path, newest first by default) plus the
 audit-only filters the API accepts: a searchable `action=` select over
 the full action vocabulary and a time-range select mapped to `since=`.
 Events carrying structured `details` get a row expander rendering the
-JSON payload. The table re-fetches every time it becomes visible — tab
+JSON payload. Every timestamp in the GUI — audit rows, file listing
+mtimes, draft save times, pairing and account times — renders through
+one component in the same shape: local wall clock to the millisecond
+(`YYYY-MM-DD HH:MM:SS.mmm`), with the exact instant as ISO/UTC in the
+hover title. The table re-fetches every time it becomes visible — tab
 or drawer — the trail is append-only, so the freshest tail is what you
 should see; the server pages it like every other list, so a trail of
 100k events costs the same as one of 100. The same component also
@@ -700,7 +715,7 @@ files additionally get a formatting **ribbon** above the editor (bold /
 italic / strike / H1-H3 / quote / lists / link / code — GitHub-comment
 style: the icons edit the markdown *source* around the selection, so the
 file always stays plain lossless markdown). Its Save sends the
-`base_mtime` captured on open: if
+`base_mtime_ms` captured on open: if
 the file changed underneath, the server refuses with 409 conflict and the
 text stays in the pane to be copied out. **YAML config files** (`.yml`,
 `.yaml`) instead open the structured editor (`components/YamlEditor`),

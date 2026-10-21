@@ -8,6 +8,7 @@ import { useFlash } from '../flash';
 import ListSearch from '../components/ListSearch';
 import ActiveFilterSelect from '../components/ActiveFilterSelect';
 import RowActions from '../components/RowActions';
+import DateTime from '../components/DateTime';
 import TenantForm from '../components/forms/TenantForm';
 
 // Tenants panel (super admin only): create/edit (description), the
@@ -73,8 +74,8 @@ export default function TenantsPanel({ me }: { me: Me }) {
       sorter: true,
       sortOrder: lv.sortOrder('created'),
       showSorterTooltip: false,
-      width: 180,
-      render: (_, t) => new Date(t.created_at).toLocaleString(),
+      width: 210,
+      render: (_, t) => <DateTime v={t.created_at} />,
     },
 
     {

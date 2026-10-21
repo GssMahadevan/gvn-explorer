@@ -9,6 +9,7 @@ import { useFlash } from '../flash';
 import { fileKind, rawInlineUrl, rawUrl } from '../filekind';
 import type { PermsList } from '../types';
 import DocEditor from './DocEditor';
+import DateTime from './DateTime';
 import YamlEditor from './YamlEditor';
 
 export type FileTarget = { path: string; mode: 'view' | 'edit' };
@@ -37,17 +38,17 @@ interface FsContent {
   content?: string;
   is_binary?: boolean;
   mtime?: number;
+  mtime_ms?: number; // exact instant — what the editor guards writes with
 }
 interface Draft {
   content: string;
   updated_by: string;
   updated_at: number;
+  updated_at_ms: number; // exact save time — what the UI shows
 }
 interface DraftResp {
   draft: Draft | null;
 }
-
-const fmtTs = (ts: number) => new Date(ts * 1000).toLocaleString();
 
 // The file page — a real browser pane, not a modal (one component serves
 // viewing AND editing, like GitHub's file pages). Default entry is the
@@ -98,7 +99,7 @@ export default function FilePane({
   const [binary, setBinary] = useState(false);
   const [mediaErr, setMediaErr] = useState(false);
   const [canW, setCanW] = useState(false);
-  const [mtime, setMtime] = useState<number | undefined>(undefined);
+  const [mtimeMs, setMtimeMs] = useState<number | undefined>(undefined);
   const [fileText, setFileText] = useState(''); // bytes on disk
   const [text, setText] = useState(''); // working copy in the editor
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -133,7 +134,7 @@ export default function FilePane({
       try {
         const c = await api<FsContent>('/api/v1/fs/content?path=' + encodeURIComponent(path));
         setBinary(!!c.is_binary);
-        setMtime(c.mtime);
+        setMtimeMs(c.mtime_ms);
         setFileText(c.content ?? '');
         let d: Draft | null = null;
         let w = false;
@@ -223,10 +224,10 @@ export default function FilePane({
   const savePlain = async () => {
     try {
       const body: Record<string, unknown> = { path, content: text };
-      if (mtime !== undefined) body.base_mtime = mtime;
+      if (mtimeMs !== undefined) body.base_mtime_ms = mtimeMs;
       await api('/api/v1/fs/write', { method: 'POST', body: JSON.stringify(body) });
       const c = await api<FsContent>('/api/v1/fs/content?path=' + encodeURIComponent(path));
-      setMtime(c.mtime);
+      setMtimeMs(c.mtime_ms);
       setFileText(text);
       savedRef.current = text;
       setConflict('');
@@ -250,7 +251,12 @@ export default function FilePane({
     if (!canW) return <Tag>read-only</Tag>;
     if (saveState === 'pending') return <Tag>auto-saving draft…</Tag>;
     if (saveState === 'error') return <Tag color="red">draft save failed</Tag>;
-    if (draft) return <Tag color="orange">draft auto-saved {fmtTs(draft.updated_at)}</Tag>;
+    if (draft)
+      return (
+        <Tag color="orange">
+          draft auto-saved <DateTime v={draft.updated_at_ms} />
+        </Tag>
+      );
     return null;
   };
 
@@ -419,8 +425,8 @@ export default function FilePane({
               message="Unpublished draft — the file on disk still has the old bytes"
               description={
                 <span data-testid="editor-draft-meta">
-                  draft last edited by {draft.updated_by} at {fmtTs(draft.updated_at)}; publishing writes it to the
-                  file.
+                  draft last edited by {draft.updated_by} at <DateTime v={draft.updated_at_ms} />; publishing writes it
+                  to the file.
                 </span>
               }
               action={

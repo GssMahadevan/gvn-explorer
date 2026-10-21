@@ -21,6 +21,7 @@ export interface Entry {
   is_dir: boolean;
   size: number;
   mod_time: string;
+  mod_time_ms: number; // same instant, unix milliseconds — what the GUI renders
 }
 
 export interface EntryView {
@@ -127,7 +128,8 @@ export interface JoinResult {
 // attempts (failed logins); tenant_id is the subject tenant, 0 = platform.
 export interface EventRow {
   id: number;
-  ts: number; // unix seconds
+  ts: number; // unix seconds (floored view — contract unchanged)
+  ts_ms: number; // exact instant, unix milliseconds — what the GUI renders
   time: string;
   actor_id?: number;
   actor?: string;

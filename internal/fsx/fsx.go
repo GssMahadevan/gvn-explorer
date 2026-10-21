@@ -19,7 +19,14 @@ type Entry struct {
 	IsDir   bool      `json:"is_dir"`
 	Size    int64     `json:"size"`
 	ModTime time.Time `json:"mod_time"`
+	// ModTimeMs is the same instant as ModTime in unix milliseconds —
+	// a number clients can sort/subtract without parsing a string.
+	ModTimeMs int64 `json:"mod_time_ms"`
 }
+
+// stamp keeps ModTimeMs in step with ModTime; called wherever an Entry
+// is built from a FileInfo.
+func (e *Entry) stamp() { e.ModTimeMs = e.ModTime.UnixMilli() }
 
 var (
 	ErrExists        = errors.New("already exists")
@@ -93,10 +100,12 @@ func (t *Tree) List(logical string) ([]Entry, error) {
 			continue // skip unreadable entries rather than failing the list
 		}
 		child := joinLogical(logical, de.Name())
-		out = append(out, Entry{
+		e := Entry{
 			Name: de.Name(), Path: child, IsDir: de.IsDir(),
 			Size: fi.Size(), ModTime: fi.ModTime(),
-		})
+		}
+		e.stamp()
+		out = append(out, e)
 	}
 	return out, nil
 }
@@ -124,7 +133,9 @@ func (t *Tree) Stat(logical string) (Entry, error) {
 	if logical == "/" {
 		name = "/"
 	}
-	return Entry{Name: name, Path: logical, IsDir: fi.IsDir(), Size: fi.Size(), ModTime: fi.ModTime()}, nil
+	e := Entry{Name: name, Path: logical, IsDir: fi.IsDir(), Size: fi.Size(), ModTime: fi.ModTime()}
+	e.stamp()
+	return e, nil
 }
 
 // Write creates or truncates a file, creating parent directories as needed.

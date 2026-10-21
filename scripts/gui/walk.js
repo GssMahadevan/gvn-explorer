@@ -1266,6 +1266,17 @@ fs.mkdirSync(OUT, { recursive: true });
     check('action-filtered rows all show perm_set', filteredRows.length > 0 && filteredRows.every((t) => /perm_set/.test(t)));
     if (!filteredRows.length || !filteredRows.every((t) => /perm_set/.test(t)))
       console.log('EVENTS-DIAG filtered=' + JSON.stringify(filteredRows.slice(0, 8)));
+    // the unified renderer: every timestamp in the app shows the viewer's
+    // wall clock at millisecond precision, with the exact UTC instant as
+    // the hover title — asserted on the panel's own rendered rows.
+    check('event times render as YYYY-MM-DD HH:MM:SS.mmm',
+      /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}/.test(filteredRows.join('\n')));
+    check('rendered times carry the exact instant as a hover title',
+      await page.evaluate(() => {
+        const spans = [...document.querySelectorAll('.ant-table-tbody span[title]')];
+        return spans.some((s) =>
+          /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(s.getAttribute('title') || ''));
+      }));
     if (actPos) await pickTyped(actPos.x, actPos.y, 'all act', 'all actions');
     await new Promise((r) => setTimeout(r, 1000));
     check('events search sends q= scoped to audit cols', await (async () => {

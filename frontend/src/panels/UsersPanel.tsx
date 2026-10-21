@@ -17,6 +17,7 @@ import { useFlash } from '../flash';
 import ListSearch from '../components/ListSearch';
 import ActiveFilterSelect from '../components/ActiveFilterSelect';
 import RowActions from '../components/RowActions';
+import DateTime from '../components/DateTime';
 import UserForm from '../components/forms/UserForm';
 
 // Users panel: search/filter/sort, api-key provisioning (shown once),
@@ -94,7 +95,9 @@ export default function UsersPanel({ me }: { me: Me }) {
           <span>{u.username}</span>
           {u.expired && <Tag color="orange">expired</Tag>}
           {!u.expired && u.expires_at && (
-            <Tag color="orange">till {new Date(u.expires_at).toLocaleDateString()}</Tag>
+            <Tag color="orange">
+              till <DateTime v={u.expires_at} dateOnly />
+            </Tag>
           )}
         </Space>
       ),
@@ -129,8 +132,8 @@ export default function UsersPanel({ me }: { me: Me }) {
       sorter: true,
       sortOrder: lv.sortOrder('created'),
       showSorterTooltip: false,
-      width: 110,
-      render: (_, u) => new Date(u.created_at).toLocaleDateString(),
+      width: 210,
+      render: (_, u) => <DateTime v={u.created_at} />,
     },
 
     {

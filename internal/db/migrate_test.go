@@ -131,6 +131,46 @@ func TestMigrationsBaseline(t *testing.T) {
 	}
 }
 
+// TestMigrationsTsMillis: rows written before 0006 hold seconds, and the
+// upgrade multiplies them to milliseconds exactly once. The guard also
+// makes re-running the statement harmless (an idempotency the long-lived
+// DBs on phones benefit from).
+func TestMigrationsTsMillis(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	conn, err := Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		"DELETE FROM schema_migrations WHERE version >= 6",
+		"INSERT INTO events (ts, tenant_id, action) VALUES (1755000000, 1, 'login')",
+		"INSERT INTO file_drafts (path, content, updated_by, updated_at) VALUES ('/a', 'x', 'sys/admin', 1755000000)",
+	} {
+		if _, err := conn.Exec(stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	conn.Close()
+
+	conn2, err := Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn2.Close()
+	var got int64
+	for q, want := range map[string]int64{
+		"SELECT ts FROM events WHERE action = 'login'":         1755000000000,
+		"SELECT updated_at FROM file_drafts WHERE path = '/a'": 1755000000000,
+	} {
+		if err := conn2.QueryRow(q).Scan(&got); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		if got != want {
+			t.Errorf("%s = %d, want %d (seconds must scale exactly once)", q, got, want)
+		}
+	}
+}
+
 // TestOpenUnknownDriver: engines without a dialect are rejected loudly.
 func TestOpenUnknownDriver(t *testing.T) {
 	if _, err := Open("mysql", "whatever"); err == nil {

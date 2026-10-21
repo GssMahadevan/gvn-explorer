@@ -273,6 +273,7 @@ t "$AJ" "draft save again" 200 PUT /api/v1/fs/draft "{\"path\":\"$D/cfg/app.yml\
 t "$AJ" "draft read" 200 GET "/api/v1/fs/draft?path=$D/cfg/app.yml"
 check "draft holds latest save (last writer wins)" "$(jq -e '.draft.content=="a: 3\n"' /tmp/resp.json >/dev/null; echo $?)"
 check "draft names the last writer" "$(jq -e --arg b "$ADMIN_TENANT/$ADMIN_USER" '.draft.updated_by==$b' /tmp/resp.json >/dev/null; echo $?)"
+check "draft carries exact updated_at_ms next to seconds updated_at" "$(jq -e '.draft.updated_at_ms > 1500000000000 and .draft.updated_at == (.draft.updated_at_ms / 1000 | floor)' /tmp/resp.json >/dev/null; echo $?)"
 t "$AJ" "save invalid yaml draft" 200 PUT /api/v1/fs/draft "{\"path\":\"$D/cfg/app.yml\",\"content\":\"a: [1,\n\"}"
 t "$AJ" "commit invalid yaml refused" 422 POST /api/v1/fs/draft/commit "{\"path\":\"$D/cfg/app.yml\"}"
 t "$AJ" "file read after refused commit" 200 GET "/api/v1/fs/content?path=$D/cfg/app.yml"
@@ -298,6 +299,12 @@ t "$AJ" "write with matching base_mtime" 200 POST /api/v1/fs/write "{\"path\":\"
 t "$AJ" "write with stale base_mtime" 409 POST /api/v1/fs/write "{\"path\":\"$D/cfg/app.yml\",\"content\":\"clobber\",\"base_mtime\":$((MT-1))}"
 t "$AJ" "read after conflict" 200 GET "/api/v1/fs/content?path=$D/cfg/app.yml"
 check "stale write did not clobber" "$(jq -e '.content=="guarded"' /tmp/resp.json >/dev/null; echo $?)"
+# millisecond twin of the guard (added alongside, contract above intact)
+MTMS=$(jq -r '.mtime_ms // 0' /tmp/resp.json)
+check "content exposes exact mtime_ms" "$([ "${MTMS:-0}" -gt 1500000000000 ]; echo $?)" "mtime_ms=$MTMS"
+check "mtime_ms matches the mtime second" "$(jq -e '.mtime * 1000 <= .mtime_ms and .mtime_ms < (.mtime + 1) * 1000' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "write with matching base_mtime_ms" 200 POST /api/v1/fs/write "{\"path\":\"$D/cfg/app.yml\",\"content\":\"guarded ms\",\"base_mtime_ms\":$MTMS}"
+t "$AJ" "write one millisecond stale conflicts" 409 POST /api/v1/fs/write "{\"path\":\"$D/cfg/app.yml\",\"content\":\"clobber\",\"base_mtime_ms\":$((MTMS-1))}"
 t "$AJ" "base_mtime on missing file conflicts" 409 POST /api/v1/fs/write "{\"path\":\"$D/cfg/gone.yml\",\"content\":\"x\",\"base_mtime\":1}"
 t "$AJ" "explicit null base_mtime behaves as before" 200 POST /api/v1/fs/write "{\"path\":\"$D/cfg/plain.txt\",\"content\":\"old contract\",\"base_mtime\":null}"
 
@@ -314,6 +321,7 @@ WHA=$(jq -e 'all(.[]; (.actor // "") != "" and (.ip // "") != "")' /tmp/resp.jso
 check "every event names actor + source ip" "$WHA"
 ORDER=$(jq -e '.[0].ts >= .[-1].ts' /tmp/resp.json >/dev/null; echo $?)
 check "events newest-first" "$ORDER"
+check "every event carries exact ts_ms beside ts" "$(jq -e 'all(.[]; .ts_ms > 1500000000000 and .ts == (.ts_ms / 1000 | floor))' /tmp/resp.json >/dev/null; echo $?)"
 check "plaintext keys never in audit" "$(! grep -qF -- "$V2KEY" /tmp/resp.json && ! grep -qF -- "$KEY" /tmp/resp.json; echo $?)"
 t "$AJ" "filter by action" 200 GET "/api/v1/events?action=user_active"
 FILT=$(jq -e 'all(.[]; .action == "user_active")' /tmp/resp.json >/dev/null; echo $?)

@@ -73,7 +73,7 @@ func (a *API) handleEventsList(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "bad_request", "since must be RFC3339")
 			return
 		}
-		f.Since = t.Unix()
+		f.Since = t.UnixMilli() // events are stored at ms precision since 0006
 	}
 	events, total, err := a.Events.List(r.Context(), scopeTenantID(userFrom(r.Context())), f)
 	if err != nil {

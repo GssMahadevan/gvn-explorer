@@ -101,6 +101,8 @@ func (a *API) listHelp(w http.ResponseWriter, r *http.Request, p, sub string, o 
 		if err != nil {
 			continue
 		}
+		// embedded docs have a zero mod time (the GUI renders "built-in"),
+		// so mod_time_ms 0 is already right — nothing to stamp.
 		visible = append(visible, entryView{
 			Entry: fsx.Entry{Name: d.Name(), Path: path.Join(helpPrefix, sub, d.Name()),
 				IsDir: d.IsDir(), Size: info.Size(), ModTime: info.ModTime()},
@@ -202,10 +204,10 @@ func (a *API) handleContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if bytes.IndexByte(data, 0) >= 0 {
-		writeJSON(w, http.StatusOK, map[string]any{"path": p, "size": st.Size, "mtime": st.ModTime.Unix(), "is_binary": true, "content": ""})
+		writeJSON(w, http.StatusOK, map[string]any{"path": p, "size": st.Size, "mtime": st.ModTime.Unix(), "mtime_ms": st.ModTime.UnixMilli(), "is_binary": true, "content": ""})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"path": p, "size": st.Size, "mtime": st.ModTime.Unix(), "is_binary": false, "content": string(data)})
+	writeJSON(w, http.StatusOK, map[string]any{"path": p, "size": st.Size, "mtime": st.ModTime.Unix(), "mtime_ms": st.ModTime.UnixMilli(), "is_binary": false, "content": string(data)})
 }
 
 // inlineSafeExt: a deliberately closed, explicit allow-list of the
@@ -282,10 +284,10 @@ func (a *API) helpContent(w http.ResponseWriter, _ *http.Request, p, sub string)
 		return
 	}
 	if bytes.IndexByte(data, 0) >= 0 {
-		writeJSON(w, http.StatusOK, map[string]any{"path": p, "size": len(data), "mtime": 0, "is_binary": true, "content": ""})
+		writeJSON(w, http.StatusOK, map[string]any{"path": p, "size": len(data), "mtime": 0, "mtime_ms": 0, "is_binary": true, "content": ""})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"path": p, "size": len(data), "mtime": 0, "is_binary": false, "content": string(data)})
+	writeJSON(w, http.StatusOK, map[string]any{"path": p, "size": len(data), "mtime": 0, "mtime_ms": 0, "is_binary": false, "content": string(data)})
 }
 
 // helpRaw: download for an embedded doc. Static ETag (size-0) so device
@@ -343,6 +345,9 @@ type writeBody struct {
 	// caller read. If the file has changed since, the write is refused
 	// with 409 conflict instead of silently clobbering newer bytes.
 	BaseMtime *int64 `json:"base_mtime"`
+	// base_mtime_ms: the same guard at millisecond precision (pairs with
+	// the mtime_ms field of /fs/content); wins if both are supplied.
+	BaseMtimeMs *int64 `json:"base_mtime_ms"`
 }
 
 // handleWrite: POST /api/v1/fs/write {"path":"/f.txt","content":"..."}
@@ -372,12 +377,17 @@ func (a *API) handleWrite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "exists", "path is a directory")
 		return
 	}
-	if b.BaseMtime != nil {
+	if b.BaseMtime != nil || b.BaseMtimeMs != nil {
 		if stErr != nil {
 			writeError(w, http.StatusConflict, "conflict", "file does not exist, but base_mtime was supplied")
 			return
 		}
-		if cur := st.ModTime.Unix(); cur != *b.BaseMtime {
+		if b.BaseMtimeMs != nil {
+			if cur := st.ModTime.UnixMilli(); cur != *b.BaseMtimeMs {
+				writeError(w, http.StatusConflict, "conflict", conflictMsg(*b.BaseMtimeMs, cur))
+				return
+			}
+		} else if cur := st.ModTime.Unix(); cur != *b.BaseMtime {
 			writeError(w, http.StatusConflict, "conflict", conflictMsg(*b.BaseMtime, cur))
 			return
 		}

@@ -91,7 +91,7 @@ curl -b jar 'localhost:8080/api/v1/events?limit=50&action=perm_set'   # events a
 | GET | `/fs/content?path=` | JSON text view incl. `mtime` | `r` |
 | GET | `/fs/raw?path=` | raw bytes; `ETag` + `If-None-Match`/304; `&dispo=inline` asks the browser to view pdf/image/audio/video files itself instead of saving — only honoured for those, everything else still downloads | `r` |
 | POST | `/fs/mkdir` | `{"path"}` | `w` |
-| POST | `/fs/write` | `{"path","content"}`, optional `"base_mtime"` | `w` |
+| POST | `/fs/write` | `{"path","content"}`, optional `"base_mtime"`/`"base_mtime_ms"` | `w` |
 | POST | `/fs/rename` | `{"from","to"}` | `d` on from, `w` on to |
 | POST | `/fs/upload` | multipart `path=<dir>, file=<f>` | `w` on target |
 | DELETE | `/fs?path=` | file, or empty directory | `d` |
@@ -108,8 +108,13 @@ All paths are logical, rooted at the configured root: `..`, absolute
 paths and symlinks can never escape the sandbox. `/fs/write` with
 `base_mtime` (the mtime `/fs/content` reported) gives you optimistic
 concurrency: mismatch → `409` instead of clobbering someone else's
-newer bytes. Listings, search and paging are server-side — a 500k-file
-directory is still one cheap page.
+newer bytes. Timestamps come at both precisions: `/fs/content` returns
+`mtime` (unix seconds, as always) *and* `mtime_ms`, listing entries
+carry `mod_time_ms` beside the RFC3339 `mod_time`, and drafts carry
+`updated_at_ms` beside `updated_at`. The guard works at either
+precision — send `base_mtime_ms` to pair with `mtime_ms` (it wins if
+both are given). Listings, search and paging are server-side — a
+500k-file directory is still one cheap page.
 
 **Draft/publish** (backs the YAML editor; any client may use it):
 `GET/PUT/DELETE /fs/draft` is a per-path working copy stored in the
@@ -131,7 +136,7 @@ Permissions, users, groups, tenants, factors — details and examples in
 | users | `GET/POST /users`, `PUT /users/{id}` (description), `POST /users/{id}/password`, `POST /users/{id}/active {"active"}`, `DELETE /users/{id}` |
 | groups | `GET/POST /groups`, `PUT /groups/{id}`, `POST /groups/{id}/active`, `DELETE /groups/{id}`, `POST /groups/{id}/members {"username"}`, `DELETE /groups/{id}/members/{userId}` |
 | keys | `GET/POST /users/{id}/factors`, `DELETE /users/{id}/factors/{fid}` |
-| events | `GET /events` (admins; `action=`, `target_type=`, `target=`, `since=` + list contract; tenant admins see their tenant, super admins everything) |
+| events | `GET /events` (admins; `action=`, `target_type=`, `target=`, `since=` (RFC3339, may cut inside a second) + list contract; every event carries `ts` (seconds, the contract) + exact `ts_ms`/`time`; tenant admins see their tenant, super admins everything) |
 
 Tenant admins are automatically scoped to their own tenant everywhere
 (including the audit trail); super admins pass `{"tenant":...}` on
