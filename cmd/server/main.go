@@ -25,6 +25,7 @@ import (
 	"github.com/GssMahadevan/gvn-explorer/internal/drafts"
 	"github.com/GssMahadevan/gvn-explorer/internal/fsx"
 	"github.com/GssMahadevan/gvn-explorer/internal/handlers"
+	"github.com/GssMahadevan/gvn-explorer/internal/version"
 )
 
 // envOr returns the environment value for key when set (an explicitly empty
@@ -227,14 +228,14 @@ func main() {
 				MinVersion:   tls.VersionTLS12,
 				Certificates: []tls.Certificate{*tlsPair},
 			}
-			log.Info("server starting (https)", "addr", *addr, "note", "plain-HTTP requests on this port get a 308 to https")
+			log.Info("server starting (https)", "addr", *addr, "note", "plain-HTTP requests on this port get a 308 to https", "version", version.Get().Version)
 			if err := srv.ServeTLS(httpsRedirectListener(ln), "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Error("server error", "err", err)
 				os.Exit(1)
 			}
 			return
 		}
-		log.Info("server starting", "addr", *addr)
+		log.Info("server starting", "addr", *addr, "version", version.Get().Version)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("server error", "err", err)
 			os.Exit(1)

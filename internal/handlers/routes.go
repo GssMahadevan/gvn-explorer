@@ -3,6 +3,8 @@ package handlers
 import (
 	"net/http"
 	"time"
+
+	"github.com/GssMahadevan/gvn-explorer/internal/version"
 )
 
 func (a *API) Register(mux *http.ServeMux) {
@@ -19,6 +21,13 @@ func (a *API) Register(mux *http.ServeMux) {
 			"root":   a.FS.Root(),
 			"time":   time.Now().UTC().Format(time.RFC3339),
 		})
+	})
+
+	// build identity for the GUI About box (and for scripts checking
+	// which release a device is really running): public like /healthz,
+	// so the login screen can show it too.
+	mux.HandleFunc("GET /api/v1/version", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, version.Get())
 	})
 
 	// auth (login is per-IP rate limited AND globally capped: bcrypt is

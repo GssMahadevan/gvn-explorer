@@ -53,6 +53,8 @@ tb() { # tb <bearer-key> <name> <want_status> <METHOD> <path> — like t() but w
 
 echo "== health & auth =="
 t - "healthz" 200 GET /healthz
+t - "version is public" 200 GET /api/v1/version
+check "version reports a build id" "$(jq -e '.version | type == "string"' /tmp/resp.json >/dev/null; echo $?)"
 t - "login no tenant" 422 POST /api/v1/auth/login "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}"
 t - "login wrong tenant" 401 POST /api/v1/auth/login "{\"tenant\":\"nope-$SFX\",\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}"
 t - "login wrong password" 401 POST /api/v1/auth/login "{\"tenant\":\"$ADMIN_TENANT\",\"username\":\"$ADMIN_USER\",\"password\":\"wrong-$SFX\"}"

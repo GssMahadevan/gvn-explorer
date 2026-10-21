@@ -30,7 +30,13 @@ step() { # step <name> <cmd...> — run, show output indented, count pass/fail
 
 # ---------- build ----------
 echo "== build =="
-step "go build bin/server" env GO111MODULE=on go build -o bin/server ./cmd/server
+# Stamp build identity like make does: the walk asserts the About box
+# shows exactly what the binary reports, so this must not be a plain
+# unstamped build.
+GVN_DESC=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
+GVN_HASH=$(git rev-parse --short HEAD 2>/dev/null || echo dev)
+GVN_VPKG=github.com/GssMahadevan/gvn-explorer/internal/version
+step "go build bin/server" env GO111MODULE=on go build -ldflags="-X ${GVN_VPKG}.Version=${GVN_DESC} -X ${GVN_VPKG}.GitHash=${GVN_HASH}" -o bin/server ./cmd/server
 if [ ! -d frontend/node_modules ]; then
   step "npm ci (frontend)" npm --prefix frontend ci --silent
 fi

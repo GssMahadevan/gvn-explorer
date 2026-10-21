@@ -32,7 +32,11 @@ COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 COPY docs/ ./docs/
 ARG TARGETOS TARGETARCH
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags='-s -w' -o /out/server ./cmd/server
+# build identity (internal/version), passed in by make docker-build/-push from
+# the host git checkout: the image then reports the commit it was built from.
+ARG GVN_VERSION=dev
+ARG GVN_GITHASH=dev
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags='-s -w -X github.com/GssMahadevan/gvn-explorer/internal/version.Version=${GVN_VERSION} -X github.com/GssMahadevan/gvn-explorer/internal/version.GitHash=${GVN_GITHASH}' -o /out/server ./cmd/server
 
 # ---- runtime ---------------------------------------------------------------
 FROM alpine:3.21

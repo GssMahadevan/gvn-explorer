@@ -7,8 +7,12 @@ APP_PORT ?= 8080
 PLATFORMS ?= linux/amd64,linux/arm64
 BUILDER ?= gvn-builder
 
+# Build identity for the image comes from the host checkout (the container
+# build has no .git), so make passes it down as build args.
+STAMP_ARGS := --build-arg GVN_VERSION=$(GIT_DESC) --build-arg GVN_GITHASH=$(GIT_HASH)
+
 docker-build:
-	docker build -f $(DOCKER_DIR)/Dockerfile -t $(IMAGE) .
+	docker build $(STAMP_ARGS) -f $(DOCKER_DIR)/Dockerfile -t $(IMAGE) .
 .PHONY: docker-build docker-push docker-up docker-down docker-logs docker-test
 
 # Publish one tag containing every architecture in $(PLATFORMS). Needs a

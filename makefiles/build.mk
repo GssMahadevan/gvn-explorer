@@ -6,8 +6,19 @@ export GO111MODULE=on
 build: build-server build-web
 .PHONY: build build-server build-web web-deps dist
 
+# Build identity stamped into every server binary (internal/version):
+# git-describe gives tag + commits-since-tag + hash in one string
+# (v0.1.0-42-gad9832d) — the commit count orders any two builds and
+# says how far each sits from a published release; the bare hash is
+# passed too so nothing has to parse. The GUI About box and
+# GET /api/v1/version show both.
+VERSION_PKG := github.com/GssMahadevan/gvn-explorer/internal/version
+GIT_DESC ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+GIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
+LDFLAGS := -s -w -X $(VERSION_PKG).Version=$(GIT_DESC) -X $(VERSION_PKG).GitHash=$(GIT_HASH)
+
 build-server:
-	go build -trimpath -ldflags='-s -w' -o bin/server ./cmd/server
+	go build -trimpath -ldflags='$(LDFLAGS)' -o bin/server ./cmd/server
 
 # GUI bundle -> frontend/dist (what -web / the container image serve).
 web-deps:
@@ -41,7 +52,7 @@ dist: build-web
 	  extra=; tags=embedweb; \
 	  case $$arch in mips|mipsle) extra=GOMIPS=softfloat; tags=embedweb,sqlite_purego;; esac; \
 	  mkdir -p $(DIST)/bundles/$$name; \
-	  env $$extra GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -trimpath -tags "$$tags" -ldflags='-s -w' -o $(DIST)/bundles/$$name/$$name$$ext ./cmd/server || fail=1; \
+	  env $$extra GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -trimpath -tags "$$tags" -ldflags='$(LDFLAGS)' -o $(DIST)/bundles/$$name/$$name$$ext ./cmd/server || fail=1; \
 	  cp deployments/binary/README.md $(DIST)/bundles/$$name/README.md; \
 	  ( cd $(DIST)/bundles && if [ "$$os" = windows ]; then zip -qr $$name.zip $$name; else tar czf $$name.tar.gz $$name; fi ) || fail=1; \
 	  cp $(DIST)/bundles/$$name/$$name$$ext $(DIST)/$$name$$ext; \
@@ -72,7 +83,7 @@ android-so: build-web
 	  set -- $$spec; abi=$$1; goos=$$2; goarch=$$3; goarm=$$4; \
 	  echo "==> jniLibs/$$abi"; \
 	  mkdir -p $(ANDROID_JNILIBS)/$$abi; \
-	  env $$goarm GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -trimpath -tags embedweb -ldflags='-s -w' -o $(ANDROID_JNILIBS)/$$abi/libgvnserver.so ./cmd/server || exit 1; \
+	  env $$goarm GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -trimpath -tags embedweb -ldflags='$(LDFLAGS)' -o $(ANDROID_JNILIBS)/$$abi/libgvnserver.so ./cmd/server || exit 1; \
 	done
 
 android-apk: android-so

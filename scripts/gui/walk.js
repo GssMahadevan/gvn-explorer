@@ -1381,6 +1381,25 @@ fs.mkdirSync(OUT, { recursive: true });
     await clickMenuItem('About');
     await waitModal();
     check('about modal names the stack', /Ant Design/.test(await modalText()));
+    // build identity: the About box must show what GET /api/v1/version
+    // reports (that string is stamped into the binary by the Makefile),
+    // so the walk pins stamp -> endpoint -> UI without hardcoding a format.
+    const binfo = await (await fetch(`${B}/api/v1/version`)).json();
+    await page
+      .waitForFunction(
+        (h) =>
+          [...document.querySelectorAll('.ant-modal')].some((m) =>
+            m.textContent.includes(h || 'n/a'),
+          ),
+        { timeout: 5000 },
+        binfo.git_hash,
+      )
+      .catch(() => {});
+    const aboutTxt = await modalText();
+    check(
+      'about modal shows the stamped build identity',
+      aboutTxt.includes(binfo.version) && aboutTxt.includes(binfo.git_hash || 'n/a'),
+    );
     await closeModals();
 
     // ---- built-in user guide: embedded in the binary, /help tree ----

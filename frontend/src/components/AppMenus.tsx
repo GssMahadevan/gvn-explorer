@@ -2,7 +2,7 @@
 // on the left and a user menu (Profile / Settings / Sign out) on the
 // right. Only real API endpoints are called; Settings holds the one
 // genuine UI preference we support (dark mode, persisted locally).
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Alert,
   Avatar,
@@ -40,8 +40,26 @@ const FEEDBACK_MAILTO =
 // the usual About/Help/Feedback application menu. "Help" now opens the
 // user guide that ships embedded in the server binary (/help/README.md,
 // rendered by the file page) — the real docs, not a summarized modal.
+// Build identity, straight from the binary that answered: a plain `go
+// build` reports "dev", so the box can tell an unstamped build apart
+// from a release instead of showing a version we made up here.
+interface BuildInfo {
+  version: string;
+  git_hash: string;
+}
+
 export function BrandMenu({ onHelp }: { onHelp: () => void }) {
   const [modal, setModal] = useState<'about' | null>(null);
+  const [build, setBuild] = useState<BuildInfo | null>(null);
+
+  // fetched when the box opens: the About panel is where you confirm the
+  // server you are talking to is the release you think you installed.
+  useEffect(() => {
+    if (modal !== 'about' || build) return;
+    api<BuildInfo>('/api/v1/version')
+      .then(setBuild)
+      .catch(() => setBuild({ version: 'unknown', git_hash: '' }));
+  }, [modal, build]);
 
   const items: MenuProps['items'] = [
     { key: 'help', icon: <QuestionCircleOutlined />, label: 'Help' },
@@ -75,7 +93,18 @@ export function BrandMenu({ onHelp }: { onHelp: () => void }) {
           size="small"
           items={[
             { key: 'n', label: 'Application', children: 'File Explorer console' },
-            { key: 'v', label: 'Version', children: '0.1.0' },
+            {
+              key: 'v',
+              label: 'Version',
+              // git describe: nearest tag + commits since it + hash, so the
+              // number between tag and hash orders any two builds.
+              children: <span className="mono">{build?.version ?? '…'}</span>,
+            },
+            {
+              key: 'g',
+              label: 'Build',
+              children: <span className="mono">{build?.git_hash || 'n/a'}</span>,
+            },
             {
               key: 'b',
               label: 'Backend',
