@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Button, Form, Select, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { api, qs } from '../api';
-import type { Group, Me } from '../types';
+import type { Doc, Group, Me } from '../types';
 import { useListView } from '../useListView';
 import { useFlash } from '../flash';
 import ListSearch from '../components/ListSearch';
@@ -10,6 +10,7 @@ import ActiveFilterSelect from '../components/ActiveFilterSelect';
 import PrincipalSelect from '../components/PrincipalSelect';
 import RowActions from '../components/RowActions';
 import GroupForm from '../components/forms/GroupForm';
+import DocJsonModal from '../components/DocJsonModal';
 
 // Groups panel: search/filter/sort, member management (inline add + tag
 // remove), suspend/activate, delete. Creation and the description edit
@@ -19,7 +20,18 @@ export default function GroupsPanel({ me }: { me: Me }) {
   const lv = useListView<Group[]>((s) => `/api/v1/groups?${qs(s)}`, { sort: 'name' });
   const [memberForm] = Form.useForm();
   const [formFor, setFormFor] = useState<Group | 'new' | null>(null);
+  const [doc, setDoc] = useState<Doc | null>(null);
   const groups = lv.payload ?? [];
+
+  // the group as one document: members and every grant naming it — the
+  // same text another instance takes through "Apply JSON".
+  const exportDoc = async (g: Group) => {
+    try {
+      setDoc(await api<Doc>(`/api/v1/export?group=${encodeURIComponent(g.tenant + '/' + g.name)}`));
+    } catch (e) {
+      flash.err((e as Error).message);
+    }
+  };
   // member suggestions come from the selected group's own tenant — exactly
   // the scope the backend resolves the username in.
   const gidSel = Form.useWatch('gid', memberForm) as number | undefined;
@@ -130,6 +142,7 @@ export default function GroupsPanel({ me }: { me: Me }) {
         <RowActions
           actions={[
             { key: 'edit', label: 'edit', onClick: () => setFormFor(g) },
+            { key: 'doc', label: 'export JSON', onClick: () => exportDoc(g) },
             g.active === false
               ? { key: 'activate', label: 'activate', onClick: () => setActive(g, true) }
               : {
@@ -226,6 +239,8 @@ export default function GroupsPanel({ me }: { me: Me }) {
           lv.reload();
         }}
       />
+
+      <DocJsonModal doc={doc} onClose={() => setDoc(null)} />
     </>
   );
 }

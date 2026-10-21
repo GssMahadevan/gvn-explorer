@@ -160,6 +160,26 @@ func (s *Store) ListTenants(ctx context.Context, o query.List) ([]Tenant, int, e
 	return out, total, rows.Err()
 }
 
+// TenantByName reads one tenant row, for tenant documents. (TenantID
+// exists for id lookups; a document needs the description and state.)
+func (s *Store) TenantByName(ctx context.Context, name string) (Tenant, error) {
+	var t Tenant
+	var act int
+	var caStr string
+	err := s.DB.QueryRowContext(ctx,
+		"SELECT id, name, description, active, created_at FROM tenants WHERE name = ?", name).
+		Scan(&t.ID, &t.Name, &t.Description, &act, &caStr)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Tenant{}, ErrNotFound
+	}
+	if err != nil {
+		return Tenant{}, err
+	}
+	t.Active = act != 0
+	t.CreatedAt, _ = time.Parse(tsFmt, caStr)
+	return t, nil
+}
+
 // UpdateTenant sets a tenant's description.
 func (s *Store) UpdateTenant(ctx context.Context, id int64, description string) error {
 	res, err := s.DB.ExecContext(ctx, "UPDATE tenants SET description = ? WHERE id = ?", description, id)
@@ -657,6 +677,18 @@ func (s *Store) UpdateGroup(ctx context.Context, id int64, description string) e
 }
 
 // AddMember enrolls a user in a group; both must belong to the same tenant.
+// IsMember reports membership without the paging machinery — import
+// needs it to keep re-applying a document's memberships a no-op.
+func (s *Store) IsMember(ctx context.Context, groupID, userID int64) (bool, error) {
+	var x int
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?`, groupID, userID).Scan(&x)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 func (s *Store) AddMember(ctx context.Context, groupID, userID int64) error {
 	var gt, ut sql.NullInt64
 	err := s.DB.QueryRowContext(ctx,
@@ -705,6 +737,51 @@ func (s *Store) GroupIDsFor(ctx context.Context, userID int64) ([]int64, error) 
 			return nil, err
 		}
 		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// GroupNamesFor lists every group a user belongs to — the member_of
+// half of a user document. Unlike GroupIDsFor (which exists for the
+// permission engine, where inactive groups must drop out), a document
+// is a complete snapshot; a group's own state travels in its document.
+func (s *Store) GroupNamesFor(ctx context.Context, userID int64) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT g.name FROM group_members gm JOIN groups g ON g.id = gm.group_id
+		 WHERE gm.user_id = ? ORDER BY g.name`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// GroupMembers lists one group's members, for the members half of a
+// group document. (ListGroups embeds the same rows for its pages; a
+// single-group read wants no paging machinery.)
+func (s *Store) GroupMembers(ctx context.Context, groupID int64) ([]Member, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT u.id, u.username FROM group_members gm JOIN users u ON u.id = gm.user_id
+		 WHERE gm.group_id = ? ORDER BY u.username`, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Member
+	for rows.Next() {
+		var m Member
+		if err := rows.Scan(&m.ID, &m.Username); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
 	}
 	return out, rows.Err()
 }

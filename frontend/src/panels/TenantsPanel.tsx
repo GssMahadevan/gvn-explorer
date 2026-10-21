@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Alert, Button, Space, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { api, qs } from '../api';
-import type { Me, Tenant } from '../types';
+import type { Doc, Me, Tenant } from '../types';
 import { useListView } from '../useListView';
 import { useFlash } from '../flash';
 import ListSearch from '../components/ListSearch';
@@ -10,6 +10,7 @@ import ActiveFilterSelect from '../components/ActiveFilterSelect';
 import RowActions from '../components/RowActions';
 import DateTime from '../components/DateTime';
 import TenantForm from '../components/forms/TenantForm';
+import DocJsonModal from '../components/DocJsonModal';
 
 // Tenants panel (super admin only): create/edit (description), the
 // tenant-wide suspend-instead-of-delete kill switch, and delete.
@@ -20,7 +21,17 @@ export default function TenantsPanel({ me }: { me: Me }) {
   const flash = useFlash();
   const lv = useListView<Tenant[]>((s) => `/api/v1/tenants?${qs(s)}`, { sort: 'name' });
   const [formFor, setFormFor] = useState<Tenant | 'new' | null>(null);
+  const [doc, setDoc] = useState<Doc | null>(null);
   const tenants = lv.payload ?? [];
+
+  // a tenant as one document: its home's pseudo-principal grants and all.
+  const exportDoc = async (t: Tenant) => {
+    try {
+      setDoc(await api<Doc>('/api/v1/export?tenant=' + encodeURIComponent(t.name)));
+    } catch (e) {
+      flash.err((e as Error).message);
+    }
+  };
 
   const setActive = async (t: Tenant, active: boolean) => {
     try {
@@ -85,6 +96,7 @@ export default function TenantsPanel({ me }: { me: Me }) {
         <RowActions
           actions={[
             { key: 'edit', label: 'edit', onClick: () => setFormFor(t) },
+            { key: 'doc', label: 'export JSON', onClick: () => exportDoc(t) },
             t.active === false
               ? { key: 'activate', label: 'activate', onClick: () => setActive(t, true) }
               : {
@@ -168,6 +180,8 @@ export default function TenantsPanel({ me }: { me: Me }) {
           lv.reload();
         }}
       />
+
+      <DocJsonModal doc={doc} onClose={() => setDoc(null)} />
     </>
   );
 }

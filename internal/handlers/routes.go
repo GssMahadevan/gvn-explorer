@@ -65,6 +65,11 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/perms", a.requireAuth(a.handlePermsShow))
 	mux.HandleFunc("PUT /api/v1/perms", a.requireAdmin(a.handlePermsPut))
 	mux.HandleFunc("DELETE /api/v1/perms/{id}", a.requireAdmin(a.handlePermsDelete))
+	// Entity/ACL documents (Batch C): export is read-scoped per kind
+	// inside the handler (path docs match GET /perms visibility);
+	// import mutates, so it is admin-only.
+	mux.HandleFunc("GET /api/v1/export", a.requireAuth(a.handleExport))
+	mux.HandleFunc("POST /api/v1/import", a.requireAdmin(a.handleImport))
 
 	// users & groups (admin; tenant admins see and manage only their tenant)
 	mux.HandleFunc("GET /api/v1/users", a.requireAdmin(a.handleUsersList))

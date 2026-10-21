@@ -229,8 +229,8 @@ func (a *API) handleTenantsDelete(w http.ResponseWriter, r *http.Request) {
 // "expires_at": "2026-10-22T00:00:00Z" -> exact cutoff, wins over days
 // Omit both for no expiry.
 type Expiry struct {
-	ExpiresDays *float64 `json:"expires_days"`
-	ExpiresAt   string   `json:"expires_at"`
+	ExpiresDays *float64 `json:"expires_days,omitempty"`
+	ExpiresAt   string   `json:"expires_at,omitempty"`
 }
 
 func (e Expiry) resolve() (*time.Time, error) {
@@ -305,6 +305,94 @@ type grantBody struct {
 	Expiry
 }
 
+// principalProblem resolves a grant request to principal ids without
+// writing anything: code/msg describe why it fails ("" = ok). Every
+// grant path must share these checks — tenant scoping, pseudo-principals,
+// reserved ids — so a template can never smuggle in a grant a
+// hand-entered one would reject.
+func (a *API) principalProblem(ctx context.Context, u auth.User, tenant, ptype, name string) (pid, ptid int64, code, msg string) {
+	switch ptype {
+	case "user":
+		usr, err := a.Auth.UserByName(ctx, tenant, name)
+		if errors.Is(err, auth.ErrNotFound) {
+			return 0, 0, "no_such_user", tenant + "/" + name
+		}
+		if err != nil {
+			return 0, 0, "internal", err.Error()
+		}
+		pid, ptid = usr.ID, usr.TenantID
+	case "group":
+		g, err := a.Auth.GroupByName(ctx, tenant, name)
+		if errors.Is(err, auth.ErrNotFound) {
+			return 0, 0, "no_such_group", tenant + "/" + name
+		}
+		if err != nil {
+			return 0, 0, "internal", err.Error()
+		}
+		pid, ptid = g.ID, g.TenantID
+	case "tenant":
+		// "any user in tenant T": like user/group principals, a tenant
+		// admin may only target their own tenant; cross-tenant rows are
+		// super's prerogative (and never inside a home — see homeGrantOK).
+		if !u.IsSuper && !strings.EqualFold(name, u.Tenant) {
+			return 0, 0, "forbidden", "grants may only target your own tenant"
+		}
+		tid, err := a.Auth.TenantID(ctx, name)
+		if err != nil {
+			return 0, 0, "no_such_tenant", name
+		}
+		pid, ptid = tid, tid
+	case "all":
+		// world rows: every authenticated user. Reserved principal_id 0
+		// (no entity has id 0). Allowed on shared-zone paths for any
+		// admin who can manage them; refused inside homes (see below).
+		pid, ptid = 0, 0
+	default:
+		return 0, 0, "bad_request", "principal_type must be user, group, tenant or all"
+	}
+	return pid, ptid, "", ""
+}
+
+// resolvePrincipal is the request-writing wrapper of principalProblem,
+// used by PUT /perms where one bad grant answers the whole request.
+func (a *API) resolvePrincipal(w http.ResponseWriter, r *http.Request, u auth.User, tenant, ptype, name string) (pid, ptid int64, ok bool) {
+	pid, ptid, code, msg := a.principalProblem(r.Context(), u, tenant, ptype, name)
+	if code != "" {
+		status := map[string]int{"no_such_user": http.StatusNotFound, "no_such_group": http.StatusNotFound,
+			"no_such_tenant": http.StatusNotFound, "forbidden": http.StatusForbidden,
+			"bad_request": http.StatusBadRequest, "internal": http.StatusInternalServerError}[code]
+		writeError(w, status, code, msg)
+		return 0, 0, false
+	}
+	return pid, ptid, true
+}
+
+// homeProblem reports why a grant at path p breaks the tenant-home
+// partition for a principal of tenant ptid ("" = ok). The check runs
+// for one-off grants and imported template rows alike, so the partition
+// in acl.Effective can never be contradicted by what an import writes.
+func (a *API) homeProblem(ctx context.Context, p string, ptid int64) (code, msg string) {
+	owner, ownerID, err := a.ACL.HomeOwner(ctx, p)
+	if err != nil {
+		return "internal", err.Error()
+	}
+	if owner != "" && ptid != ownerID {
+		return "validation", "grants inside the tenant home /" + owner + " may only target that tenant's members"
+	}
+	return "", ""
+}
+
+// homeGrantOK is the request-writing wrapper of homeProblem.
+func (a *API) homeGrantOK(w http.ResponseWriter, r *http.Request, p string, ptid int64) bool {
+	code, msg := a.homeProblem(r.Context(), p, ptid)
+	if code != "" {
+		status := map[string]int{"internal": http.StatusInternalServerError, "validation": http.StatusUnprocessableEntity}[code]
+		writeError(w, status, code, msg)
+		return false
+	}
+	return true
+}
+
 // handlePermsPut: PUT /api/v1/perms (admin) — upsert one grant.
 // Tenant admins may only grant to principals inside their own tenant.
 func (a *API) handlePermsPut(w http.ResponseWriter, r *http.Request) {
@@ -334,58 +422,19 @@ func (a *API) handlePermsPut(w http.ResponseWriter, r *http.Request) {
 		helpReadOnly(w)
 		return
 	}
-	var pid, ptid int64
-	switch b.PrincipalType {
-	case "user":
-		usr, err := a.Auth.UserByName(r.Context(), tenant, b.Principal)
-		if errors.Is(err, auth.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "no_such_user", tenant+"/"+b.Principal)
-			return
-		}
-		pid, ptid = usr.ID, usr.TenantID
-	case "group":
-		g, err := a.Auth.GroupByName(r.Context(), tenant, b.Principal)
-		if errors.Is(err, auth.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "no_such_group", tenant+"/"+b.Principal)
-			return
-		}
-		pid, ptid = g.ID, g.TenantID
-	case "tenant":
-		// "any user in tenant T": like user/group principals, a tenant
-		// admin may only target their own tenant; cross-tenant rows are
-		// super's prerogative (and never inside a home — see below).
-		if !u.IsSuper && !strings.EqualFold(b.Principal, u.Tenant) {
-			writeError(w, http.StatusForbidden, "forbidden", "grants may only target your own tenant")
-			return
-		}
-		tid, err := a.Auth.TenantID(r.Context(), b.Principal)
-		if err != nil {
-			writeError(w, http.StatusNotFound, "no_such_tenant", b.Principal)
-			return
-		}
-		pid, ptid = tid, tid
-		tenant = b.Principal
-	case "all":
-		// world rows: every authenticated user. Reserved principal_id 0
-		// (no entity has id 0). Allowed on shared-zone paths for any
-		// admin who can manage them; refused inside homes below.
-		pid, ptid = 0, 0
-	default:
-		writeError(w, http.StatusBadRequest, "bad_request",
-			"principal_type must be user, group, tenant or all")
+	pid, ptid, ok := a.resolvePrincipal(w, r, u, tenant, b.PrincipalType, b.Principal)
+	if !ok {
 		return
+	}
+	if b.PrincipalType == "tenant" {
+		tenant = b.Principal
 	}
 	// Tenant homes are for members — absolute, super included. Inside
 	// /{T} every principal must be a member of T: a user/group row from T,
 	// or the tenant principal T itself. "all" and foreign principals are
 	// refused here so the partition in acl.Effective can never be
 	// contradicted by a grant an admin creates.
-	if owner, ownerID, err := a.ACL.HomeOwner(r.Context(), p); err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	} else if owner != "" && ptid != ownerID {
-		writeError(w, http.StatusUnprocessableEntity, "validation",
-			"grants inside the tenant home /"+owner+" may only target that tenant's members")
+	if !a.homeGrantOK(w, r, p, ptid) {
 		return
 	}
 	gr, err := a.ACL.Upsert(r.Context(), p, b.PrincipalType, pid, b.Read, b.Write, b.Delete, exp)

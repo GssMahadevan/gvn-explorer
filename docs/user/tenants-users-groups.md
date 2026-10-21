@@ -123,6 +123,11 @@ Suspending a group ignores every permission that flows *through* it
 while leaving direct user grants untouched — handy for pausing a whole
 team at once.
 
+Any tenant, user or group can also be stated as one JSON document and
+re-applied on another instance ("export JSON" in the row menu, "Apply
+JSON" in the Permissions panel) — see
+[api.md → documents](api.md#documents-export--import).
+
 ## What to read next
 
 - [permissions.md](permissions.md) — who can touch which path

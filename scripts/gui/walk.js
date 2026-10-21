@@ -1069,7 +1069,7 @@ fs.mkdirSync(OUT, { recursive: true });
       } catch {
         return false;
       }
-      return /Grant access/.test(await modalText()) && /inherit down/.test(await modalText());
+      return /Grant access/.test(await modalText()) && /unless a nearer path/.test(await modalText());
     })());
     const tenantSelPos = await page.evaluate(() => {
       const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
@@ -1197,6 +1197,57 @@ fs.mkdirSync(OUT, { recursive: true });
       await mouseClick('.ant-modal button', '^revoke$');
       await new Promise((r) => setTimeout(r, 900));
       return !(await visiblePanelText()).includes('acme (all members)');
+    })());
+
+    // ---- documents: this path as portable JSON, and the same text back.
+    // the apply modal previews the difference against the target's CURRENT
+    // export, so "1 to apply" here is the server's own truth, not a guess ----
+    check('Export JSON opens the document modal with this path', await (async () => {
+      await mouseClick('button', '^Export JSON$');
+      try {
+        await waitModal();
+      } catch {
+        return false;
+      }
+      const t = await modalText();
+      return /"kind": "acl"/.test(t) && /walk-perms\.md/.test(t) &&
+        /Save as template/.test(t) && /"grants": \[\]/.test(t);
+    })());
+    await mouseClick('.ant-modal button', '^Close$');
+    await new Promise((r) => setTimeout(r, 600));
+    check('Apply JSON previews the exact change before applying', await (async () => {
+      await mouseClick('button', '^Apply JSON$');
+      await waitModal();
+      await page.evaluate(() => {
+        const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+        const ta = m?.querySelector('[data-testid="apply-json-text"]') ?? m?.querySelector('textarea');
+        if (!ta) return;
+        Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')
+          .set.call(ta, JSON.stringify({
+            kind: 'acl', version: 1, path: '/walk-perms.md',
+            grants: [{ principal_type: 'all', principal: '', read: true }],
+          }));
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await new Promise((r) => setTimeout(r, 1400)); // parse + preview fetch
+      const t = await modalText();
+      return /1 to apply/.test(t) && /acl \/walk-perms\.md/.test(t);
+    })());
+    await mouseClick('.ant-modal button', '^Apply$');
+    await new Promise((r) => setTimeout(r, 1400));
+    check('imported grant lands as an ordinary row',
+      (await visiblePanelText()).includes('* all signed-in users'));
+    check('apply flash reports the import result', await page.evaluate(() => {
+      const b = document.querySelector('[data-testid="flash-bar"]');
+      return !!b && /applied 1 grant/.test(b.innerText);
+    }));
+    check('document grant revokes like any row', await (async () => {
+      if (!(await openRowMenu('all signed-in users'))) return false;
+      await menuClick('revoke');
+      await waitModal();
+      await mouseClick('.ant-modal button', '^revoke$');
+      await new Promise((r) => setTimeout(r, 900));
+      return !(await visiblePanelText()).includes('* all signed-in users');
     })());
 
     await page.evaluate(() => fetch('/api/v1/fs?path=%2Fwalk-perms.md', { method: 'DELETE' }));

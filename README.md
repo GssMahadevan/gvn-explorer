@@ -389,7 +389,8 @@ Every authz/authn DML is appended to an `events` table — forensics first:
 who changed what, to whom, from which IP, when. Recorded actions:
 `tenant_create/update/delete/active`, `user_create/update/delete/password/active`,
 `group_create/update/delete/active`, `member_add/remove`, `perm_set/delete`,
-`factor_create/delete`, `login`, `login_failed`, `fs_commit` (published file writes).
+`factor_create/delete`, `login`, `login_failed`, `fs_commit` (published file writes),
+`import_apply` (one per applied JSON document, see *Portable JSON documents*).
 
 Design rules:
 
@@ -418,6 +419,45 @@ Admin rights; super admins see all tenants. Newest first. A failed audit
 write is logged loudly but never blocks the operation itself. The GUI
 mirrors this API one-for-one as the **Events tab** (see Web GUI): all
 columns, the same filters, and per-row expansion of the `details` JSON.
+
+## Portable JSON documents (export / import)
+
+Every entity can be stated as one JSON document and re-applied on any
+instance. `GET /api/v1/export?path=/p` | `?user=t/u` | `?group=t/g` |
+`?tenant=t` returns the canonical text — a path's grants, or a user
+(fields + `member_of` + the grants naming them), a group (members +
+grants), or a tenant. It speaks **names, never ids**, carries no
+secrets, and grant lines are exactly the `PUT /api/v1/perms` input
+shape — so one document is reviewable, diffable text you can keep in
+git or in a `/templates/` folder (a convention, not a special place).
+
+`POST /api/v1/import {"doc": …, "mode": "merge"|"replace"}` (admin)
+writes one back:
+
+- **merge** (the default) adds and updates; **replace** additionally
+  deletes the rows belonging to the target that the document omits —
+  inherited grants are never touched;
+- validation happens **all at once**: one unresolved name 422s the
+  whole call and lists every problem; nothing ever half-applies, and
+  re-applying the same document is a no-op;
+- the only principal import creates is the document's **own subject**
+  (a grant line may name it before it exists); every other name must
+  already be there. Imported users are device users until given a
+  password; an omitted `tenant` means the applying account's tenant;
+- a `dir` document creates the whole directory chain first (parents
+  included, shallowest first); a `tenant` document provisions the home
+  exactly like `POST /tenants` does; `/help` stays read-only here too;
+- every apply writes one `import_apply` event naming the target and
+  the counts; a newly created subject also records the canonical
+  `user_create`/`group_create`/`tenant_create` with `via: "document"`.
+
+The GUI exports from any row's ⋮ menu and from the Permissions panel
+(clipboard, or a downloaded `<kind>-<name>.json` template), and takes
+text back under Permissions ▸ Apply JSON — pasted or picked from a
+file — showing the exact difference first: it fetches the target's
+*current* document from the same export endpoint, so the preview of
+what merge adds and what replace deletes is the server's own truth,
+not a guess.
 
 ## Web attack surface
 
@@ -611,6 +651,10 @@ the PUT below, and searchable/sortable through the list contract.
 - `POST /api/v1/groups/{id}/members {"username"}`, `DELETE /api/v1/groups/{id}/members/{userId}`
 - `GET /api/v1/events` — forensic audit trail (see above); query params
   `limit`, `action`, `target_type`, `target`, `since`
+- `GET /api/v1/export?path=… | ?user=t/u | ?group=t/g | ?tenant=t` and
+  `POST /api/v1/import {"doc": …, "mode": "merge"|"replace"}` — portable
+  JSON documents for one path/user/group/tenant (see *Portable JSON
+  documents*); export is read-scoped like `GET /perms`, import needs admin
 
 ## Web GUI
 
@@ -621,7 +665,13 @@ paging/search/sort contract above, with antd's server-side table paging
 (`X-Total-Count` → last page). `docs/gui-survey.md` records the framework
 survey and the perf data behind this choice. A file or folder row's
 **permissions** menu action points the Permissions panel at that exact
-path, so granting access to one file is one click from the browser.
+path, so granting access to one file is one click from the browser. That
+panel also carries the document pair: **Export JSON** (this path as one
+portable statement — clipboard or a `<kind>-<name>.json` template
+download) and, for admins, **Apply JSON** (paste text or pick a saved
+file; a live diff shows every row being added, updated or — in replace
+mode — deleted before anything is written; see *Portable JSON
+documents*).
 
 Structure: all panels stay mounted under a tab header and swap instantly;
 entity lists (users, groups, tenants, grants) show `active` and
@@ -641,9 +691,10 @@ the table. Confirmations name their subject instead of just the verb —
 `grant saved: acme/alice on /reports/q3.md → r-w-`, `suspended user
 acme/bob`, `renamed /a → /b` — so the session messages double as a "what
 did I just change" trail. Every row's actions live behind one vertical three-dots menu
-(`components/RowActions`): entity operations (edit, set password, new API
-key, suspend/activate, delete), file operations (permissions, rename,
-delete) and grant revoke all occupy the same one-column-wide slot, so
+(`components/RowActions`): entity operations (edit, export JSON, set password,
+new API key, suspend/activate, delete), file operations (permissions, export
+JSON, rename, delete) and grant revoke all occupy the same one-column-wide
+slot, so
 tables stay usable at phone widths no matter how many actions an entity
 has; destructive items pop a themed confirm dialog whose OK button
 carries the action name.
@@ -810,7 +861,8 @@ python3 scripts/test_matrix.py --base-url http://localhost:8095 \
 
 `test_matrix.py` is a dependency-free (stdlib-only) API matrix checker: it
 provisions throwaway tenants/users/groups/files under a random run-id, then
-verifies that principals, grants, groups, API keys and audit rows never cross
+verifies that principals, grants, groups, API keys, audit rows and JSON
+documents never cross
 tenant boundaries; that the r/w/d bits, nearest-ancestor inheritance, zero-grant
 subtrees, user-overrides-group, expiry and suspension behave exactly as the
 permission docs promise; and that hostile path inputs (`../`, `%2e%2e`, double
@@ -834,10 +886,12 @@ draft-autosave → publish incl. comment/block-scalar preservation and the
 native video player that really plays + media rows never offered `edit`,
 download links for non-media files,
 the active-filter wire format,
-flash center, per-file grant flow, the Events tab (all audit columns,
+flash center, per-file grant flow, the JSON document pair (export modal
+from the row menu and the Permissions panel, Apply JSON with the live
+diff preview writing a real grant), the Events tab (all audit columns,
 the `action=` filter wire format, search scoping, details expansion),
 header menus, dark mode, sign-out)
-with 87 assertions plus a zero-console-error guard (which also proves the
+with 117 assertions plus a zero-console-error guard (which also proves the
 server's content-security-policy is compatible with the bundle). `SHOTS=1` additionally
 writes light/dark screenshots to `$OUT_DIR` (default `/tmp/fx-gui`).
 Needs a local Chrome; `CHROME_PATH` overrides the macOS default.

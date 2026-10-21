@@ -23,6 +23,7 @@ Start here, by what you want to do:
 | pair a TV, console or walk-up device by QR code | [Pairing a device](pairing.md) |
 | let a device / CI job talk to the server | [API keys and devices](api-keys.md) |
 | script the whole thing with curl | [REST API for non-browser clients](api.md) |
+| save the setup as text, or copy it to another instance | [API → documents (export / import)](api.md#documents-export--import) |
 
 Every guide's examples are plain `curl` against the running server, so
 you can copy them as-is. The guides cross-reference each other; each

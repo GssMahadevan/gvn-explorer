@@ -3,7 +3,7 @@
 Everything the GUI does is a documented HTTP call — scripts, CI jobs,
 devices and other services use the same contract, no HTML anywhere.
 This is the practical reference — everything you need while reading it
-here is in this guide. The exhaustive contract, plus the ~350-case curl
+here is in this guide. The exhaustive contract, plus the ~420-case curl
 regression suite that tests it, lives in the project's source repo
 (root `README.md` and `scripts/test_files.sh`).
 
@@ -142,10 +142,42 @@ Tenant admins are automatically scoped to their own tenant everywhere
 (including the audit trail); super admins pass `{"tenant":...}` on
 create and `?tenant=` on lists.
 
+## Documents (export / import)
+
+Every entity can be stated as one portable JSON document — a path's
+grants, a user, a group, or a tenant:
+
+| endpoint | what it does |
+|----------|--------------|
+| `GET /export?path=/p` \| `?user=t/u` \| `?group=t/g` \| `?tenant=t` | the canonical document for one entity; path docs need the same read view as `GET /perms`, entity docs follow panel scoping (tenant admins: own tenant; tenant docs: super only) |
+| `POST /import {"doc": …, "mode": "merge"\|"replace"}` | applies a document (admins); `merge` (the default) adds and updates, `replace` additionally removes the target's rows the document omits; the reply reports what was created, applied, and removed |
+
+Documents name everything, never ids, so the same text applies on any
+instance. The rules worth knowing:
+
+- grant lines inside a document have exactly the `PUT /perms` input
+  shape; an omitted `tenant` means the applying account's tenant;
+- import creates only the document's **own subject** — every other
+  principal named in grant lines or memberships must already exist;
+- validation is all-or-nothing: one unresolved name 422s the whole
+  call and lists every problem; nothing half-applies;
+- `dir` documents create the whole directory chain (parents included,
+  shallowest first) before applying grants;
+- imported users are device users (no password) until one is given;
+- `active` omitted means "leave as is", and re-applying the same
+  document changes nothing.
+
+The GUI exports from any row's ⋮ menu and the Permissions panel, and
+applies text (pasted or picked from a file) under Permissions ▸ Apply
+JSON, showing a live diff — including every row `replace` deletes —
+before anything is written. Keeping documents in a `/templates/`
+folder is a convention, not a special feature.
+
 ## The contract is tested, not folklore
 
 The server's regression suite (in the source repo:
-`scripts/test_files.sh`) runs ~350 curl assertions against a live
+`scripts/test_files.sh`) runs ~420 curl assertions against a live
 server — auth, expiry, suspension, CSRF, ACL inheritance, pagination,
-rate limits. If you have the checkout, grepping that file is the
-fastest way to see any call's exact request/response.
+rate limits, and the export/import round trip. If you have the
+checkout, grepping that file is the fastest way to see any call's
+exact request/response.

@@ -52,6 +52,45 @@ export interface PermsList {
   grants: Grant[];
 }
 
+// Entity/ACL documents (GET /api/v1/export, POST /api/v1/import). The
+// shape is deliberately loose: the server validates every document, the
+// GUI only renders and relays it. Grant lines are the PUT /perms input
+// shape (principal + optional tenant), not the GET /perms output rows.
+export interface DocGrant {
+  path?: string; // entity docs place each line; acl/dir docs use the doc's path
+  principal_type: 'user' | 'group' | 'tenant' | 'all';
+  principal: string;
+  tenant?: string; // defaults to the applying account's tenant ("*" same)
+  read?: boolean;
+  write?: boolean;
+  delete?: boolean;
+  expires_at?: string;
+  expires_days?: number;
+}
+
+export interface Doc {
+  kind: 'acl' | 'dir' | 'user' | 'group' | 'tenant';
+  version: number;
+  path?: string; // acl/dir docs
+  tenant?: string; // user/group docs
+  username?: string; // user docs
+  name?: string; // group/tenant docs
+  grants: DocGrant[];
+  [k: string]: unknown;
+}
+
+export interface ImportReport {
+  kind: string;
+  mode: string;
+  path?: string;
+  subject?: string;
+  created?: boolean;
+  device_user?: boolean;
+  memberships?: number;
+  applied: number;
+  removed?: string[];
+}
+
 export interface User {
   id: number;
   tenant: string;

@@ -15,12 +15,13 @@ import type { ColumnsType } from 'antd/es/table';
 import { api, bits, fmtSize, qs } from '../api';
 import { useFlash } from '../flash';
 import { fileKind, isEditable, rawUrl } from '../filekind';
-import type { EntryView, FsList } from '../types';
+import type { Doc, EntryView, FsList } from '../types';
 import type { FileTarget } from '../components/FilePane';
 import { useListView } from '../useListView';
 import ListSearch from '../components/ListSearch';
 import RowActions from '../components/RowActions';
 import DateTime from '../components/DateTime';
+import DocJsonModal from '../components/DocJsonModal';
 
 // Files panel: breadcrumb browser + server-paged entry table (dirs first
 // is done by the backend). Clicking a file name opens the file PAGE in
@@ -49,6 +50,7 @@ export default function FilesPanel({
   const [newKind, setNewKind] = useState<null | 'dir' | 'file'>(null);
   const [newName, setNewName] = useState('');
   const [rename, setRename] = useState<{ from: string; to: string } | null>(null);
+  const [doc, setDoc] = useState<Doc | null>(null);
 
   // the file page reports writes through filesEpoch; refresh our table
   const firstEpoch = useRef(true);
@@ -203,6 +205,19 @@ export default function FilesPanel({
           <RowActions
             actions={[
               { key: 'perms', label: 'permissions', onClick: () => showPerms(x.entry.path) },
+              {
+                key: 'doc',
+                label: 'export JSON',
+                onClick: async () => {
+                  try {
+                    setDoc(
+                      await api<Doc>('/api/v1/export?path=' + encodeURIComponent(x.entry.path)),
+                    );
+                  } catch (e) {
+                    flash.err((e as Error).message);
+                  }
+                },
+              },
               ...(!x.entry.is_dir
                 ? [
                     // editing is an explicit menu step — the name click is
@@ -348,6 +363,8 @@ export default function FilesPanel({
           onPressEnter={doRename}
         />
       </Modal>
+
+      <DocJsonModal doc={doc} onClose={() => setDoc(null)} />
     </>
   );
 }

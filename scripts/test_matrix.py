@@ -237,6 +237,14 @@ class Api:
     def delete_grant(self, gid):
         return self.c.call("DELETE", "/api/v1/perms/%d" % gid)
 
+    # --- JSON documents: export follows the read view, import is admin-only
+    def export(self, **sel):
+        q = "&".join("%s=%s" % (k, enc(v)) for k, v in sel.items())
+        return self.c.call("GET", "/api/v1/export?" + q)
+
+    def import_doc(self, doc, mode="merge"):
+        return self.c.call("POST", "/api/v1/import", {"doc": doc, "mode": mode})
+
     def list_grants(self, path):
         return self.c.call("GET", "/api/v1/perms?path=" + enc(path))
 
@@ -560,6 +568,74 @@ def suite_cross(x, rep):
     st, evs, _ = b.events()
     rep.ck("B does see its own actions (scoping is not just emptiness)",
            st == 200 and any(e.get("actor") == x.tb + "/" + x.bob for e in evs or []))
+
+    # --- documents: names-only text; walls hold exactly as the API's do
+    st, doc, _ = a.export(path=x.mx)
+    rep.want((st,), (200,), "A admin exports a path document")
+    rep.ck("path doc carries grant-input shape: names, never ids",
+           st == 200 and doc and doc.get("kind") == "acl" and doc.get("path") == x.mx
+           and all(("principal" in g and "id" not in g and "principal_name" not in g)
+                   for g in doc.get("grants", [])))
+    rep.want(m.export(path=x.mx), (200,), "path docs follow the same read view as GET /perms")
+    rep.want(m.import_doc({"kind": "acl", "path": x.mx, "grants": []}), (403,),
+             "import is admin-only")
+
+    st, udoc, _ = a.export(user=x.ta + "/" + x.mallory)
+    rep.want((st,), (200,), "A admin exports a user document")
+    rep.ck("user doc never carries secrets or ids",
+           st == 200 and udoc and "password" not in udoc and "id" not in udoc
+           and udoc.get("username") == x.mallory)
+    rep.want(b.export(user=x.ta + "/" + x.mallory), (403,),
+             "B admin cannot export A's user document")
+
+    # omitted tenant = the applying admin's own, so the same text applies locally
+    st, rep1, _ = a.import_doc({"kind": "user", "username": "docu" + rid, "grants": []})
+    rep.want((st,), (200,), "A admin imports a tenant-less user document")
+    rep.ck("subject created as device user in the importer's tenant",
+           st == 200 and rep1 and rep1.get("created") is True
+           and rep1.get("device_user") is True)
+    st, rows, _ = a.users(q="docu" + rid)
+    rep.ck("doc user exists in A only",
+           st == 200 and any(r["username"] == "docu" + rid and r["tenant"] == x.ta
+                             for r in rows or []))
+    st, rows, _ = b.users(q="docu" + rid)
+    rep.ck("doc user did not leak into B",
+           st == 200 and not any(r["username"] == "docu" + rid for r in rows or []))
+    rep.want(fresh(x).login(x.ta, "docu" + rid, x.pw), (401, 403),
+             "imported user is device-only until given a password")
+
+    # the exported text, retargeted, transplants into the other tenant
+    if st == 200 and udoc:
+        udoc["tenant"] = x.tb
+        st, rep2, _ = b.import_doc(udoc)
+        rep.want((st,), (200,), "B imports A's user doc after renaming its tenant")
+        rep.ck("transplanted subject lands in B",
+               st == 200 and rep2 and rep2.get("created") is True)
+        st, rows, _ = b.users(q=x.mallory)
+        rep.ck("the transplant is B's row now",
+               st == 200 and any(r["username"] == x.mallory and r["tenant"] == x.tb
+                                 for r in rows or []))
+    rep.want(b.import_doc({"kind": "user", "tenant": x.ta, "username": x.mallory,
+                           "grants": []}), (403,),
+             "B may not import a document naming tenant A")
+
+    # group docs travel the same way; validate-first holds across tenants too
+    st, gdoc, _ = a.export(group=x.ta + "/" + x.crew)
+    rep.want((st,), (200,), "A admin exports a group document")
+    rep.want(b.import_doc(gdoc), (403,), "B may not import a group doc naming tenant A")
+    gdoc["tenant"] = x.tb
+    gdoc["members"] = [x.bob]
+    st, rep3, _ = b.import_doc(gdoc)
+    rep.want((st,), (200,), "B imports the retargeted group doc")
+    rep.ck("group transplanted with its member",
+           st == 200 and rep3 and rep3.get("created") is True
+           and rep3.get("memberships") == 1)
+    rep.want(a.import_doc({"kind": "user", "username": "dno" + rid,
+                           "member_of": ["no-such-group-" + rid], "grants": []}), (422,),
+             "validate-first still holds for tenant-less docs")
+    st, rows, _ = a.users(q="dno" + rid)
+    rep.ck("rejected doc created nothing", st == 200 and not any(
+        r["username"] == "dno" + rid for r in rows or []))
 
 
 def suite_acl(x, rep):

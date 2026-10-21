@@ -158,9 +158,14 @@ func TestTimestampPrecision(t *testing.T) {
 	}
 
 	// the ms guard: exact echo passes, one millisecond stale conflicts —
-	// a difference the seconds guard cannot express.
+	// a difference the seconds guard cannot express. (Re-read the mtime
+	// after the first write: if both writes land in the same millisecond
+	// msFile would coincidentally still match, so the stale value must be
+	// derived from the file as it is now.)
 	must(t, e.admin, "POST", u+"/api/v1/fs/write",
 		`{"path":"/tsd/cfg.yml","content":"a: 4\n","base_mtime_ms":`+strconv.FormatInt(msFile, 10)+`}`, 200)
+	after := must(t, e.admin, "GET", u+"/api/v1/fs/content?path=/tsd/cfg.yml", "", 200)
+	msNow := int64(after["mtime_ms"].(float64))
 	must(t, e.admin, "POST", u+"/api/v1/fs/write",
-		`{"path":"/tsd/cfg.yml","content":"a: 5\n","base_mtime_ms":`+strconv.FormatInt(msFile, 10)+`}`, 409)
+		`{"path":"/tsd/cfg.yml","content":"a: 5\n","base_mtime_ms":`+strconv.FormatInt(msNow-1, 10)+`}`, 409)
 }

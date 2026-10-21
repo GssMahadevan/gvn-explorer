@@ -526,6 +526,93 @@ check "tenant_active event recorded" "$(jq -e --argjson t "$MTID" 'any(.[]; .tar
 
 t "$AJ" "delete meta tenant" 204 DELETE "/api/v1/tenants/$MTID"
 
+echo "== JSON documents: export + import (names only; validate-first; merge|replace) =="
+DP="/docimp-$SFX/deep/nest" # a chain a dir document must mkdir in one apply
+DOCU="docu$SFX"
+DOCG="docg$SFX"
+DOCT="doct$SFX"
+
+# export is the PUT /perms input shape (principal+tenant), never GET rows
+t "$AJ" "grant for export fixture" 200 PUT /api/v1/perms "{\"path\":\"$D\",\"principal_type\":\"user\",\"principal\":\"$USER\",\"tenant\":\"$T\",\"read\":true}"
+t "$AJ" "export path doc" 200 GET "/api/v1/export?path=$D"
+check "export kind/version/path" "$(jq -e '.kind=="acl" and .version==1 and .path=="'$D'"' /tmp/resp.json >/dev/null; echo $?)"
+check "export lines are PUT-shaped" "$(jq -e 'any(.grants[]; .principal=="'$USER'" and .tenant=="'$T'" and (.principal_name|not))' /tmp/resp.json >/dev/null; echo $?)"
+t - "export without login" 401 GET "/api/v1/export?path=$D"
+t "$UJ" "plain user exports a path" 200 GET "/api/v1/export?path=$D"
+t "$AJ" "export needs one selector" 400 GET "/api/v1/export?path=$D&user=$T/$USER"
+t "$AJ" "export user doc" 200 GET "/api/v1/export?user=$T/$USER"
+check "user doc: names, no ids, no secrets" "$(jq -e '.kind=="user" and .username=="'$USER'" and .tenant=="'$T'" and (.id|not) and (.password|not)' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "export group doc" 200 GET "/api/v1/export?group=$T/$GROUP"
+check "group doc lists members" "$(jq -e '.kind=="group" and (.members|type)=="array"' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "export tenant doc (super)" 200 GET "/api/v1/export?tenant=$T"
+check "tenant doc names tenant" "$(jq -e '.kind=="tenant" and .name=="'$T'"' /tmp/resp.json >/dev/null; echo $?)"
+t "$TAJ" "tenant doc is super-only" 403 GET "/api/v1/export?tenant=$T"
+t "$TAJ" "foreign tenant entity doc 403" 403 GET "/api/v1/export?user=$ADMIN_TENANT/$ADMIN_USER"
+
+# validate-first: one unresolved name 422s everything, nothing half-writes
+t "$AJ" "count before bad import" 200 GET "/api/v1/perms?path=$D"
+BEFORE=$(jq '.grants|length' /tmp/resp.json)
+t "$AJ" "import with unknown name" 422 POST /api/v1/import "{\"mode\":\"merge\",\"doc\":{\"kind\":\"acl\",\"path\":\"$D\",\"grants\":[{\"principal_type\":\"user\",\"principal\":\"nosuch$SFX\",\"read\":true},{\"principal_type\":\"user\",\"principal\":\"$USER\",\"tenant\":\"$T\",\"write\":true}]}}"
+check "422 names the bad principal" "$(jq -e '.error.message|contains("nosuch'$SFX'")' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "nothing half-applied" 200 GET "/api/v1/perms?path=$D"
+check "rows untouched by rejected import" "$([ "$(jq '.grants|length' /tmp/resp.json)" = "$BEFORE" ]; echo $?)"
+t "$UJ" "import needs admin" 403 POST /api/v1/import '{"doc":{"kind":"acl","path":"/","grants":[]}}'
+t "$AJ" "bad mode rejected" 400 POST /api/v1/import '{"mode":"overwrite","doc":{"kind":"acl","path":"/","grants":[]}}'
+t "$AJ" "bad kind rejected" 422 POST /api/v1/import '{"doc":{"kind":"widget","grants":[]}}'
+t "$AJ" "help doc import refused" 403 POST /api/v1/import '{"doc":{"kind":"acl","path":"/help","grants":[]}}'
+
+# dir document: mkdirs the whole chain shallowest-first, then grants
+t "$AJ" "import dir doc" 200 POST /api/v1/import "{\"doc\":{\"kind\":\"dir\",\"path\":\"$DP\",\"grants\":[{\"principal_type\":\"all\",\"read\":true}]}}"
+t "$AJ" "deep chain exists" 200 GET "/api/v1/fs?path=$DP"
+t "$AJ" "dir doc grant landed" 200 GET "/api/v1/perms?path=$DP"
+check "all-principal grant present" "$(jq -e 'any(.grants[]; .principal_type=="all" and .read==true)' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "re-apply same dir doc" 200 POST /api/v1/import "{\"doc\":{\"kind\":\"dir\",\"path\":\"$DP\",\"grants\":[{\"principal_type\":\"all\",\"read\":true}]}}"
+t "$AJ" "idempotent merge" 200 GET "/api/v1/perms?path=$DP"
+check "re-apply did not duplicate rows" "$(jq -e '.grants|length==1' /tmp/resp.json >/dev/null; echo $?)"
+
+# replace deletes exactly what the doc omits; inheritance is never touched
+t "$AJ" "replace drops the all grant" 200 POST /api/v1/import "{\"mode\":\"replace\",\"doc\":{\"kind\":\"acl\",\"path\":\"$DP\",\"grants\":[]}}"
+check "replace reports removals" "$(jq -e '(.removed|length)>=1' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "replace leaves no own rows" 200 GET "/api/v1/perms?path=$DP"
+check "replaced path has zero grants" "$(jq -e '.grants|length==0' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "doc not an object rejected" 400 POST /api/v1/import '{"doc":"not-an-object"}'
+
+# user document: creates the subject (device user), self-named grants resolve
+t "$AJ" "import user doc (self-grants)" 200 POST /api/v1/import "{\"doc\":{\"kind\":\"user\",\"tenant\":\"$T\",\"username\":\"$DOCU\",\"member_of\":[\"$GROUP\"],\"grants\":[{\"path\":\"$D\",\"principal_type\":\"user\",\"principal\":\"$DOCU\",\"tenant\":\"$T\",\"read\":true,\"write\":true}]}}"
+check "subject created + device user" "$(jq -e '.created==true and .device_user==true' /tmp/resp.json >/dev/null; echo $?)"
+t - "device user cannot password-login" 401 POST /api/v1/auth/login "{\"tenant\":\"$T\",\"username\":\"$DOCU\",\"password\":\"pw-$SFX\"}"
+t "$AJ" "self-named grant applied" 200 GET "/api/v1/perms?path=$D"
+check "grant for not-yet-existing subject landed" "$(jq -e 'any(.grants[]; .principal_name=="'$DOCU'" and .write==true)' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "membership from doc applied" 200 GET "/api/v1/groups?q=$GROUP&col=name"
+check "doc subject joined the group" "$(jq -e 'any(.[]; .name=="'$GROUP'" and any(.members[]?; .username=="'$DOCU'"))' /tmp/resp.json >/dev/null; echo $?)"
+
+# omitted tenant = the applying admin's own (tenant admin can stage docs as-is)
+t "$TAJ" "user doc without tenant lands locally" 200 POST /api/v1/import "{\"doc\":{\"kind\":\"user\",\"username\":\"docv$SFX\",\"grants\":[]}}"
+t "$TAJ" "docv exists in own tenant" 200 GET "/api/v1/users?tenant=$T&q=docv$SFX"
+check "tenant default honored" "$(jq -e 'any(.[]; .username=="docv'$SFX'")' /tmp/resp.json >/dev/null; echo $?)"
+
+# group document: members + idempotent re-apply; tenant doc: provisions the home
+t "$AJ" "import group doc" 200 POST /api/v1/import "{\"doc\":{\"kind\":\"group\",\"tenant\":\"$T\",\"name\":\"$DOCG\",\"members\":[\"$USER\",\"$DOCU\"],\"grants\":[{\"path\":\"$D\",\"principal_type\":\"group\",\"principal\":\"$DOCG\",\"tenant\":\"$T\",\"read\":true}]}}"
+check "group created + 2 memberships" "$(jq -e '.created==true and .memberships==2' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "group doc re-apply" 200 POST /api/v1/import "{\"doc\":{\"kind\":\"group\",\"tenant\":\"$T\",\"name\":\"$DOCG\",\"members\":[\"$USER\",\"$DOCU\"],\"grants\":[{\"path\":\"$D\",\"principal_type\":\"group\",\"principal\":\"$DOCG\",\"tenant\":\"$T\",\"read\":true}]}}"
+check "memberships not doubled" "$(jq -e '(.memberships // 0)==0 and .created!=true' /tmp/resp.json >/dev/null; echo $?)"
+t "$TAJ" "tenant doc needs super" 403 POST /api/v1/import "{\"doc\":{\"kind\":\"tenant\",\"name\":\"$DOCT\",\"grants\":[]}}"
+t "$AJ" "import tenant doc" 200 POST /api/v1/import "{\"doc\":{\"kind\":\"tenant\",\"name\":\"$DOCT\",\"grants\":[]}}"
+check "tenant created by doc" "$(jq -e '.created==true' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "doc tenant home provisioned" 200 GET "/api/v1/perms?path=/$DOCT"
+check "home carries the tenant r grant" "$(jq -e 'any(.grants[]; .principal_type=="tenant" and .principal_name=="'$DOCT'" and .read==true)' /tmp/resp.json >/dev/null; echo $?)"
+
+# the forensic trail: one import_apply per call + canonical create actions
+t "$AJ" "events import_apply" 200 GET "/api/v1/events?action=import_apply"
+check "import_apply recorded" "$(jq -e 'length>=1' /tmp/resp.json >/dev/null; echo $?)"
+t "$AJ" "events user_create for doc user" 200 GET "/api/v1/events?action=user_create"
+check "doc-created user in trail" "$(jq -e 'any(.[]; .target_name=="'$DOCU'")' /tmp/resp.json >/dev/null; echo $?)"
+
+# tidy the doc tenant away through the normal admin path
+t "$AJ" "find doc tenant" 200 GET "/api/v1/tenants?q=$DOCT&col=name"
+DOCTID=$(jq -r '.[0].id' /tmp/resp.json)
+t "$AJ" "delete doc tenant" 204 DELETE "/api/v1/tenants/$DOCTID"
+
 echo "== built-in /help docs tree (user guide embedded in the binary) =="
 t "$AJ" "list /help" 200 GET "/api/v1/fs?path=/help"
 check "help lists the hub" "$(jq -e 'any(.entries[]; .entry.name=="README.md")' /tmp/resp.json >/dev/null; echo $?)"

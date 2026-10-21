@@ -145,6 +145,12 @@ Every grant change lands in the audit trail (`perm_set` /
 `perm_delete` events with the before/after bits) — see the Events tab
 or the event-log drawer.
 
+A path's whole grant list travels as one JSON document too: "Export
+JSON" from the Permissions panel, and admins can apply such a document
+back — merge mode adds, replace mode also removes rows the document
+omits — with a live diff preview before anything is written
+([api.md → documents](api.md#documents-export--import)).
+
 ## What to read next
 
 - [api-keys.md](api-keys.md) — giving devices the same permissions

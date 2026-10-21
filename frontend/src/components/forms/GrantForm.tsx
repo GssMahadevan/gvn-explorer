@@ -93,8 +93,9 @@ export default function GrantForm({
       destroyOnHidden
     >
       <Typography.Paragraph>
-        grants apply to <Typography.Text code>{path}</Typography.Text> and inherit down; all bits
-        off <b>excludes</b> the subtree for that principal.
+        grants apply to <Typography.Text code>{path}</Typography.Text> and everything under it,
+        unless a nearer path grants override; all bits off <b>excludes</b> the subtree for that
+        principal.
       </Typography.Paragraph>
       <Form form={form} layout="vertical" onFinish={submit}>
         <Form.Item name="principal_type" label="Principal type">

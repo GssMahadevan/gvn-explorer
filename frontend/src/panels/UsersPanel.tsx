@@ -11,7 +11,7 @@ import {
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { api, qs } from '../api';
-import type { Me, User } from '../types';
+import type { Doc, Me, User } from '../types';
 import { useListView } from '../useListView';
 import { useFlash } from '../flash';
 import ListSearch from '../components/ListSearch';
@@ -19,6 +19,7 @@ import ActiveFilterSelect from '../components/ActiveFilterSelect';
 import RowActions from '../components/RowActions';
 import DateTime from '../components/DateTime';
 import UserForm from '../components/forms/UserForm';
+import DocJsonModal from '../components/DocJsonModal';
 
 // Users panel: search/filter/sort, api-key provisioning (shown once),
 // password set, suspend/activate kill switch, delete. Creation and the
@@ -31,7 +32,18 @@ export default function UsersPanel({ me }: { me: Me }) {
   const [keyShown, setKeyShown] = useState<{ username: string; key: string } | null>(null);
   const [pwFor, setPwFor] = useState<User | null>(null);
   const [pw, setPw] = useState('');
+  const [doc, setDoc] = useState<Doc | null>(null);
   const users = lv.payload ?? [];
+
+  // the user's whole statement as one portable document (fields, group
+  // memberships, grants naming them) — names only, no secrets, no ids.
+  const exportDoc = async (u: User) => {
+    try {
+      setDoc(await api<Doc>(`/api/v1/export?user=${encodeURIComponent(u.tenant + '/' + u.username)}`));
+    } catch (e) {
+      flash.err((e as Error).message);
+    }
+  };
 
   const provisionKey = async (u: User) => {
     try {
@@ -143,6 +155,7 @@ export default function UsersPanel({ me }: { me: Me }) {
         <RowActions
           actions={[
             { key: 'edit', label: 'edit', onClick: () => setFormFor(u) },
+            { key: 'doc', label: 'export JSON', onClick: () => exportDoc(u) },
             { key: 'apikey', label: 'new API key', onClick: () => provisionKey(u) },
             { key: 'password', label: 'set password', onClick: () => setPwFor(u) },
             u.active === false
@@ -255,6 +268,8 @@ export default function UsersPanel({ me }: { me: Me }) {
           onPressEnter={savePw}
         />
       </Modal>
+
+      <DocJsonModal doc={doc} onClose={() => setDoc(null)} />
     </>
   );
 }

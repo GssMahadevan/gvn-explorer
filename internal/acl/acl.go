@@ -241,6 +241,31 @@ func (s *Store) ListByPath(ctx context.Context, path string, o query.List) ([]Gr
 	return out, total, nil
 }
 
+// ListAllByPath: every explicit grant on a path, no paging. Entity and
+// ACL documents are complete statements about a path, and a replace-mode
+// import must see the whole row set to know what it removes.
+func (s *Store) ListAllByPath(ctx context.Context, path string) ([]Grant, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		grantSelect+grantFrom+" WHERE p.path = ? ORDER BY p.id", path)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanGrants(rows)
+}
+
+// GrantsFor: every grant naming one principal, across the whole tree —
+// the "what can this identity touch" half of an entity document.
+func (s *Store) GrantsFor(ctx context.Context, ptype string, pid int64) ([]Grant, error) {
+	rows, err := s.DB.QueryContext(ctx, grantSelect+grantFrom+
+		" WHERE p.principal_type = ? AND p.principal_id = ? ORDER BY p.path, p.id", ptype, pid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanGrants(rows)
+}
+
 // GrantByID fetches one grant with its principal's tenant resolved, for
 // tenant-scoped authorization of mutations.
 func (s *Store) GrantByID(ctx context.Context, id int64) (Grant, error) {
