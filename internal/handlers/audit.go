@@ -17,7 +17,13 @@ import (
 // fail the business operation — losing one line must not lock admins out
 // of their own system while the DB is otherwise healthy.
 func (a *API) audit(r *http.Request, ev audit.Event) {
-	if a.Events == nil {
+	a.auditVia(r, a.Events, ev)
+}
+
+// auditVia records on a specific store — the same one a transaction uses,
+// when an operation's events must commit or roll back with its data.
+func (a *API) auditVia(r *http.Request, st *audit.Store, ev audit.Event) {
+	if st == nil {
 		return
 	}
 	if u := userFrom(r.Context()); u.ID != 0 {
@@ -33,7 +39,7 @@ func (a *API) audit(r *http.Request, ev audit.Event) {
 		}
 	}
 	ev.IP = clientIP(r)
-	if err := a.Events.Record(r.Context(), ev); err != nil {
+	if err := st.Record(r.Context(), ev); err != nil {
 		slog.Error("audit record failed", "action", ev.Action, "err", err)
 	}
 }

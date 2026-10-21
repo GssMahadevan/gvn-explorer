@@ -163,6 +163,7 @@ func main() {
 	}
 
 	api := handlers.API{
+		DB:        conn,
 		Auth:       authStore,
 		ACL:        acl.NewStore(conn),
 		Events:     audit.NewStore(conn),

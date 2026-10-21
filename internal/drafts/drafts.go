@@ -25,9 +25,13 @@ type Draft struct {
 	UpdatedAtMs int64 `json:"updated_at_ms"`
 }
 
-type Store struct{ DB *db.DB }
+type Store struct{ DB db.Execer }
 
 func NewStore(conn *db.DB) *Store { return &Store{DB: conn} }
+
+// WithTx returns a store whose queries run inside tx — used to make
+// multi-write operations (import apply) atomic.
+func (s *Store) WithTx(tx *db.Tx) *Store { c := *s; c.DB = tx; return &c }
 
 // Get returns the working copy for a path. The absence of a draft is the
 // normal case, reported as (zero, false, nil).

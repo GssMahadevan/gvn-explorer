@@ -107,6 +107,11 @@ A `docker-compose.yml` (same two volumes, plus a Postgres-ready shape) and
 the full operator notes live in [`deployments/docker/README.md`](deployments/docker/README.md);
 `make docker-up` builds the same image locally from source instead.
 
+One database note: the server runs SQLite in WAL mode, so a *running*
+database also has `perms.db-wal`/`perms.db-shm` beside it — with the
+server stopped the `-wal` content is folded back in and `perms.db`
+alone is a complete backup (a live copy should include the sidecars).
+
 ## HTTPS (self-signed or your own cert)
 
 **HTTPS is the default.** With no flags at all the server generates a
@@ -440,6 +445,9 @@ writes one back:
 - validation happens **all at once**: one unresolved name 422s the
   whole call and lists every problem; nothing ever half-applies, and
   re-applying the same document is a no-op;
+- the writes themselves run as **one transaction**: a large document
+  commits once (a 2000-line apply is milliseconds even on a phone),
+  and a rare mid-apply failure leaves no partial state behind;
 - the only principal import creates is the document's **own subject**
   (a grant line may name it before it exists); every other name must
   already be there. Imported users are device users until given a

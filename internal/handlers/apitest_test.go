@@ -52,7 +52,7 @@ func newEnvLimits(t *testing.T, rps float64, rburst int, authRPS float64, authBu
 	if _, err := as.CreateUser(ctx, "acme", "admin", "pw", "", true, true, nil); err != nil {
 		t.Fatalf("bootstrap admin: %v", err)
 	}
-	api := API{Auth: as, ACL: acl.NewStore(conn), Events: audit.NewStore(conn),
+	api := API{DB: conn, Auth: as, ACL: acl.NewStore(conn), Events: audit.NewStore(conn),
 		Drafts: drafts.NewStore(conn),
 		FS:     tree, SessionTTL: time.Hour, MaxFileMB: 1,
 		RPS: rps, RBurst: rburst, AuthRPS: authRPS, AuthBurst: authBurst}

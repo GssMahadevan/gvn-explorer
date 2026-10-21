@@ -160,7 +160,9 @@ instance. The rules worth knowing:
 - import creates only the document's **own subject** — every other
   principal named in grant lines or memberships must already exist;
 - validation is all-or-nothing: one unresolved name 422s the whole
-  call and lists every problem; nothing half-applies;
+  call and lists every problem; nothing half-applies — and the writes
+  of an apply commit as one unit, so a large document lands in one
+  step or not at all;
 - `dir` documents create the whole directory chain (parents included,
   shallowest first) before applying grants;
 - imported users are device users (no password) until one is given;

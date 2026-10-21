@@ -43,9 +43,13 @@ func (ev *Event) stamp() {
 	ev.Time = time.UnixMilli(ev.TS).UTC()
 }
 
-type Store struct{ DB *db.DB }
+type Store struct{ DB db.Execer }
 
 func NewStore(conn *db.DB) *Store { return &Store{DB: conn} }
+
+// WithTx returns a store whose queries run inside tx — used to make
+// multi-write operations (import apply) atomic.
+func (s *Store) WithTx(tx *db.Tx) *Store { c := *s; c.DB = tx; return &c }
 
 // Record appends one event. details is serialized as JSON; secrets (api
 // keys, passwords) must never be placed in it by callers.

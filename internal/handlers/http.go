@@ -16,6 +16,7 @@ import (
 	"github.com/GssMahadevan/gvn-explorer/internal/acl"
 	"github.com/GssMahadevan/gvn-explorer/internal/audit"
 	"github.com/GssMahadevan/gvn-explorer/internal/auth"
+	"github.com/GssMahadevan/gvn-explorer/internal/db"
 	"github.com/GssMahadevan/gvn-explorer/internal/drafts"
 	"github.com/GssMahadevan/gvn-explorer/internal/fsx"
 )
@@ -23,6 +24,7 @@ import (
 const sessionCookie = "sid"
 
 type API struct {
+	DB         *db.DB    // used to open transactions (see beginApply)
 	Auth       *auth.Store
 	ACL        *acl.Store
 	FS         *fsx.Tree

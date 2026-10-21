@@ -15,6 +15,11 @@ package handlers
 //     with every name listed — nothing is half-applied, and principals
 //     are never created as a side effect (the document's own subject
 //     excepted);
+//   - transactional apply: once validation passes, one application's
+//     writes — grants, new subjects, memberships, audit events — commit
+//     together or not at all. That is a correctness property (a rare
+//     mid-apply failure cannot leave half a document applied) and a
+//     performance one (one commit per document instead of one per line);
 //   - mode merge upserts only what the document states; mode replace
 //     additionally deletes exactly the rows the target carries that the
 //     document omits. Inherited ACLs are never touched by either —
@@ -22,6 +27,7 @@ package handlers
 //     explicit grants, nothing else.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -32,6 +38,7 @@ import (
 	"github.com/GssMahadevan/gvn-explorer/internal/acl"
 	"github.com/GssMahadevan/gvn-explorer/internal/audit"
 	"github.com/GssMahadevan/gvn-explorer/internal/auth"
+	"github.com/GssMahadevan/gvn-explorer/internal/db"
 	"github.com/GssMahadevan/gvn-explorer/internal/fsx"
 )
 
@@ -387,7 +394,31 @@ func specLabel(i int, s docGrant) string {
 // applyResolved writes the document's grants and, in replace mode,
 // removes the target's rows the document omits. current is the target's
 // present state (path rows or subject-naming rows, depending on kind).
-func (a *API) applyResolved(r *http.Request, rg []resolvedGrant, mode string, current []acl.Grant) (applied int, removed []string, err error) {
+// applyTx bundles the transaction-scoped stores for one import apply.
+// Import is validate-first — nothing writes until the whole document has
+// been checked — and the writes themselves then run as ONE transaction:
+// a large document commits once (milliseconds even on phone-class flash)
+// and a failure mid-apply leaves no partial state.
+type applyTx struct {
+	tx   *db.Tx
+	ACL  *acl.Store
+	Auth *auth.Store
+	Ev   *audit.Store // nil when auditing is off
+}
+
+func (a *API) beginApply(r *http.Request) (*applyTx, error) {
+	tx, err := a.DB.BeginTx(r.Context(), nil)
+	if err != nil {
+		return nil, err
+	}
+	at := &applyTx{tx: tx, ACL: a.ACL.WithTx(tx), Auth: a.Auth.WithTx(tx)}
+	if a.Events != nil {
+		at.Ev = a.Events.WithTx(tx)
+	}
+	return at, nil
+}
+
+func applyResolved(ctx context.Context, ACL *acl.Store, rg []resolvedGrant, mode string, current []acl.Grant) (applied int, removed []string, err error) {
 	if mode == "replace" {
 		keep := map[acl.Grant]bool{} // identity by (path, type, pid); the zero fields don't matter
 		for _, g := range rg {
@@ -400,7 +431,7 @@ func (a *API) applyResolved(r *http.Request, rg []resolvedGrant, mode string, cu
 				continue
 			}
 			seen[k] = true
-			if err := a.ACL.Delete(r.Context(), g.ID); err != nil {
+			if err := ACL.Delete(ctx, g.ID); err != nil {
 				return applied, removed, err
 			}
 			label := g.PrincipalType + " " + g.PrincipalTenant + "/" + g.PrincipalName
@@ -411,7 +442,7 @@ func (a *API) applyResolved(r *http.Request, rg []resolvedGrant, mode string, cu
 		}
 	}
 	for _, g := range rg {
-		if _, err := a.ACL.Upsert(r.Context(), g.p, g.spec.PrincipalType, g.pid,
+		if _, err := ACL.Upsert(ctx, g.p, g.spec.PrincipalType, g.pid,
 			g.spec.Read, g.spec.Write, g.spec.Delete, g.exp); err != nil {
 			return applied, removed, err
 		}
@@ -527,17 +558,27 @@ func (a *API) importAcl(w http.ResponseWriter, r *http.Request, d docAcl, mode s
 			}
 		}
 	}
-	current, err := a.ACL.ListAllByPath(r.Context(), p)
+	at, err := a.beginApply(r)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	applied, removed, err := a.applyResolved(r, rg, mode, current)
+	defer at.tx.Rollback()
+	current, err := at.ACL.ListAllByPath(r.Context(), p)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	a.auditImport(r, d.Kind, p, "", applied, removed)
+	applied, removed, err := applyResolved(r.Context(), at.ACL, rg, mode, current)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	a.auditImport(r, at.Ev, d.Kind, p, "", applied, removed)
+	if err := at.tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, importReport{Kind: d.Kind, Mode: mode, Path: p,
 		Applied: applied, Removed: removed})
 }
@@ -599,12 +640,19 @@ func (a *API) importUser(w http.ResponseWriter, r *http.Request, d docUser, mode
 		return
 	}
 
+	at, err := a.beginApply(r)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	defer at.tx.Rollback()
+
 	created := false
 	if self.id == 0 {
 		// No password in documents — imported accounts land as device
 		// users (the existing key-only convention); an admin or a
 		// pairing gives them a login.
-		subject, err = a.Auth.CreateUser(r.Context(), d.Tenant, d.Username, "", d.Description,
+		subject, err = at.Auth.CreateUser(r.Context(), d.Tenant, d.Username, "", d.Description,
 			d.IsAdmin, d.IsSuper && u.IsSuper, exp)
 		if err != nil {
 			writeError(w, http.StatusConflict, "exists", "username taken or invalid input")
@@ -613,12 +661,12 @@ func (a *API) importUser(w http.ResponseWriter, r *http.Request, d docUser, mode
 		fixSelf(rg, subject.ID)
 		created = true
 		if d.Active != nil && !*d.Active {
-			if err := a.Auth.SetUserActive(r.Context(), subject.ID, false); err != nil {
+			if err := at.Auth.SetUserActive(r.Context(), subject.ID, false); err != nil {
 				writeError(w, http.StatusInternalServerError, "internal", err.Error())
 				return
 			}
 		}
-		a.audit(r, audit.Event{Action: "user_create", TenantID: subject.TenantID,
+		a.auditVia(r, at.Ev, audit.Event{Action: "user_create", TenantID: subject.TenantID,
 			TargetType: "user", TargetID: subject.ID, TargetName: subject.Username,
 			Details: map[string]any{"is_admin": subject.IsAdmin, "device": true, "via": "document"}})
 	}
@@ -627,7 +675,7 @@ func (a *API) importUser(w http.ResponseWriter, r *http.Request, d docUser, mode
 	for _, g := range groups {
 		// Idempotent on re-apply: a membership the subject already has
 		// is skipped, not a constraint error.
-		isMember, err := a.Auth.IsMember(r.Context(), g.ID, subject.ID)
+		isMember, err := at.Auth.IsMember(r.Context(), g.ID, subject.ID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal", err.Error())
 			return
@@ -635,24 +683,28 @@ func (a *API) importUser(w http.ResponseWriter, r *http.Request, d docUser, mode
 		if isMember {
 			continue
 		}
-		if err := a.Auth.AddMember(r.Context(), g.ID, subject.ID); err != nil {
+		if err := at.Auth.AddMember(r.Context(), g.ID, subject.ID); err != nil {
 			writeError(w, http.StatusInternalServerError, "internal", err.Error())
 			return
 		}
 		memberships++
 	}
-	subjectGrants, err := a.ACL.GrantsFor(r.Context(), "user", subject.ID)
+	subjectGrants, err := at.ACL.GrantsFor(r.Context(), "user", subject.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	applied, removed, err := a.applyResolved(r, rg, mode, subjectGrants)
+	applied, removed, err := applyResolved(r.Context(), at.ACL, rg, mode, subjectGrants)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
 	subjectLabel := d.Tenant + "/" + d.Username
-	a.auditImport(r, "user", "", subjectLabel, applied, removed)
+	a.auditImport(r, at.Ev, "user", "", subjectLabel, applied, removed)
+	if err := at.tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, importReport{Kind: "user", Mode: mode, Subject: subjectLabel,
 		Created: created, DeviceUser: created, Memberships: memberships,
 		Applied: applied, Removed: removed})
@@ -703,9 +755,16 @@ func (a *API) importGroup(w http.ResponseWriter, r *http.Request, d docGroup, mo
 		return
 	}
 
+	at, err := a.beginApply(r)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	defer at.tx.Rollback()
+
 	created := false
 	if self.id == 0 {
-		g, err = a.Auth.CreateGroup(r.Context(), d.Tenant, d.Name, d.Description)
+		g, err = at.Auth.CreateGroup(r.Context(), d.Tenant, d.Name, d.Description)
 		if err != nil {
 			writeError(w, http.StatusConflict, "exists", "group name taken or invalid input")
 			return
@@ -713,18 +772,18 @@ func (a *API) importGroup(w http.ResponseWriter, r *http.Request, d docGroup, mo
 		fixSelf(rg, g.ID)
 		created = true
 		if d.Active != nil && !*d.Active {
-			if err := a.Auth.SetGroupActive(r.Context(), g.ID, false); err != nil {
+			if err := at.Auth.SetGroupActive(r.Context(), g.ID, false); err != nil {
 				writeError(w, http.StatusInternalServerError, "internal", err.Error())
 				return
 			}
 		}
-		a.audit(r, audit.Event{Action: "group_create", TenantID: g.TenantID,
+		a.auditVia(r, at.Ev, audit.Event{Action: "group_create", TenantID: g.TenantID,
 			TargetType: "group", TargetID: g.ID, TargetName: g.Name,
 			Details: map[string]any{"via": "document"}})
 	}
 	added := 0
 	for _, usr := range members {
-		isMember, err := a.Auth.IsMember(r.Context(), g.ID, usr.ID)
+		isMember, err := at.Auth.IsMember(r.Context(), g.ID, usr.ID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal", err.Error())
 			return
@@ -732,24 +791,28 @@ func (a *API) importGroup(w http.ResponseWriter, r *http.Request, d docGroup, mo
 		if isMember {
 			continue
 		}
-		if err := a.Auth.AddMember(r.Context(), g.ID, usr.ID); err != nil {
+		if err := at.Auth.AddMember(r.Context(), g.ID, usr.ID); err != nil {
 			writeError(w, http.StatusInternalServerError, "internal", err.Error())
 			return
 		}
 		added++
 	}
-	subjectGrants, err := a.ACL.GrantsFor(r.Context(), "group", g.ID)
+	subjectGrants, err := at.ACL.GrantsFor(r.Context(), "group", g.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	applied, removed, err := a.applyResolved(r, rg, mode, subjectGrants)
+	applied, removed, err := applyResolved(r.Context(), at.ACL, rg, mode, subjectGrants)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
 	subjectLabel := d.Tenant + "/" + d.Name
-	a.auditImport(r, "group", "", subjectLabel, applied, removed)
+	a.auditImport(r, at.Ev, "group", "", subjectLabel, applied, removed)
+	if err := at.tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, importReport{Kind: "group", Mode: mode, Subject: subjectLabel,
 		Created: created, Memberships: added, Applied: applied, Removed: removed})
 }
@@ -783,9 +846,16 @@ func (a *API) importTenant(w http.ResponseWriter, r *http.Request, d docTenant, 
 		return
 	}
 
+	at, err := a.beginApply(r)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	defer at.tx.Rollback()
+
 	created := false
 	if self.id == 0 {
-		t, err := a.Auth.CreateTenant(r.Context(), d.Name, d.Description)
+		t, err := at.Auth.CreateTenant(r.Context(), d.Name, d.Description)
 		if err != nil {
 			writeError(w, http.StatusConflict, "exists", "tenant name taken or invalid input")
 			return
@@ -793,32 +863,36 @@ func (a *API) importTenant(w http.ResponseWriter, r *http.Request, d docTenant, 
 		tid, created = t.ID, true
 		fixSelf(rg, t.ID)
 		if d.Active != nil && !*d.Active {
-			if err := a.Auth.SetTenantActive(r.Context(), t.ID, false); err != nil {
+			if err := at.Auth.SetTenantActive(r.Context(), t.ID, false); err != nil {
 				writeError(w, http.StatusInternalServerError, "internal", err.Error())
 				return
 			}
 		}
 		// same follow-through as POST /tenants: the home directory and
 		// its default browse grant come with the tenant.
-		if err := a.provisionHome(r.Context(), t.Name, t.ID); err != nil {
+		if err := a.provisionHomeACL(r.Context(), t.Name, t.ID, at.ACL); err != nil {
 			writeError(w, http.StatusInternalServerError, "internal", err.Error())
 			return
 		}
-		a.audit(r, audit.Event{Action: "tenant_create", TenantID: t.ID,
+		a.auditVia(r, at.Ev, audit.Event{Action: "tenant_create", TenantID: t.ID,
 			TargetType: "tenant", TargetID: t.ID, TargetName: t.Name,
 			Details: map[string]any{"via": "document"}})
 	}
-	subjectGrants, err := a.ACL.GrantsFor(r.Context(), "tenant", tid)
+	subjectGrants, err := at.ACL.GrantsFor(r.Context(), "tenant", tid)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	applied, removed, err := a.applyResolved(r, rg, mode, subjectGrants)
+	applied, removed, err := applyResolved(r.Context(), at.ACL, rg, mode, subjectGrants)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	a.auditImport(r, "tenant", "", "tenant:"+d.Name, applied, removed)
+	a.auditImport(r, at.Ev, "tenant", "", "tenant:"+d.Name, applied, removed)
+	if err := at.tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, importReport{Kind: "tenant", Mode: mode, Subject: "tenant:" + d.Name,
 		Created: created, Applied: applied, Removed: removed})
 }
@@ -836,8 +910,8 @@ func (a *API) reportProblems(w http.ResponseWriter, r *http.Request, kind, path 
 // like every other event; row-level history already exists per grant
 // through normal audit if anyone needs it — documents deliberately do
 // not double-record every grant.
-func (a *API) auditImport(r *http.Request, kind, path, subject string, applied int, removed []string) {
-	a.audit(r, audit.Event{Action: "import_apply", TenantID: scopeTenantID(userFrom(r.Context())),
+func (a *API) auditImport(r *http.Request, st *audit.Store, kind, path, subject string, applied int, removed []string) {
+	a.auditVia(r, st, audit.Event{Action: "import_apply", TenantID: scopeTenantID(userFrom(r.Context())),
 		TargetType: "doc", TargetName: kind + " " + firstNonEmpty(subject, path),
 		Path:      path,
 		Details: map[string]any{"kind": kind, "applied": applied,

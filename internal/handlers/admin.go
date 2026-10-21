@@ -102,10 +102,18 @@ func (a *API) handleTenantsCreate(w http.ResponseWriter, r *http.Request) {
 // The hard "only members, ever" boundary lives in acl.Effective
 // (HomeOwner), not in these rows: the rows only decide what members get.
 func (a *API) provisionHome(ctx context.Context, name string, tid int64) error {
+	return a.provisionHomeACL(ctx, name, tid, a.ACL)
+}
+
+// provisionHomeACL takes the ACL store to write on, so import-apply can
+// provision a tenant doc's home inside its transaction. The directory
+// itself is a filesystem effect and does not roll back — harmless, since
+// Mkdir is idempotent and the next apply or restart sees the same state.
+func (a *API) provisionHomeACL(ctx context.Context, name string, tid int64, ACL *acl.Store) error {
 	if err := a.FS.Mkdir("/" + name); err != nil && !errors.Is(err, fsx.ErrExists) {
 		return err
 	}
-	return a.ACL.Ensure(ctx, "/"+name, "tenant", tid, true, false, false)
+	return ACL.Ensure(ctx, "/"+name, "tenant", tid, true, false, false)
 }
 
 // BootstrapHomes: called once at server start. Every existing tenant whose

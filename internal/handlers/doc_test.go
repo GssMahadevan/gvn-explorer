@@ -350,3 +350,93 @@ func mustMarshal(t *testing.T, v any) []byte {
 	}
 	return b
 }
+
+// TestDocApplyManyLines: a single large document applies in one request —
+// the transaction path, exercised at scale (200 grant lines). An entity doc
+// is used because its grant lines carry their own paths (an ACL doc states
+// one path). Replace then deletes exactly the rows the doc owns.
+func TestDocApplyManyLines(t *testing.T) {
+	e := newEnv(t)
+	u := e.srv.URL
+
+	const n = 200
+	lines := make([]map[string]any, n)
+	for i := range lines {
+		lines[i] = map[string]any{
+			"path":           "/bulk/dir" + strconv.Itoa(i),
+			"principal_type": "group",
+			"principal":      "bulk",
+			"read":           true,
+		}
+	}
+	doc := map[string]any{"kind": "group", "version": 1, "name": "bulk", "grants": lines}
+	rep := must(t, e.admin, "POST", u+"/api/v1/import",
+		`{"mode":"merge","doc":`+string(mustMarshal(t, doc))+`}`, 200)
+	if rep["applied"].(float64) != n || rep["created"] != true {
+		t.Fatalf("want %d applied + created subject, got %v", n, rep)
+	}
+	// A deep line landed: count grants on the last path.
+	if got := grantAt(t, e.admin, u, "/bulk/dir199"); len(got) != 1 {
+		t.Fatalf("deep grant missing: %d rows at /bulk/dir199", len(got))
+	}
+
+	// Re-apply in replace mode stating nothing: every row this subject
+	// carries is removed; inheritance is never part of it.
+	empty := `{"kind":"group","version":1,"name":"bulk","grants":[]}`
+	rep = must(t, e.admin, "POST", u+"/api/v1/import",
+		`{"mode":"replace","doc":`+empty+`}`, 200)
+	if rep["applied"].(float64) != 0 || len(rep["removed"].([]any)) != n {
+		t.Fatalf("replace-all report: %v", rep)
+	}
+	for _, p := range []string{"/bulk/dir0", "/bulk/dir99", "/bulk/dir199"} {
+		if got := grantAt(t, e.admin, u, p); len(got) != 0 {
+			t.Fatalf("replace left %d rows at %s", len(got), p)
+		}
+	}
+}
+
+// TestDocApplyAtomicOnUnknownPrincipal: one unresolvable name in an
+// otherwise-large document fails the whole request and applies nothing —
+// validate-first holds regardless of document size.
+func TestDocApplyAtomicOnUnknownPrincipal(t *testing.T) {
+	e := newEnv(t)
+	u := e.srv.URL
+
+	lines := make([]map[string]any, 150)
+	for i := range lines {
+		lines[i] = map[string]any{
+			"path":           "/atomic/dir" + strconv.Itoa(i),
+			"principal_type": "user",
+			"principal":      "ghost",
+			"read":           true,
+		}
+	}
+	// A subject named in the doc, plus many grant lines that all resolve
+	// to a real user, plus one line naming a user that does not exist.
+	must(t, e.admin, "POST", u+"/api/v1/users", `{"username":"real","password":"pw"}`, 201)
+	for _, l := range lines {
+		l["principal"] = "real"
+	}
+	lines = append(lines, map[string]any{
+		"path": "/atomic/ghost", "principal_type": "user", "principal": "nobody", "read": true,
+	})
+	doc := map[string]any{"kind": "group", "version": 1, "name": "mixed", "grants": lines}
+	code, _, raw := reqJSON(t, e.admin, "POST", u+"/api/v1/import",
+		`{"mode":"merge","doc":`+string(mustMarshal(t, doc))+`}`)
+	if code != 422 {
+		t.Fatalf("want 422, got %d (%s)", code, raw)
+	}
+	if !strings.Contains(string(raw), "nobody") {
+		t.Fatalf("422 should name the missing principal: %s", raw)
+	}
+	// Nothing applied — not the first valid line, not the last one.
+	for _, p := range []string{"/atomic/dir0", "/atomic/dir149"} {
+		if got := grantAt(t, e.admin, u, p); len(got) != 0 {
+			t.Fatalf("failed import applied rows: %d at %s", len(got), p)
+		}
+	}
+	// And the group subject was not created either.
+	if gs := mustList(t, e.admin, "GET", u+"/api/v1/groups", 200); len(gs) != 0 {
+		t.Fatalf("failed import created a subject group: %v", gs)
+	}
+}
