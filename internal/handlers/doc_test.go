@@ -126,7 +126,7 @@ func TestDocValidateFirst(t *testing.T) {
 	// hand-entered ones — a template cannot smuggle a world grant into
 	// someone's home.
 	code, out, _ = reqJSON(t, e.admin, "POST", u+"/api/v1/import",
-		`{"doc":{"kind":"acl","version":1,"path":"/globex","grants":[
+		`{"doc":{"kind":"acl","version":1,"path":"/tenants/globex","grants":[
 			{"principal_type":"all","read":true}]}}`)
 	if code != 422 || !strings.Contains(errMsg(out), "tenant home") {
 		t.Fatalf("home rule not enforced: %d %v", code, out)
@@ -260,7 +260,7 @@ func TestDocGroupAndTenant(t *testing.T) {
 	if t2 := mustList(t, e.admin, "GET", u+"/api/v1/tenants?q=yoo", 200); len(t2) != 1 {
 		t.Fatalf("tenant not created")
 	}
-	if code, _, _ := reqJSON(t, e.admin, "GET", u+"/api/v1/fs?path=/yoo", ""); code != 200 {
+	if code, _, _ := reqJSON(t, e.admin, "GET", u+"/api/v1/fs?path=/tenants/yoo", ""); code != 200 {
 		t.Fatalf("home not provisioned by tenant doc")
 	}
 	// Tenant home partition still holds against the imported rows:

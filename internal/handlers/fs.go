@@ -15,6 +15,7 @@ import (
 
 	"github.com/GssMahadevan/gvn-explorer/docs"
 	"github.com/GssMahadevan/gvn-explorer/internal/acl"
+	"github.com/GssMahadevan/gvn-explorer/internal/auth"
 	"github.com/GssMahadevan/gvn-explorer/internal/fsx"
 	"github.com/GssMahadevan/gvn-explorer/internal/query"
 )
@@ -322,6 +323,10 @@ func (a *API) handleMkdir(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_path", "cannot mkdir root")
 		return
 	}
+	if p == auth.HomeRoot {
+		writeError(w, http.StatusForbidden, "reserved", "/tenants is reserved for tenant homes")
+		return
+	}
 	if isHelpPath(p) {
 		helpReadOnly(w)
 		return
@@ -422,8 +427,8 @@ func (a *API) handleRename(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_path", err.Error())
 		return
 	}
-	if from == "/" || to == "/" {
-		writeError(w, http.StatusBadRequest, "bad_path", "cannot rename root")
+	if from == "/" || to == "/" || from == auth.HomeRoot || to == auth.HomeRoot {
+		writeError(w, http.StatusBadRequest, "bad_path", "cannot rename root or the reserved /tenants namespace")
 		return
 	}
 	if isHelpPath(from) || isHelpPath(to) {
@@ -451,6 +456,10 @@ func (a *API) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	if p == "/" {
 		writeError(w, http.StatusBadRequest, "bad_path", "cannot delete root")
+		return
+	}
+	if p == auth.HomeRoot {
+		writeError(w, http.StatusForbidden, "reserved", "/tenants is reserved for tenant homes")
 		return
 	}
 	if isHelpPath(p) {

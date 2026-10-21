@@ -138,6 +138,46 @@ func (s *Store) HasGrant(ctx context.Context, path, ptype string, pid int64) (bo
 	return true, nil
 }
 
+// RehomePrefix rewrites the path prefix of every grant at oldPath or
+// under it, for the one-time move of a tenant home to /tenants/{name}.
+// Old home names are HomeSafe ([a-z0-9-]), so the LIKE pattern cannot
+// match wildcards by accident. Returns the number of rows rewritten.
+func (s *Store) RehomePrefix(ctx context.Context, oldPath, newPath string) (int, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		"SELECT id, path FROM perms WHERE path = ? OR path LIKE ?",
+		oldPath, oldPath+"/%")
+	if err != nil {
+		return 0, err
+	}
+	type re struct {
+		id   int64
+		path string
+	}
+	var res []re
+	for rows.Next() {
+		var r re
+		if err := rows.Scan(&r.id, &r.path); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		res = append(res, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+	n := 0
+	for _, r := range res {
+		to := newPath + strings.TrimPrefix(r.path, oldPath)
+		if _, err := s.DB.ExecContext(ctx, "UPDATE perms SET path = ? WHERE id = ?", to, r.id); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
 func (s *Store) Delete(ctx context.Context, id int64) error {
 	res, err := s.DB.ExecContext(ctx, "DELETE FROM perms WHERE id = ?", id)
 	if err != nil {
@@ -304,8 +344,11 @@ func (s *Store) GrantByID(ctx context.Context, id int64) (Grant, error) {
 // the subtraction happens inside a layer, not between them.
 //
 // Before any grant is consulted, the tenant-home partition applies: a path
-// whose first segment names a HomeSafe tenant belongs to that tenant
-// exclusively — see HomeOwner.
+// under /tenants/{T} belongs to tenant T exclusively — see HomeOwner. The
+// home root also seals inheritance: a member's walk never climbs above
+// their home root, so the world row on /tenants (traversal) can never
+// reach inside a home — only the home's own rows admit, exactly as the
+// write side refuses foreign principals inside a home.
 //
 // Grants whose expires_at has passed are treated as if absent entirely
 // (they neither grant bits nor stop inheritance).
@@ -317,13 +360,19 @@ func (s *Store) Effective(ctx context.Context, a *auth.Store, path string, u aut
 	if u.IsSuper {
 		return Bits{Read: true, Write: true, Delete: true}, nil
 	}
-	if owner, _, err := s.HomeOwner(ctx, path); err != nil {
+	owner, _, err := s.HomeOwner(ctx, path)
+	if err != nil {
 		return Bits{}, err
-	} else if owner != "" && owner != u.Tenant {
+	}
+	if owner != "" && owner != u.Tenant {
 		// Hard partition: inside someone else's home a non-member has no
 		// bits at all, whatever rows exist. Callers see 403s; the list
 		// entry filter hides the home directory itself entirely.
 		return Bits{}, nil
+	}
+	homeRoot := ""
+	if owner != "" {
+		homeRoot = auth.HomePath(owner)
 	}
 	groupIDs, err := a.GroupIDsFor(ctx, u.ID)
 	if err != nil {
@@ -369,21 +418,27 @@ func (s *Store) Effective(ctx context.Context, a *auth.Store, path string, u aut
 			bits.Source = p
 			return bits, nil
 		}
+		if p == homeRoot {
+			break // the home seals its subtree; no inheritance past it
+		}
 	}
 	return Bits{}, nil
 }
 
-// HomeOwner: if the first segment of path is (or lies under) a tenant home,
-// returns that tenant's name and id. Name-based on purpose: the boundary
-// exists the moment the tenant row does — before/without any directory —
-// and names that fail auth.HomeSafe (legacy rows, reserved "help") are
-// never homes, consistently with creation-time validation and the startup
-// backfill. Returns ("", 0, nil) for unpartitioned paths.
+// HomeOwner: if path is (or lies under) a tenant home — a path under
+// HomeRoot/<name> — returns that tenant's name and id. Row-based on
+// purpose: the boundary exists the moment the tenant row does —
+// before/without any directory — and names that fail auth.HomeSafe
+// (legacy rows, reserved "help" and "tenants") are never homes,
+// consistently with creation-time validation and the startup backfill.
+// Top-level paths other than HomeRoot itself are never homes. Returns
+// ("", 0, nil) for unpartitioned paths.
 func (s *Store) HomeOwner(ctx context.Context, path string) (string, int64, error) {
-	if path == "/" {
+	rest := strings.TrimPrefix(path, auth.HomeRoot+"/")
+	if rest == path {
 		return "", 0, nil
 	}
-	seg := path[1:]
+	seg := rest
 	if i := strings.IndexByte(seg, '/'); i >= 0 {
 		seg = seg[:i]
 	}

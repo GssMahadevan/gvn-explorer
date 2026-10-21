@@ -71,3 +71,17 @@ func (s *Store) Delete(ctx context.Context, path string) error {
 	_, err := s.DB.ExecContext(ctx, "DELETE FROM file_drafts WHERE path = ?", path)
 	return err
 }
+
+// RehomePrefix rewrites working copies at oldPath or under it, for the
+// one-time move of a tenant home to /tenants/{name}. Names involved are
+// HomeSafe, so the LIKE pattern cannot match wildcards by accident.
+func (s *Store) RehomePrefix(ctx context.Context, oldPath, newPath string) (int, error) {
+	res, err := s.DB.ExecContext(ctx,
+		"UPDATE file_drafts SET path = ? || substr(path, ?) WHERE path = ? OR path LIKE ?",
+		newPath, len(oldPath)+1, oldPath, oldPath+"/%")
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
+}

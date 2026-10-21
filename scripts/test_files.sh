@@ -64,6 +64,12 @@ t - "fs without cookie" 401 GET /api/v1/fs?path=/
 echo "== tenants (super only) =="
 t "$AJ" "create tenant $T" 201 POST /api/v1/tenants "{\"name\":\"$T\"}"
 t "$AJ" "duplicate tenant" 409 POST /api/v1/tenants "{\"name\":\"$T\"}"
+t "$AJ" "reserved tenant name help" 422 POST /api/v1/tenants "{\"name\":\"help\"}"
+t "$AJ" "reserved tenant name tenants" 422 POST /api/v1/tenants "{\"name\":\"tenants\"}"
+t "$AJ" "home namespace auto-provisioned" 200 GET "/api/v1/fs?path=/tenants/$T"
+t "$AJ" "mkdir /tenants refused (reserved)" 403 POST /api/v1/fs/mkdir "{\"path\":\"/tenants\"}"
+t "$AJ" "delete /tenants refused (reserved)" 403 DELETE "/api/v1/fs?path=/tenants"
+t "$AJ" "rename /tenants refused (reserved)" 400 POST /api/v1/fs/rename "{\"from\":\"/tenants\",\"to\":\"/homes-\"}"
 
 echo "== super admin fs CRUD (bypass) =="
 D="/docs-$SFX"
@@ -599,7 +605,7 @@ check "memberships not doubled" "$(jq -e '(.memberships // 0)==0 and .created!=t
 t "$TAJ" "tenant doc needs super" 403 POST /api/v1/import "{\"doc\":{\"kind\":\"tenant\",\"name\":\"$DOCT\",\"grants\":[]}}"
 t "$AJ" "import tenant doc" 200 POST /api/v1/import "{\"doc\":{\"kind\":\"tenant\",\"name\":\"$DOCT\",\"grants\":[]}}"
 check "tenant created by doc" "$(jq -e '.created==true' /tmp/resp.json >/dev/null; echo $?)"
-t "$AJ" "doc tenant home provisioned" 200 GET "/api/v1/perms?path=/$DOCT"
+t "$AJ" "doc tenant home provisioned" 200 GET "/api/v1/perms?path=/tenants/$DOCT"
 check "home carries the tenant r grant" "$(jq -e 'any(.grants[]; .principal_type=="tenant" and .principal_name=="'$DOCT'" and .read==true)' /tmp/resp.json >/dev/null; echo $?)"
 
 # the forensic trail: one import_apply per call + canonical create actions

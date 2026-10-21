@@ -19,10 +19,12 @@ must never get wrong:
          secrets, redeem-once/expiry/revoke semantics, tenant scoping,
          and the login-concurrency guard (-auth-concurrency) refusing a
          burst of simultaneous bcrypts with 503 + Retry-After.
-  homes  tenant home directories (/{tenant}) and the pseudo-principals:
+  homes  tenant home directories (under the reserved /tenants namespace)
+         and the pseudo-principals:
          the hard member-only partition (invisible to outsiders even
          through listings), the default member grant as an ordinary
-         visible/revocable row, and tenant/world grants in the shared
+         visible/revocable row (sealed: nothing above a home root ever
+         reaches into it), and tenant/world grants in the shared
          zone — including zero-grant exclusions beating a world row.
 
 Standard library only — no pip installs. Works over plain HTTP or over
@@ -430,7 +432,7 @@ def teardown(x, keep):
     for tid in x.tid.values():
         sup.delete_tenant(tid)
     for p in (x.mx, x.fx, x.ct, x.hz, "/up-" + x.rid, "/out-" + x.rid,
-              "/" + x.ta, "/" + x.tb):  # the homes are plain dirs once the tenants are gone
+              "/tenants/" + x.ta, "/tenants/" + x.tb):  # the homes are plain dirs once the tenants are gone
         rm_tree(sup, p)
 
 
@@ -1060,10 +1062,12 @@ def suite_pair(x, rep):
 
 
 def suite_homes(x, rep):
-    """Tenant homes + pseudo-principals. Homes are name-based: /{tenant}
-    belongs to its tenant's members and super, whatever grant rows say.
-    Membership defaults (and shared-zone openness) are ordinary visible
-    grant rows addressed to the 'tenant' and 'all' pseudo-principals."""
+    """Tenant homes + pseudo-principals. Homes live under the reserved
+    /tenants namespace: /tenants/{tenant} belongs to its tenant's members
+    and super, whatever grant rows say. The namespace carries one world
+    traversal row, sealed off from every home subtree. Membership defaults
+    (and shared-zone openness) are ordinary visible grant rows addressed
+    to the 'tenant' and 'all' pseudo-principals."""
     print("== homes: tenant home directories and pseudo-principals", flush=True)
     sup, a, b, c = x.super, x.sess["alice"], x.sess["bob"], x.sess["carol"]
     # mallory's setup session was killed by the acl suite's suspend test;
@@ -1073,10 +1077,18 @@ def suite_homes(x, rep):
     if st != 200:
         rep.ck("re-login mallory for the homes suite (got %d)" % st, False)
         return
-    ha, hb, hz = "/" + x.ta, "/" + x.tb, x.hz
+    ns = "/tenants"
+    ha, hb, hz = ns + "/" + x.ta, ns + "/" + x.tb, x.hz
 
-    # a brand-new tenant arrives with its home and a member-readable default
+    # the /tenants namespace is server-managed: not even super may replace it
+    rep.want(sup.mkdir(ns), (403,), "the /tenants namespace itself is reserved")
+    rep.want(sup.rm(ns), (403,), "the /tenants namespace cannot be deleted")
+    rep.want(sup.rename(ns, "/homes"), (400,), "the /tenants namespace cannot be renamed")
+
+    # a brand-new tenant arrives with its home in the namespace and a
+    # member-readable default; the namespace itself is enterable by anyone
     rep.want(sup.ls(ha), (200,), "creating a tenant also created its home")
+    rep.want(m.ls(ns), (200,), "every user may enter the home namespace")
     rep.want(m.ls(ha), (200,), "a member can list their home")
     rep.want(m.write(ha + "/mine.txt", "M"), (403,), "the home default is read-only")
 
@@ -1101,13 +1113,18 @@ def suite_homes(x, rep):
     rep.want(sup.grant(ha, "all", "*", read=True), (422,),
              "the world principal cannot be granted inside a home")
 
-    # with root opened to a member, their listing shows their home and
-    # foreign homes are not merely denied, they are invisible
+    # with root opened to a member, their listing shows the namespace;
+    # inside it they see their own home and foreign homes are not merely
+    # denied, they are invisible
     rep.want(sup.grant("/", "user", x.mallory, read=True, tenant=x.ta), (200,),
              "super may still grant in the shared zone")
     st, obj, _ = m.ls("/")
     names_ = [e["entry"]["name"] for e in (obj or {}).get("entries", [])] if st == 200 else []
-    rep.ck("a permitted listing includes the member's own home "
+    rep.ck("a permitted listing includes the home namespace "
+           "(st=%d names=%r)" % (st, names_), st == 200 and "tenants" in names_)
+    st, obj, _ = m.ls(ns)
+    names_ = [e["entry"]["name"] for e in (obj or {}).get("entries", [])] if st == 200 else []
+    rep.ck("the namespace shows the member their own home "
            "(st=%d names=%r)" % (st, names_), st == 200 and x.ta in names_)
     rep.ck("foreign homes never appear in a listing", x.tb not in names_)
 
@@ -1153,6 +1170,13 @@ def suite_homes(x, rep):
     rep.want(a.delete_grant(gid), (204,),
              "the tenant's own admin may revoke the home default")
     rep.want(dapi.ls(ha), (403,), "revoking the default hides the home from members")
+    # the namespace stays enterable, but its world row is traversal only:
+    # a sealed home never inherits from above its root, so even the
+    # member's own home has disappeared from the namespace listing
+    st, obj, _ = dapi.ls(ns)
+    nn = [e["entry"]["name"] for e in (obj or {}).get("entries", [])] if st == 200 else []
+    rep.ck("the world row on the namespace never reaches into a home "
+           "(st=%d names=%r)" % (st, nn), st == 200 and x.ta not in nn)
     # nothing was destroyed: super still sees the members' file inside
     st, obj, _ = sup.ls(ha)
     dn = [e["entry"]["name"] for e in (obj or {}).get("entries", [])] if st == 200 else []
@@ -1163,6 +1187,7 @@ def suite_homes(x, rep):
     rep.want(sup.create_tenant("Bad Name"), (422,), "tenant names with spaces are refused")
     rep.want(sup.create_tenant("UPPER"), (422,), "tenant names must be lowercase")
     rep.want(sup.create_tenant("help"), (422,), "the documentation path is reserved")
+    rep.want(sup.create_tenant("tenants"), (422,), "the home namespace name is reserved")
 
 
 SUITES = {"cross": suite_cross, "acl": suite_acl, "paths": suite_paths,

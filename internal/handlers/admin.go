@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -76,7 +77,7 @@ func (a *API) handleTenantsCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if !auth.HomeSafe(b.Name) {
 		writeError(w, http.StatusUnprocessableEntity, "validation",
-			"name must be 1-32 chars of lowercase letters, digits or dashes (a-z, 0-9, -), start with a letter or digit, and not the reserved word help")
+			"name must be 1-32 chars of lowercase letters, digits or dashes (a-z, 0-9, -), start with a letter or digit, and not one of the reserved words help, tenants")
 		return
 	}
 	t, err := a.Auth.CreateTenant(r.Context(), b.Name, strings.TrimSpace(b.Description))
@@ -94,13 +95,17 @@ func (a *API) handleTenantsCreate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, t)
 }
 
-// provisionHome: every tenant owns the directory /{name}. Creating a
-// tenant creates it, plus one ordinary visible grant: the tenant's members
-// get r on their home — by the usual inheritance that covers the whole
-// home subtree, and it is the only membership default there is. The grant
-// is provisioned exactly once — an admin who revokes it stays revoked.
-// The hard "only members, ever" boundary lives in acl.Effective
-// (HomeOwner), not in these rows: the rows only decide what members get.
+// provisionHome: every tenant owns the directory /tenants/{name} under
+// the reserved home namespace. Creating a tenant creates it, plus one
+// ordinary visible grant: the tenant's members get r on their home — by
+// the usual inheritance that covers the whole home subtree, and it is the
+// only membership default there is. The grant is provisioned exactly
+// once — an admin who revokes it stays revoked. The hard "only members,
+// ever" boundary lives in acl.Effective (HomeOwner), not in these rows:
+// the rows only decide what members get. provisioning a home also
+// guarantees the /tenants namespace exists and is enterable by everyone
+// (a plain world read row, so members can reach their own home through
+// the tree; the list filter then shows each user only what they may see).
 func (a *API) provisionHome(ctx context.Context, name string, tid int64) error {
 	return a.provisionHomeACL(ctx, name, tid, a.ACL)
 }
@@ -110,22 +115,87 @@ func (a *API) provisionHome(ctx context.Context, name string, tid int64) error {
 // itself is a filesystem effect and does not roll back — harmless, since
 // Mkdir is idempotent and the next apply or restart sees the same state.
 func (a *API) provisionHomeACL(ctx context.Context, name string, tid int64, ACL *acl.Store) error {
-	if err := a.FS.Mkdir("/" + name); err != nil && !errors.Is(err, fsx.ErrExists) {
+	if err := a.ensureHomeRoot(ctx, ACL); err != nil {
 		return err
 	}
-	return ACL.Ensure(ctx, "/"+name, "tenant", tid, true, false, false)
+	if err := a.FS.Mkdir(auth.HomePath(name)); err != nil && !errors.Is(err, fsx.ErrExists) {
+		return err
+	}
+	return ACL.Ensure(ctx, auth.HomePath(name), "tenant", tid, true, false, false)
 }
 
-// BootstrapHomes: called once at server start. Every existing tenant whose
-// name can back a directory but has no home yet gets one plus its default
-// browse grant (fresh installs: zero work; upgrades of older servers: the
-// backfill). There is deliberately no world grant on "/": nearest-ancestor
-// inheritance would make that read every shared-zone file for every user
-// and break the deny-by-default core of the model. The default view comes
-// from the home grant itself (members can list and read their own tree),
-// and shared-zone openness is whatever admins grant to the "all" principal
-// per path, one explicit row at a time.
+// ensureHomeRoot creates /tenants once and gives the world principal a
+// read row on it exactly once — the same provision-never-re-impose rule
+// as home defaults: a super who deletes that row stays deleted (members
+// then need deep links or their own grants to get in).
+func (a *API) ensureHomeRoot(ctx context.Context, ACL *acl.Store) error {
+	_, err := a.FS.Stat(auth.HomeRoot)
+	if errors.Is(err, fs.ErrNotExist) {
+		if err := a.FS.Mkdir(auth.HomeRoot); err != nil && !errors.Is(err, fsx.ErrExists) {
+			return err
+		}
+		return ACL.Ensure(ctx, auth.HomeRoot, "all", 0, true, false, false)
+	}
+	return err
+}
+
+// migrateHome: one-time upgrade for instances created before homes moved
+// under /tenants. If the legacy /{name} directory exists and the new
+// location does not, rename it and rewrite the path prefix of everything
+// keyed to it: grant rows and file drafts. Events keep their historical
+// paths — the audit trail is history, not state. If both locations exist
+// nothing is merged or clobbered: say so loudly and let an admin resolve
+// it. Returns true if the home was moved (caller then treats the new
+// location as already-provisioned).
+func (a *API) migrateHome(ctx context.Context, name string) (bool, error) {
+	legacy, home := "/"+name, auth.HomePath(name)
+	if _, err := a.FS.Stat(legacy); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	_, newErr := a.FS.Stat(home)
+	if newErr == nil {
+		slog.Warn("both the legacy home and the new one exist; not merging, review by hand",
+			"legacy", legacy, "home", home)
+		return false, nil
+	}
+	if !errors.Is(newErr, fs.ErrNotExist) {
+		return false, newErr
+	}
+	if err := a.FS.Rename(legacy, home); err != nil {
+		return false, err
+	}
+	grants, err := a.ACL.RehomePrefix(ctx, legacy, home)
+	if err != nil {
+		return false, err
+	}
+	drafts, err := a.Drafts.RehomePrefix(ctx, legacy, home)
+	if err != nil {
+		return false, err
+	}
+	slog.Info("moved tenant home to the /tenants namespace",
+		"tenant", name, "from", legacy, "to", home,
+		"grants_rewritten", grants, "drafts_rewritten", drafts)
+	return true, nil
+}
+
+// BootstrapHomes: called once at server start. Ensures the /tenants
+// namespace exists, migrates any pre-namespace homes, then gives every
+// existing tenant whose name can back a directory a home plus its default
+// browse grant, if it has none yet (fresh installs: zero work; upgrades
+// of older servers: the backfill). There is deliberately no world grant
+// on "/": nearest-ancestor inheritance would make that read every
+// shared-zone file for every user and break the deny-by-default core of
+// the model. The default view comes from the home grant itself (members
+// can list and read their own tree), and shared-zone openness is
+// whatever admins grant to the "all" principal per path, one explicit
+// row at a time.
 func (a *API) BootstrapHomes(ctx context.Context) error {
+	if err := a.ensureHomeRoot(ctx, a.ACL); err != nil {
+		return err
+	}
 	tenants, _, err := a.Auth.ListTenants(ctx, query.List{Sort: "name"})
 	if err != nil {
 		return err
@@ -135,13 +205,16 @@ func (a *API) BootstrapHomes(ctx context.Context) error {
 			slog.Warn("tenant name cannot back a home directory; leaving it unpartitioned", "tenant", t.Name)
 			continue
 		}
-		home := "/" + t.Name
+		if _, err := a.migrateHome(ctx, t.Name); err != nil {
+			return err
+		}
+		home := auth.HomePath(t.Name)
 		if _, err := a.FS.Stat(home); err == nil {
 			// Home already provisioned once — never re-impose defaults an
-			// admin may have revoked. But the partition rule is name-based,
-			// so a legacy top-level dir that matches a tenant name became a
-			// home the moment this binary started: say so if members cannot
-			// browse it, because that is surprising and easily fixed.
+			// admin may have revoked. But the partition rule is row-based,
+			// so /tenants/{name} is a home the moment the tenant row
+			// exists: say so if members cannot browse it, because that is
+			// surprising and easily fixed.
 			if has, err := a.ACL.HasGrant(ctx, home, "tenant", t.ID); err == nil && !has {
 				slog.Warn("home is partitioned but no member grant exists: grant r to the tenant principal to let members browse it",
 					"tenant", t.Name, "path", home)
@@ -385,7 +458,7 @@ func (a *API) homeProblem(ctx context.Context, p string, ptid int64) (code, msg 
 		return "internal", err.Error()
 	}
 	if owner != "" && ptid != ownerID {
-		return "validation", "grants inside the tenant home /" + owner + " may only target that tenant's members"
+		return "validation", "grants inside the tenant home " + auth.HomePath(owner) + " may only target that tenant's members"
 	}
 	return "", ""
 }

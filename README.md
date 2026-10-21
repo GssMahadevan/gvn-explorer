@@ -224,22 +224,33 @@ Group membership is always resolved inside the group's own tenant — adding
 
 ## Tenant home directories
 
-Creating a tenant (`POST /api/v1/tenants`) provisions a home directory at
-`/{tenant-name}` and a read grant for `principal_type:tenant` on it — an
-ordinary, visible, revocable grant row, so the tenant's own admin can
-upgrade it to `rw` or revoke it like any other. The home is then a hard
+All tenant homes live under one reserved namespace, `/tenants`. Creating a
+tenant (`POST /api/v1/tenants`) provisions its home at
+`/tenants/{tenant-name}` plus a read grant for `principal_type:tenant`
+on it — an ordinary, visible, revocable grant row, so the tenant's own
+admin can upgrade it to `rw` or revoke it like any other. The namespace
+itself gets a single read grant for `principal_type:all` so every user
+can enter it and reach their own tenant through the tree; the list filter
+then shows each member only their own tenant. The home is a hard
 **partition**: only that tenant's members (and the super admin) can reach
-anything inside it, whatever grant rows elsewhere say; to everyone else the
-directory does not even appear in listings. Inside a home, every grant must
-address that tenant's own members — grants for foreign users, foreign
-tenants or `all` are refused with 422 there, even for the super admin.
-Outside homes nothing is world-readable by default: shared zones open only
-through explicit per-path `tenant`/`all` grants. A top-level directory that
-already matches a tenant's name becomes that tenant's home at startup.
+anything inside it, whatever grant rows elsewhere say; to everyone else
+the directory does not even appear in listings. The home root also seals
+inheritance — the world row on `/tenants` is traversal only and never
+reaches inside a home; only rows at the home root or below it admit
+anyone. Inside a home, every grant must address that tenant's own
+members — grants for foreign users, foreign tenants or `all` are refused
+with 422 there, even for the super admin. Outside homes nothing is
+world-readable by default: shared zones open only through explicit
+per-path `tenant`/`all` grants. `/tenants` itself is server-managed:
+mkdir/rename/delete of it are refused (403), and it is a reserved tenant
+name. Instances created before homes moved under the namespace are
+migrated once at startup: the old `/{tenant-name}` directory is renamed
+into place and the grants and drafts keyed to it are re-written; audit
+history keeps its original paths.
 New tenant names must be able to back a directory: lowercase `a-z0-9-`,
-starting alphanumerically, ≤ 32 chars, and `help` is reserved (422
-otherwise); pre-existing tenants with other names keep working, their
-top-level directories are simply ordinary shared directories.
+starting alphanumerically, ≤ 32 chars, and `help`/`tenants` are reserved
+(422 otherwise); pre-existing tenants with other names keep working,
+their directories are simply ordinary shared directories.
 
 
 ## Expiring access (customer shares)
@@ -635,9 +646,9 @@ the PUT below, and searchable/sortable through the list contract.
 - `GET/POST /api/v1/tenants`, `PUT /api/v1/tenants/{id} {"description"}`,
   `POST /api/v1/tenants/{id}/active {"active"}`, `DELETE /api/v1/tenants/{id}` —
   **super admin only**; creating a tenant also provisions its home directory
-  `/{name}` (member read, see *Tenant home directories*); new names must be
+  `/tenants/{name}` (member read, see *Tenant home directories*); new names must be
   directory-safe (lowercase `a-z0-9-`, start alphanumeric, ≤32 chars, `help`
-  reserved — 422 otherwise); deleting a tenant cascades to its users, groups,
+  and `tenants` reserved — 422 otherwise); deleting a tenant cascades to its users, groups,
   memberships and every ACL grant that targets them
 - `GET/PUT /api/v1/perms`, `DELETE /api/v1/perms/{id}` — view grants + your
   effective bits (any user); mutate with admin rights, tenant-scoped for

@@ -46,13 +46,18 @@ that user out of a `tenant` or `all` grant without touching anyone else.
 
 ## Tenant home directories
 
-Each tenant automatically has a home directory `/{tenant-name}` — for
-`acme` that is `/acme`. It arrives with one ordinary grant row addressed
+All tenant homes live under one reserved directory, `/tenants`; each
+tenant automatically has a home there — for `acme` that is
+`/tenants/acme`. It arrives with one ordinary grant row addressed
 to `tenant: acme` (read-only), so **every member can read it by default**
 and the tenant's own admin can upgrade that row to `rw` or revoke it like
 any grant. The home is then a hard partition: only members of that tenant
 (and super admins) can reach inside it — to everyone else the directory
-does not even appear in listings, no matter what other grants exist. And
+does not even appear in listings, no matter what other grants exist.
+`/tenants` itself carries a single read grant so any user can enter the
+namespace and find their own tenant in it — that row is traversal only:
+it never reaches inside a home, only grants at the home root or below it
+do. And
 inside a home, every grant must address that tenant's own members:
 granting to a foreign user, another tenant or `all` there is refused
 (422), even for super admins — use the shared zones outside the homes for

@@ -829,7 +829,7 @@ func (a *API) importTenant(w http.ResponseWriter, r *http.Request, d docTenant, 
 	}
 	if !auth.HomeSafe(d.Name) {
 		writeError(w, http.StatusUnprocessableEntity, "validation",
-			"tenant names may only contain lowercase letters, digits and dashes")
+			"tenant names may only contain lowercase letters, digits and dashes, and may not be help or tenants")
 		return
 	}
 	// Read the subject before validating (see importUser): a tenant doc's

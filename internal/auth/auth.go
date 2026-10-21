@@ -77,13 +77,24 @@ const tsFmt = time.RFC3339Nano
 // directory: a lowercase path-safe segment (letters, digits, dashes).
 var homeNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 
-// HomeSafe reports whether a tenant name may back a home directory. "help"
-// is reserved: it is the embedded documentation tree. New tenants are
-// validated against this at creation; the partition rule (acl.HomeOwner)
-// and the startup home backfill use the same predicate, so legacy rows
-// with other names are consistently never treated as homes.
+// HomeRoot is the reserved top-level directory that holds every tenant
+// home: a tenant's home is always HomeRoot + "/" + name. Keeping homes in
+// one namespace is what lets the world principal hold a plain read grant
+// on HomeRoot (members can enter and see their own tenant) without any
+// tenant home ever being reachable from a shared-zone grant.
+const HomeRoot = "/tenants"
+
+// HomePath returns the home directory of a tenant name.
+func HomePath(name string) string { return HomeRoot + "/" + name }
+
+// HomeSafe reports whether a tenant name may back a home directory.
+// "help" and "tenants" are reserved: the embedded documentation tree and
+// the home namespace itself. New tenants are validated against this at
+// creation; the partition rule (acl.HomeOwner) and the startup home
+// backfill use the same predicate, so legacy rows with other names are
+// consistently never treated as homes.
 func HomeSafe(name string) bool {
-	return name != "help" && homeNameRe.MatchString(name)
+	return name != "help" && name != "tenants" && homeNameRe.MatchString(name)
 }
 
 func (s *Store) CreateTenant(ctx context.Context, name, description string) (Tenant, error) {

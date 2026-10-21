@@ -40,21 +40,25 @@ curl -b jar -X POST localhost:8080/api/v1/tenants \
 
 New tenant names must be able to back a directory: lowercase letters,
 digits and `-`, starting alphanumeric, at most 32 characters, and
-`help` (the documentation path) is reserved. A name that doesn't fit is
+`help` (the documentation path) and `tenants` (the home namespace) are
+reserved. A name that doesn't fit is
 refused with 422. (Tenants created by older versions may have other
 names; they work normally, their top-level directories just stay
 ordinary shared space.)
 
-**Every tenant automatically has a home directory** at `/{name}` —
-creating the tenant creates `/acme` and one ordinary grant row giving all
-acme members read on it. The home is private by construction: only acme
-members (and super admins) can see or open anything inside, and to
-everyone else `/acme` doesn't even appear in listings. Inside the home
+**Every tenant automatically has a home directory**, always under the
+reserved namespace `/tenants` — creating the tenant creates
+`/tenants/acme` and one ordinary grant row giving all
+acme members read on it. The namespace itself is enterable by every
+logged-in user, but inside it everyone sees only their own tenant: the
+home is private by construction, only acme members (and super admins)
+can see or open anything inside, and to everyone else `/tenants/acme`
+doesn't even appear in listings. Inside the home
 all grants must address acme's own members; shared content across
 communities lives outside homes, opened by explicit grants
-([permissions.md](permissions.md)). If a top-level directory named
-`acme` already existed when the tenant was created, it simply becomes
-the home. The default member-read grant is a row like any other: acme's
+([permissions.md](permissions.md)). On an instance created before homes
+lived under `/tenants`, the old top-level `/acme` directory is moved
+into the namespace automatically at startup, grants included. The default member-read grant is a row like any other: acme's
 own tenant admin can upgrade it (e.g. to read+write so members can
 collaborate) or revoke it — revoking hides the home from members but
 never touches the data.
