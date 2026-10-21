@@ -401,11 +401,16 @@ line names the exact mechanism, most of it pinned by tests:
   cross-origin form can't accidentally post JSON-shaped bodies), and
   session cookies are `SameSite=Lax`. Bearer-token callers carry no
   ambient credential, so they are immune by construction.
-- **Clickjacking** — `X-Frame-Options: DENY` + CSP `frame-ancestors
-  'none'`: no other origin can frame the app to capture blind clicks.
-- **Confused-MPE / download XSS** — file content always comes back as
-  `Content-Disposition: attachment` with `X-Content-Type-Options:
-  nosniff`; an uploaded `report.html` never runs as a page on your origin.
+- **Clickjacking** — `X-Frame-Options: SAMEORIGIN` + CSP `frame-ancestors
+  'self'`: no other origin can frame the app to capture blind clicks;
+  only the app itself frames its own bytes (the browser's built-in PDF
+  viewer is a same-origin frame on `/fs/raw?dispo=inline`).
+- **Confused-MPE / download XSS** — file content comes back as
+  `Content-Disposition: attachment` unless the client explicitly asks for
+  `?dispo=inline`, which the server honours only for a closed allowlist
+  of formats browsers render natively (pdf/image/audio/video) — plus
+  `X-Content-Type-Options: nosniff` either way; an uploaded
+  `report.html` never runs as a page on your origin.
 - **Path traversal / symlink escape** — enforced in `internal/fsx`, not in
   handlers: cleaned path, root-prefix check, and symlink components
   refused, so no `..`, absolute path, or planted symlink leaves the
@@ -494,7 +499,7 @@ directories always sort first regardless of `dir`.
 |--------|-------------------------|---------------------------------------|--------------|
 | GET    | /api/v1/fs?path=        | —                                     | r on path    |
 | GET    | /api/v1/fs/content?path=| JSON text view                        | r            |
-| GET    | /api/v1/fs/raw?path=    | download bytes                        | r            |
+| GET    | /api/v1/fs/raw?path=    | download bytes (`&dispo=inline` for the browser's own pdf/image/audio/video viewer — honoured only for an explicit allowlist) | r            |
 | POST   | /api/v1/fs/mkdir        | `{"path"}`                            | w on path    |
 | POST   | /api/v1/fs/write        | `{"path","content"}` (+ optional `"base_mtime":<unix>`) | w on path |
 | POST   | /api/v1/fs/rename       | `{"from","to"}`                       | d on from, w on to |
@@ -628,14 +633,21 @@ the **name** alone — GitHub-style policy in `filekind.ts`: `.yml`/`.yaml`
 get the structured editor below, an allowlist of text extensions (plus
 extension-less files like `LICENSE`/`Makefile`) get the document view,
 images (`.png`/`.jpg`/`.gif`/`.webp`/`.avif`/`.svg`/…) are previewed
-in-browser, and movies (`.mp4`/`.m4v`/`.webm`/`.mov`/`.ogv`) play in a
-native `<video controls>` player — the same controls YouTube-class sites
-show, hardware-decoded and localized for free, seekable because `/fs/raw`
-answers Range requests. No player library: an evaluation of Video.js v10
+in-browser, movies (`.mp4`/`.m4v`/`.webm`/`.mov`/`.ogv`) play in a
+native `<video controls>` player, audio (`.mp3`/`.m4a`/`.wav`/`.ogg`/
+`.opus`/…) in a native `<audio controls>` one, and `.pdf` opens in the
+browser's own pdf viewer via an `<iframe>` on `/fs/raw?dispo=inline` —
+the server honours that optional param only for its own explicit
+allowlist (the closed set of formats every mainstream browser decodes
+by itself) and ignores it for anything else; no param, no change. The
+rule is the same as for video: if every mainstream browser ships the
+viewer, we frame it — no player or viewer library. An evaluation of
+Video.js v10
 / Media Chrome / Plyr showed none of them pays for itself when every
 video is a single progressive file from the same origin; formats no
-browser decodes (`.mkv`, `.avi`, `.tiff`) deliberately stay downloads.
-Everything else (binaries, `.pdf`, unknown types) never opens a page:
+browser decodes (`.mkv`, `.avi`, `.tiff`) or that could run scripts on
+your origin (`.svg`, `.html`) deliberately stay downloads.
+Everything else (binaries, `.zip`, unknown types) never opens a page:
 the name itself links to `/fs/raw` (attachment disposition), and every
 file's ⋮ menu carries `download` too. The file page
 (`components/FilePane`) is a real pane, not a modal: it replaces the tab

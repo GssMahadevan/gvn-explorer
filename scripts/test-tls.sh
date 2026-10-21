@@ -84,7 +84,7 @@ body=$(curl -sf --cacert "$DIR/tls/server.crt" "https://localhost:$P2/healthz" |
 case "$body" in *'"status":"ok"'*) ok "generated cert verifies with curl --cacert (no -k)";; *) fail "verified fetch: '$body'";; esac
 
 hdr=$(curl -sk -D - -o /dev/null "https://localhost:$P2/healthz")
-for h in 'x-content-type-options: nosniff' 'x-frame-options: DENY' 'referrer-policy: no-referrer' 'content-security-policy: default-src'; do
+for h in 'x-content-type-options: nosniff' 'x-frame-options: SAMEORIGIN' 'referrer-policy: no-referrer' 'content-security-policy: default-src'; do
   echo "$hdr" | grep -qi "$h" && ok "response carries $h" || fail "missing header: $h"
 done
 stop

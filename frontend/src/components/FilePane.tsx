@@ -6,7 +6,7 @@ import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ApiError, api } from '../api';
 import { useFlash } from '../flash';
-import { fileKind, rawUrl } from '../filekind';
+import { fileKind, rawInlineUrl, rawUrl } from '../filekind';
 import type { PermsList } from '../types';
 import DocEditor from './DocEditor';
 import YamlEditor from './YamlEditor';
@@ -53,9 +53,13 @@ const fmtTs = (ts: number) => new Date(ts * 1000).toLocaleString();
 // viewing AND editing, like GitHub's file pages). Default entry is the
 // VIEWER: markdown renders (with a Code toggle), other text is read-only
 // CodeMirror, YAML shows the read-only structured tree, images preview as
-// <img> and movies play in the browser's native <video controls> — the
-// same player YouTube-class sites use, localized and hardware-decoded for
-// free; /fs/raw answers Range requests, so seeking only fetches bytes.
+// <img>, movies play in the browser's native <video controls> and audio
+// in <audio controls> — the same players YouTube-class sites use,
+// localized and hardware-decoded for free; /fs/raw answers Range
+// requests, so seeking only fetches bytes. PDFs open in the browser's
+// own pdf viewer via an iframe on /fs/raw?dispo=inline, with open-in-
+// new-tab and download kept as fallbacks for viewers that can't render
+// them (a bare WebView, say).
 // Editing is an explicit step: the Files row ⋮ menu offers "edit", the pane header has
 // an Edit button for convenience. Plain docs edit in CodeMirror with a
 // markdown ribbon and the base_mtime guard (409 on clobber). YAML edits
@@ -83,7 +87,9 @@ export default function FilePane({
   const { path } = target;
   const kind = fileKind(path);
   const yaml = kind === 'yaml';
-  const media = kind === 'image' || kind === 'video';
+  // pdf/image/video/audio all stream straight from /fs/raw through the
+  // browser's own viewers — no text fetch, no draft, no edit
+  const media = kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'pdf';
   const md = /\.(md|markdown)$/i.test(path);
 
   const [mode, setMode] = useState<'view' | 'edit'>(target.mode);
@@ -340,7 +346,7 @@ export default function FilePane({
             message={
               kind === 'image'
                 ? 'Preview failed: this browser could not load this image'
-                : 'Playback failed: this browser could not play this video'
+                : 'Playback failed: this browser could not play this file'
             }
             description="The file itself is untouched — use download (top right) to fetch it and open it in another app."
           />
@@ -353,6 +359,40 @@ export default function FilePane({
               onError={() => setMediaErr(true)}
               style={{ maxWidth: '100%', maxHeight: '72vh' }}
             />
+          </div>
+        ) : kind === 'audio' ? (
+          <div data-testid="media-view" style={{ textAlign: 'center', padding: '24px 0' }}>
+            <audio
+              src={rawUrl(path)}
+              controls
+              preload="metadata"
+              data-testid="media-audio"
+              onError={() => setMediaErr(true)}
+              style={{ width: '100%', maxWidth: 520 }}
+            />
+          </div>
+        ) : kind === 'pdf' ? (
+          // the browser's own pdf viewer; if it cannot render (a bare
+          // WebView), the buttons below are the way out — never a dead
+          // pane, which is why download/open-in-tab stay always visible
+          <div data-testid="media-view">
+            <iframe
+              src={rawInlineUrl(path)}
+              title={path}
+              data-testid="media-pdf"
+              style={{ width: '100%', height: '72vh', border: 0 }}
+            />
+            <div style={{ marginTop: 8, textAlign: 'right' }}>
+              <Button
+                size="small"
+                href={rawInlineUrl(path)}
+                target="_blank"
+                rel="noreferrer"
+                data-testid="pdf-newtab"
+              >
+                Open full page
+              </Button>
+            </div>
           </div>
         ) : (
           <div data-testid="media-view" style={{ textAlign: 'center', background: '#000' }}>

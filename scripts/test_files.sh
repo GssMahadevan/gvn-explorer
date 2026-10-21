@@ -87,6 +87,17 @@ check "raw download matches" "$([ "$RAW" = "up-$SFX" ]; echo $?)" "got: $RAW"
 ET=$(curl -s -D- -o /dev/null -b "$AJ" "$BASE_URL/api/v1/fs/raw?path=$D/up-$SFX.txt" | tr -d '\r' | grep -i '^etag:' | awk '{print $2}')
 GOT=$(curl -s -o /dev/null -w '%{http_code}' -b "$AJ" -H "If-None-Match: $ET" "$BASE_URL/api/v1/fs/raw?path=$D/up-$SFX.txt")
 check "conditional GET: ETag -> 304" "$([ "$GOT" = 304 ]; echo $?)" "got: $GOT etag: $ET"
+# Content-Disposition policy: ?dispo=inline is honoured ONLY for the
+# server's explicit allowlist (pdf here); other types ignore it, and the
+# no-param contract must never change.
+printf '%%PDF-1.4 x\n' > "/tmp/d-$SFX.pdf"
+curl -s -o /dev/null -b "$AJ" -F "path=$D" -F "file=@/tmp/d-$SFX.pdf" "$BASE_URL/api/v1/fs/upload" >/dev/null
+CD=$(curl -s -D- -o /dev/null -b "$AJ" "$BASE_URL/api/v1/fs/raw?path=$D/d-$SFX.pdf&dispo=inline" | tr -d '\r' | grep -i '^content-disposition:' | head -1)
+check "raw pdf dispo=inline -> inline" "$([ "${CD#*inline;}" != "$CD" ]; echo $?)" "got: $CD"
+CD=$(curl -s -D- -o /dev/null -b "$AJ" "$BASE_URL/api/v1/fs/raw?path=$D/up-$SFX.txt&dispo=inline" | tr -d '\r' | grep -i '^content-disposition:' | head -1)
+check "raw txt dispo=inline ignored -> attachment" "$([ "${CD#*attachment;}" != "$CD" ]; echo $?)" "got: $CD"
+CD=$(curl -s -D- -o /dev/null -b "$AJ" "$BASE_URL/api/v1/fs/raw?path=$D/d-$SFX.pdf" | tr -d '\r' | grep -i '^content-disposition:' | head -1)
+check "raw pdf no param stays attachment" "$([ "${CD#*attachment;}" != "$CD" ]; echo $?)" "got: $CD"
 t "$AJ" "delete non-empty dir" 409 DELETE "/api/v1/fs?path=$D"
 t "$AJ" "traversal blocked" 400 GET "/api/v1/fs?path=$D/../etc"
 

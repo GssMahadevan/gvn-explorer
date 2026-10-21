@@ -16,10 +16,13 @@ test-go:
 	go test -tags sqlite_purego ./...
 
 # Full curl API regression (350 cases) against a disposable instance.
+# -rps 0 -auth-rps 0: a functional contract run must be deterministic, and
+# curl does not retry 429s (the matrix client does). Rate limiting itself
+# has dedicated coverage in Go tests and the matrix's 429 handling.
 test-api: build-server
 	@dir=$$(mktemp -d); \
 	./bin/server -addr :$(API_PORT) -root $$dir/root -db $$dir/perms.db -tls-self=false \
-		-admin system:admin:admin >$$dir/server.log 2>&1 & pid=$$!; \
+		-admin system:admin:admin -rps 0 -auth-rps 0 >$$dir/server.log 2>&1 & pid=$$!; \
 	sleep 0.7; \
 	BASE_URL=http://localhost:$(API_PORT) ADMIN_TENANT=system ADMIN_USER=admin ADMIN_PASS=admin \
 		./scripts/test_files.sh; rc=$$?; \

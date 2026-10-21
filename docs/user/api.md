@@ -89,7 +89,7 @@ curl -b jar 'localhost:8080/api/v1/events?limit=50&action=perm_set'   # events a
 |--------|------|--------------|-------|
 | GET | `/fs?path=` | directory listing (name, size, mtime, type) | `r` on path |
 | GET | `/fs/content?path=` | JSON text view incl. `mtime` | `r` |
-| GET | `/fs/raw?path=` | raw bytes; `ETag` + `If-None-Match`/304 | `r` |
+| GET | `/fs/raw?path=` | raw bytes; `ETag` + `If-None-Match`/304; `&dispo=inline` asks the browser to view pdf/image/audio/video files itself instead of saving — only honoured for those, everything else still downloads | `r` |
 | POST | `/fs/mkdir` | `{"path"}` | `w` |
 | POST | `/fs/write` | `{"path","content"}`, optional `"base_mtime"` | `w` |
 | POST | `/fs/rename` | `{"from","to"}` | `d` on from, `w` on to |

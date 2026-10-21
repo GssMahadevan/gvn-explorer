@@ -208,7 +208,27 @@ func (a *API) handleContent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"path": p, "size": st.Size, "mtime": st.ModTime.Unix(), "is_binary": false, "content": string(data)})
 }
 
+// inlineSafeExt: a deliberately closed, explicit allow-list of the
+// formats every mainstream browser decodes by itself — the pdf viewer,
+// <img>, <video>, <audio>. /fs/raw honours ?dispo=inline only for
+// these; everything else stays attachment no matter what is asked. Not
+// "anything with a MIME type": svg/html can run scripts on our origin,
+// and docx/zip/tiff/mkv have no native viewer, so all of those stay
+// downloads. Kept in sync with the IMAGE/VIDEO/AUDIO/PDF sets in
+// frontend/src/filekind.ts.
+var inlineSafeExt = map[string]bool{
+	".pdf": true,
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true,
+	".avif": true, ".bmp": true, ".ico": true,
+	".mp4": true, ".m4v": true, ".webm": true, ".mov": true, ".ogv": true,
+	".mp3": true, ".m4a": true, ".aac": true, ".wav": true, ".ogg": true,
+	".oga": true, ".opus": true,
+}
+
 // handleRaw: GET /api/v1/fs/raw?path=/f.bin — stream bytes for download.
+// Optional ?dispo=inline asks for the bytes inline (for the browser's own
+// pdf/video/audio viewers); honoured only for inlineSafeExt, ignored for
+// everything else, so the no-param contract is unchanged for any client.
 func (a *API) handleRaw(w http.ResponseWriter, r *http.Request) {
 	p, err := logicalPath(r)
 	if err != nil {
@@ -227,7 +247,11 @@ func (a *API) handleRaw(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_path", err.Error())
 		return
 	}
-	w.Header().Set("Content-Disposition", "attachment; filename="+strconvQuote(path.Base(p)))
+	dispo := "attachment"
+	if r.URL.Query().Get("dispo") == "inline" && inlineSafeExt[strings.ToLower(path.Ext(p))] {
+		dispo = "inline"
+	}
+	w.Header().Set("Content-Disposition", dispo+"; filename="+strconvQuote(path.Base(p)))
 	// explicit ETag (size+modtime): devices poll with If-None-Match instead of
 	// If-Modified-Since because ESP clocks are unreliable; ServeFile answers 304.
 	if info, err := os.Stat(abs); err == nil && !info.IsDir() {

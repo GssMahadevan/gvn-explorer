@@ -97,6 +97,16 @@ class Client:
             return code, obj, raw
         return 429, None, b""
 
+    def get_headers(self, path):
+        """GET -> (status, Content-Disposition header, raw bytes). For
+        contract checks about response *headers*, not JSON bodies."""
+        req = urllib.request.Request(self.base + path)
+        try:
+            with self.opener.open(req) as resp:
+                return resp.status, resp.headers.get("Content-Disposition") or "", resp.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers.get("Content-Disposition") or "", e.read()
+
 
 class Api:
     """The adapter layer. Every check in this file talks to the server only
@@ -120,6 +130,11 @@ class Api:
 
     def raw(self, path):
         return self.c.call("GET", "/api/v1/fs/raw?path=" + enc(path))
+
+    def raw_dispo(self, path, ask_inline=False):
+        q = "/api/v1/fs/raw?path=" + enc(path) + ("&dispo=inline" if ask_inline else "")
+        st, cd, _ = self.c.get_headers(q)
+        return st, cd
 
     def mkdir(self, path):
         return self.c.call("POST", "/api/v1/fs/mkdir", {"path": path})
@@ -765,6 +780,21 @@ def suite_paths(x, rep):
         else:
             rep.ck("name %r refused cleanly by this filesystem (%d, not 5xx)"
                    % (nm, st), 400 <= st < 500)
+
+    # --- Content-Disposition policy: ?dispo=inline is an additive ask,
+    # honoured only for the server's explicit browser-native allowlist
+    # (pdf here); anything else ignores it, and the no-param contract
+    # must never change.
+    sup.write(fx + "/view.pdf", "%PDF-1.4 x\n")
+    st, cd = sup.raw_dispo(fx + "/view.pdf", ask_inline=True)
+    rep.ck("raw dispo=inline: pdf served inline", st == 200 and cd.startswith("inline;"))
+    st, cd = sup.raw_dispo(fx + "/view.pdf")
+    rep.ck("raw no-param: pdf still attachment (contract unchanged)",
+           st == 200 and cd.startswith("attachment;"))
+    sup.write(fx + "/no-viewer.zip", "PK not really a zip body\n")
+    st, cd = sup.raw_dispo(fx + "/no-viewer.zip", ask_inline=True)
+    rep.ck("raw dispo=inline refused outside the allowlist (zip -> attachment)",
+           st == 200 and cd.startswith("attachment;"))
 
     # --- rename: '..' refused like everywhere else; an absolute target
     # stays inside the sandbox root

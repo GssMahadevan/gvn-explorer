@@ -1,8 +1,8 @@
 // GUI smoke-walk: login -> files table -> sort -> search -> file page
 // (viewer by default: rendered markdown / read-only source / read-only
 // structured YAML; edit mode via the row menu or the pane's Edit button)
-// -> YAML draft autosave + publish, markdown ribbon + save, download
-// links for binaries -> navigate ->
+// -> YAML draft autosave + publish, markdown ribbon + save, native
+// viewers for pdf/image/video/audio, download links for true binaries ->
 // perms -> users -> tenants, asserting along the way + screenshots.
 // Covers the modal-based entity forms (create/edit), the per-row action
 // menu (the vertical three-dots on every table row), the active-filter
@@ -506,9 +506,9 @@ fs.mkdirSync(OUT, { recursive: true });
     );
 
     // file row menu: permissions/download/rename/delete live behind the ⋮;
-    // "edit" is NOT offered for download-only files (filekind policy)
+    // "edit" is NOT offered for viewer-only files (filekind policy)
     check(
-      'file row menu lists permissions/download/rename/delete, no edit for downloads',
+      'file row menu lists permissions/download/rename/delete, no edit for pdf/zip',
       (await openRowMenu('report-q3')) &&
         (await visibleMenuText()).includes('permissions') &&
         (await visibleMenuText()).includes('download') &&
@@ -518,13 +518,36 @@ fs.mkdirSync(OUT, { recursive: true });
     );
     await closeRowMenu();
 
-    // binaries / non-allowlisted types never get an editor: the name
-    // itself is a download link straight to /fs/raw. (The pdf fixture
-    // holds plain-text bytes on purpose: the policy is name-based, like
-    // GitHub's, not content-sniffed per row.)
-    check('disallowed file name is a download link to /fs/raw', await page.evaluate(() => {
-      const a = [...document.querySelectorAll('tbody a')].find((x) => x.textContent === 'report-q3.pdf');
-      return !!a && (a.getAttribute('href') || '') === '/api/v1/fs/raw?path=%2Fdeliverables%2Freport-q3.pdf';
+    // a real PDF opens in the browser's OWN pdf viewer: an iframe on
+    // /fs/raw?dispo=inline (the server honours inline only for its
+    // allowlist — Go test TestRawDisposition proves the header). The
+    // frame is the platform viewer, so the GUI check is structural: the
+    // iframe targets the inline URL, no editor is offered, and the
+    // open-full-page/download escapes are always present for viewers
+    // that cannot render (a bare WebView, say).
+    await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'report-q3.pdf')?.click(),
+    );
+    await openPane();
+    await page
+      .waitForFunction(() => document.querySelector('[data-testid="media-pdf"]') ?? false, { timeout: 8000 })
+      .catch(() => {});
+    check('pdf name click opens the browser-native pdf viewer (inline iframe), no editor', await page.evaluate(() => {
+      const p = document.querySelector('[data-testid="file-pane"]');
+      const f = p?.querySelector('[data-testid="media-pdf"]');
+      return !!f &&
+        (f.getAttribute('src') || '') === '/api/v1/fs/raw?path=%2Fdeliverables%2Freport-q3.pdf&dispo=inline' &&
+        !p.querySelector('.cm-editor') && !p.querySelector('[data-testid="pane-edit"]') &&
+        !!p.querySelector('[data-testid="pdf-newtab"]') && !!p.querySelector('[data-testid="pane-dl"]');
+    }));
+    await closePane();
+
+    // types with no browser-native viewer (zip here) never get an
+    // editor or a viewer: the name itself is a download link straight
+    // to /fs/raw — the policy is name-based, like GitHub's.
+    check('non-viewable file name is a download link to /fs/raw', await page.evaluate(() => {
+      const a = [...document.querySelectorAll('tbody a')].find((x) => x.textContent === 'data.zip');
+      return !!a && (a.getAttribute('href') || '') === '/api/v1/fs/raw?path=%2Fdeliverables%2Fdata.zip';
     }));
 
     // media files: image names open an in-browser preview (plain <img>
@@ -593,6 +616,36 @@ fs.mkdirSync(OUT, { recursive: true });
         return false;
       }
       return v.videoWidth === 64;
+    }));
+    await closePane();
+
+    // audio: same native-decode policy as video — the name click opens
+    // the browser's own <audio controls>, which fetches the stream and
+    // decodes it (readyState proves the browser parsed the RIFF).
+    await page.evaluate(() => document.querySelector('.ant-breadcrumb a')?.click());
+    await new Promise((r) => setTimeout(r, 1000));
+    await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'audios/')?.click(),
+    );
+    await new Promise((r) => setTimeout(r, 1000));
+    await page.evaluate(() =>
+      [...document.querySelectorAll('tbody button')].find((b) => b.textContent === 'chime.wav')?.click(),
+    );
+    await openPane();
+    await page
+      .waitForFunction(
+        () =>
+          (document.querySelector('[data-testid="media-audio"]')?.readyState ?? 0) >= 1 ||
+          !!document.querySelector('[data-testid="media-error"]'),
+        { timeout: 8000 },
+      )
+      .catch(() => {});
+    check('audio name click opens the native player, which really decodes the file', await page.evaluate(() => {
+      const p = document.querySelector('[data-testid="file-pane"]');
+      const a = p?.querySelector('[data-testid="media-audio"]');
+      return !!a && a.hasAttribute('controls') && !p.querySelector('[data-testid="pane-edit"]') &&
+        (a.getAttribute('src') || '') === '/api/v1/fs/raw?path=%2Faudios%2Fchime.wav' &&
+        a.readyState >= 1 && !a.error;
     }));
     await closePane();
 
@@ -1331,6 +1384,7 @@ fs.mkdirSync(OUT, { recursive: true });
     await page.screenshot({ path: path.join(OUT, 'failure.png') }).catch(() => {});
   }
 
+  if (errors.length) console.log(JSON.stringify(errors, null, 1));
   check('no console errors', errors.length === 0);
   if (errors.length) console.log(errors.slice(0, 10).join('\n'));
   console.log(`\npassed=${ok.length} failed=${fail.length}`);

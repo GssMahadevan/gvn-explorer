@@ -43,8 +43,13 @@ fi
 
 # ---------- throwaway sandbox + fixture ----------
 WORK=$(mktemp -d /tmp/fx-gui-run.XXXXXX)
-mkdir -p "$WORK/root/deliverables" "$WORK/root/docs" "$WORK/root/photos" "$WORK/root/videos"
-printf 'PDF-1.4 fake quarterly report\n' > "$WORK/root/deliverables/report-q3.pdf"
+mkdir -p "$WORK/root/deliverables" "$WORK/root/docs" "$WORK/root/photos" "$WORK/root/videos" "$WORK/root/audios"
+# real one-page PDF (generated once, committed) — the walk asserts the
+# file page embeds it in the browser's own pdf viewer via ?dispo=inline
+cp scripts/gui/fixtures/report-q3.pdf "$WORK/root/deliverables/report-q3.pdf"
+# real zip: stays download-only (no browser-native viewer) — proves the
+# download path survives the media allowlist
+cp scripts/gui/fixtures/data.zip "$WORK/root/deliverables/data.zip"
 printf '# readme\nhello\n' > "$WORK/root/readme.md"
 printf 'release notes\n' > "$WORK/root/docs/notes.md"
 # media fixtures: real 8x8 PNG and a real 1s H.264 MP4 (both generated once
@@ -52,6 +57,9 @@ printf 'release notes\n' > "$WORK/root/docs/notes.md"
 # the browser actually loads the image and decodes/plays the video.
 cp scripts/gui/fixtures/pic.png "$WORK/root/photos/pic.png"
 cp scripts/gui/fixtures/clip.mp4 "$WORK/root/videos/clip.mp4"
+# 0.3 s PCM wav — the walk asserts the file page gets the native
+# <audio controls> and the browser decodes the stream
+cp scripts/gui/fixtures/chime.wav "$WORK/root/audios/chime.wav"
 # YAML fixture for the structured tree editor: leading comment, inline
 # comment, block scalar and two documents must all survive the
 # tree-edit -> draft -> publish round trip.

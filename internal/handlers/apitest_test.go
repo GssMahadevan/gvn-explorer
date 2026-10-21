@@ -182,6 +182,46 @@ func TestUploadAndRaw(t *testing.T) {
 	}
 }
 
+// TestRawDisposition: /fs/raw stays attachment for everyone by default;
+// ?dispo=inline is honoured only for the explicit inlineSafeExt list
+// (pdf/audio/image/video the browser renders itself) and ignored for
+// everything else — including svg/html, which could run scripts on our
+// origin. The no-param behaviour must never change.
+func TestRawDisposition(t *testing.T) {
+	e := newEnv(t)
+	u := e.srv.URL
+	cases := []struct{ path, want string }{
+		{"/doc.pdf", "inline"},         // the browser's own pdf viewer
+		{"/tone.mp3", "inline"},        // native audio
+		{"/shot.PNG", "inline"},        // case-insensitive allowlist
+		{"/bundle.zip", "attachment"},  // no native viewer: request ignored
+		{"/diagram.svg", "attachment"}, // script-capable: deliberately excluded
+		{"/notes.md", "attachment"},    // text is shown by the app, not raw
+	}
+	for _, c := range cases {
+		must(t, e.admin, "POST", u+"/api/v1/fs/write", `{"path":"`+c.path+`","content":"data"}`, 200)
+		resp, err := e.admin.Get(u + "/api/v1/fs/raw?path=" + c.path + "&dispo=inline")
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s inline: status %d", c.path, resp.StatusCode)
+		}
+		if cd := resp.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, c.want+";") {
+			t.Errorf("%s dispo=inline: Content-Disposition %q, want %q", c.path, cd, c.want)
+		}
+		resp, err = e.admin.Get(u + "/api/v1/fs/raw?path=" + c.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if cd := resp.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, "attachment;") {
+			t.Errorf("%s no-param: Content-Disposition %q, must stay attachment", c.path, cd)
+		}
+	}
+}
+
 func TestACLMatrix(t *testing.T) {
 	e := newEnv(t)
 	u := e.srv.URL
