@@ -8,6 +8,7 @@ import (
 func (a *API) Register(mux *http.ServeMux) {
 	a.principalLim = newLimiterSet(a.RPS, a.RBurst)
 	a.authIP = newLimiterSet(a.AuthRPS, a.AuthBurst)
+	a.authSlots = newAuthSlots(a.AuthConcurrency)
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		var n int
@@ -20,10 +21,18 @@ func (a *API) Register(mux *http.ServeMux) {
 		})
 	})
 
-	// auth (login is per-IP rate limited: bcrypt is expensive, brute-force must be too)
-	mux.HandleFunc("POST /api/v1/auth/login", a.perIP(a.handleLogin))
+	// auth (login is per-IP rate limited AND globally capped: bcrypt is
+	// expensive, brute-force must be too — see authSlots in rate.go)
+	mux.HandleFunc("POST /api/v1/auth/login", a.perIP(a.authSlots.wrap(a.handleLogin)))
 	mux.HandleFunc("POST /api/v1/auth/logout", a.handleLogout)
 	mux.HandleFunc("GET /api/v1/auth/me", a.requireAuth(a.handleMe))
+
+	// device pairing: admins open invites, devices redeem them publicly
+	// (join pays for a bcrypt too, so it shares both guards)
+	mux.HandleFunc("POST /api/v1/pairings", a.requireAdmin(a.handlePairingsCreate))
+	mux.HandleFunc("GET /api/v1/pairings", a.requireAdmin(a.handlePairingsList))
+	mux.HandleFunc("DELETE /api/v1/pairings/{id}", a.requireAdmin(a.handlePairingsDelete))
+	mux.HandleFunc("POST /api/v1/join", a.perIP(a.authSlots.wrap(a.handleJoin)))
 
 	// file explorer
 	mux.HandleFunc("GET /api/v1/fs", a.requireAuth(a.handleList))

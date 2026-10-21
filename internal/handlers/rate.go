@@ -37,6 +37,40 @@ func newLimiterSet(rps float64, burst int) *limiterSet {
 	return &limiterSet{limbs: map[string]*entry{}, rps: rate.Limit(rps), burst: burst, idle: 10 * time.Minute}
 }
 
+// authSlots bounds how many password verifications/creations run at once
+// (-auth-concurrency). Per-IP buckets cap cost per source; this caps cost
+// in total: bcrypt is the most expensive thing the server does per request
+// (~100 ms, more on phone/MIPS hardware), and thousands of well-behaved
+// low-rate sources can still saturate every core together. Excess requests
+// get an immediate 503 + Retry-After instead of queueing unboundedly, so
+// file serving always keeps its CPU.
+type authSlots struct{ ch chan struct{} }
+
+// newAuthSlots returns nil when n is not positive (= disabled).
+func newAuthSlots(n int) *authSlots {
+	if n <= 0 {
+		return nil
+	}
+	return &authSlots{ch: make(chan struct{}, n)}
+}
+
+func (s *authSlots) wrap(next http.HandlerFunc) http.HandlerFunc {
+	if s == nil {
+		return next
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case s.ch <- struct{}{}:
+			defer func() { <-s.ch }()
+			next(w, r)
+		default:
+			w.Header().Set("Retry-After", "5")
+			writeError(w, http.StatusServiceUnavailable, "overloaded",
+				"too many concurrent login operations, retry in a few seconds")
+		}
+	}
+}
+
 func (ls *limiterSet) allow(key string) bool {
 	if ls == nil {
 		return true

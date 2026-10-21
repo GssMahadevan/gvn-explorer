@@ -86,6 +86,42 @@ export interface Tenant {
   created_at: string;
 }
 
+// Device-pairing invite (GET/POST /api/v1/pairings). status is derived
+// server-side: pending | used | revoked | expired. The claim token and
+// short code only appear in the create response (shown once, like API
+// keys); the QR encodes "<origin>/join#<token>" so the secret never
+// reaches the server as a query parameter or access-log line.
+export interface Pairing {
+  id: number;
+  tenant: string;
+  description: string;
+  username?: string;
+  apikey: boolean;
+  user_expires_at?: string;
+  created_by: string;
+  created_at: string;
+  expires_at: string;
+  used_at?: string;
+  used_by?: string;
+  revoked_at?: string;
+  status: 'pending' | 'used' | 'revoked' | 'expired';
+}
+
+export interface PairingCreated {
+  pairing: Pairing;
+  token: string; // QR payload secret
+  code: string; // 7-char typed fallback
+}
+
+// POST /api/v1/join: the created account plus its one-time password
+// (and API key, when the invite asked for one). The session cookie is
+// already set for this browser.
+export interface JoinResult {
+  user: User;
+  password: string;
+  apikey?: string;
+}
+
 // One row of the append-only audit trail (GET /api/v1/events).
 // actor is a "tenant/username" snapshot and empty for unauthenticated
 // attempts (failed logins); tenant_id is the subject tenant, 0 = platform.

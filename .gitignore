@@ -4,6 +4,7 @@ tls/
 *.log
 *.db
 data/
+__pycache__/
 scripts/gui/node_modules/
 .gradle/
 android/.gradle/

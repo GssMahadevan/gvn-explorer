@@ -104,5 +104,6 @@ team at once.
 ## What to read next
 
 - [permissions.md](permissions.md) — who can touch which path
+- [pairing.md](pairing.md) — let a device create its own account by QR
 - [api-keys.md](api-keys.md) — devices, keys, expiry, rotation
 - [api.md](api.md) — the raw REST API

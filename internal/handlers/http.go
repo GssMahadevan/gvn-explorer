@@ -37,6 +37,10 @@ type API struct {
 	RBurst    int
 	AuthRPS   float64
 	AuthBurst int
+	// AuthConcurrency caps simultaneous bcrypt operations (login + join);
+	// 0 or less disables the cap. Unlike the per-IP buckets this bounds
+	// total CPU spent on password hashing no matter how many sources ask.
+	AuthConcurrency int
 
 	// CookieSecure adds the Secure attribute to the session cookie. The
 	// server sets it automatically when serving TLS ('auto'); operators
@@ -45,6 +49,7 @@ type API struct {
 
 	principalLim *limiterSet // built by Register
 	authIP       *limiterSet
+	authSlots    *authSlots
 }
 
 // ---- JSON helpers (same envelope as before) ----

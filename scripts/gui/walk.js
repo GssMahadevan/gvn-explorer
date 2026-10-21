@@ -769,6 +769,51 @@ fs.mkdirSync(OUT, { recursive: true });
       check('filter reset drops the active param', !/active=/.test(userReqs.at(-1) ?? ''));
     }
 
+    // pairings tab: open an invite via the modal (QR + short code shown
+    // once), then revoke it from the row menu.
+    await click('[role="tab"]', 'pairings');
+    check('pairings tab has Pair device button', await page.evaluate(
+      () => [...document.querySelectorAll('button')].some((b) => b.offsetParent !== null && /^Pair device$/.test(b.textContent.trim())),
+    ));
+    await mouseClick('button', '^Pair device$');
+    await waitModal();
+    check('pair device modal asks what the device is', /What device is this/.test(await modalText()));
+    await fillModal(null, 'walk pair');
+    await mouseClick('.ant-modal button', '^Create invite$');
+    let pairCode = null;
+    try {
+      await page.waitForFunction(() => {
+        const m = [...document.querySelectorAll('.ant-modal')].find((x) => x.offsetParent !== null);
+        if (!m) return false;
+        const img = m.querySelector('img[alt="pairing QR code"]');
+        return !!img && img.naturalWidth > 100 && /[0-9A-Z]{7}/.test(m.innerText);
+      }, { timeout: 8000 });
+      pairCode = ((await modalText()).match(/\b[0-9A-Z]{7}\b/) ?? [])[0] ?? null;
+    } catch { /* falls through to the check below */ }
+    check('invite renders a QR image and a 7-character code', pairCode !== null);
+    await closeModals();
+    check('pairings list shows the open invite', await page
+      .waitForFunction(() => [...document.querySelectorAll('tbody tr.ant-table-row')].some((tr) =>
+        tr.offsetParent !== null && /walk pair/.test(tr.innerText) && /open/.test(tr.innerText)),
+        { timeout: 5000 }).then(() => true).catch(() => false));
+    check('open invite row menu -> revoke', (await openRowMenu('walk pair')) && (await menuClick('revoke')));
+    await waitModal();
+    await mouseClick('.ant-modal button', '^revoke$');
+    await new Promise((r) => setTimeout(r, 900));
+    check('revoked invite reads revoked in the list', await page.evaluate(() =>
+      [...document.querySelectorAll('tbody tr.ant-table-row')].some((tr) =>
+        tr.offsetParent !== null && /walk pair/.test(tr.innerText) && /revoked/.test(tr.innerText))));
+
+    // mint the invite the very last walk section redeems on /join;
+    // creating it is a plain API call and does not touch this session
+    const joinInvite = await page.evaluate(() =>
+      fetch('/api/v1/pairings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: 'join walk', apikey: true }),
+      }).then((r) => r.json()));
+    check('pairing invite minted for the /join walk', typeof joinInvite?.token === 'string' && typeof joinInvite?.code === 'string');
+
     // tenants tab
     await click('[role="tab"]', 'tenants');
     await page
@@ -887,13 +932,13 @@ fs.mkdirSync(OUT, { recursive: true });
     await new Promise((r) => setTimeout(r, 300));
     await page.screenshot({ path: path.join(OUT, 'tenants.png') });
 
-    // back to files panel for the screenshot
-    const tabPos = await page.evaluate(() => {
-      const t = [...document.querySelectorAll('[role="tab"]')].find((x) => /files/i.test(x.textContent));
-      const q = t.getBoundingClientRect();
-      return { x: q.x + q.width / 2, y: q.y + q.height / 2 };
-    });
-    await page.mouse.click(tabPos.x, tabPos.y);
+    // back to files panel for the screenshot. Synthetic tab click, not a
+    // rect click: when the active tab sits at the right end of a full tab
+    // strip, rc-tabs shifts Files out of view and marks it hidden — a
+    // coordinate click then lands on whatever occupies (0,0). The hidden
+    // tab's own onClick still switches panels, same as the click() helper
+    // every other tab navigation here already relies on.
+    await click('[role="tab"]', 'files');
     await new Promise((r) => setTimeout(r, 1000));
     await page.screenshot({ path: path.join(OUT, 'files.png') });
 
@@ -1211,6 +1256,35 @@ fs.mkdirSync(OUT, { recursive: true });
     await clickMenuItem('Sign out');
     await page.waitForSelector('input[autocomplete="organization"]', { timeout: 8000 });
     check('sign out returns to login', true);
+
+    // ---- /join: the public pairing page turns the invite minted on the
+    // pairings tab into a real account; this browser lands logged in ----
+    await page.goto(`${B}/join#${joinInvite.token}`, { waitUntil: 'networkidle2' });
+    check('join page offers the scanned invite', await page
+      .waitForFunction(() => [...document.querySelectorAll('button')].some((b) =>
+        b.offsetParent !== null && /Join with the scanned invite/.test(b.textContent)),
+        { timeout: 6000 }).then(() => true).catch(() => false));
+    await mouseClick('button', 'Join with the scanned invite');
+    let joined = null;
+    try {
+      await page.waitForFunction(() => /Joined as /.test(document.body.innerText), { timeout: 8000 });
+      joined = (await page.evaluate(() => document.body.innerText)).match(
+        /Joined as (\S+)\/(\S+)/,
+      );
+    } catch { /* falls through to the check below */ }
+    check('join redeems the QR token and names the new account',
+      !!joined && joined[1] === 'system' && /^dev-/.test(joined[2]));
+    check('join shows the one-time password and API key once', await page.evaluate(() => {
+      const t = document.body.innerText;
+      return /[A-Za-z0-9_-]{40,}/.test(t) && /API key/.test(t) && /fx_[A-Za-z0-9_-]+|[A-Za-z0-9_-]{40,}/.test(t);
+    }));
+    await mouseClick('button', 'Continue to files');
+    await page.waitForSelector('.app-header', { timeout: 8000 }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 800));
+    check('paired device lands logged in, without admin tabs', await page.evaluate(() => {
+      const tabs = [...document.querySelectorAll('[role="tab"]')].map((t) => t.textContent);
+      return tabs.includes('Files') && !tabs.includes('Users') && !tabs.includes('Pairings');
+    }));
   } catch (e) {
     console.error('FATAL during walk:', e.message);
     fail.push('walk completed: ' + e.message);

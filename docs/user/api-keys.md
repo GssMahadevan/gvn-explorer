@@ -102,5 +102,6 @@ one today returns a clean `422 not_implemented`.)
 
 ## What to read next
 
+- [pairing.md](pairing.md) — invites that hand a device its first key
 - [permissions.md](permissions.md) — what the key may touch
 - [api.md](api.md) — the full REST reference

@@ -9,7 +9,9 @@ writable.
 What the system is: files under one root folder, shared in a browser,
 with per-path permissions, tenant isolation, expiring customer shares
 and API keys for devices. Every change is in the audit trail (the
-Events tab).
+Events tab). In one line: this is a media *mirror* — the library
+lives here, and everyone with a grant sees the same copy — not a
+WhatsApp restore source that chat apps re-import from.
 
 Start here, by what you want to do:
 
@@ -18,6 +20,7 @@ Start here, by what you want to do:
 | add a customer, a coworker or a device account | [Tenants, users and groups](tenants-users-groups.md) |
 | give someone access to a folder, or cut it off later | [Permissions](permissions.md) |
 | hand out time-limited access to a customer | [Permissions → expiring shares](permissions.md#expiring-shares-the-customer-flow) |
+| pair a TV, console or walk-up device by QR code | [Pairing a device](pairing.md) |
 | let a device / CI job talk to the server | [API keys and devices](api-keys.md) |
 | script the whole thing with curl | [REST API for non-browser clients](api.md) |
 

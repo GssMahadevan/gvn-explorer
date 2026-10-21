@@ -6,11 +6,13 @@ import type { Me } from './types';
 import { FlashBar, FlashProvider } from './flash';
 import { notifyThemeChange } from './theme';
 import Login from './components/Login';
+import JoinPage from './components/JoinPage';
 import { BrandMenu, UserMenu } from './components/AppMenus';
 import FilesPanel from './panels/FilesPanel';
 import PermsPanel from './panels/PermsPanel';
 import UsersPanel from './panels/UsersPanel';
 import GroupsPanel from './panels/GroupsPanel';
+import PairingsPanel from './panels/PairingsPanel';
 import TenantsPanel from './panels/TenantsPanel';
 import EventsPanel from './panels/EventsPanel';
 import type { FileTarget } from './components/FilePane';
@@ -20,6 +22,9 @@ import type { FileTarget } from './components/FilePane';
 const FilePane = lazy(() => import('./components/FilePane'));
 
 export default function App() {
+  // /join is the public device-pairing landing (the QR target): no
+  // session, no tabs — it runs the join flow and hands off to the app.
+  const [joining] = useState(() => window.location.pathname === '/join');
   // undefined = booting, null = anonymous (login screen), Me = session
   const [me, setMe] = useState<Me | null | undefined>(undefined);
   const [cur, setCur] = useState('/'); // current directory, shared: files + perms panels
@@ -32,16 +37,18 @@ export default function App() {
   const [filesEpoch, setFilesEpoch] = useState(0); // bump -> FilesPanel reloads after file writes
 
   useEffect(() => {
+    if (joining) return; // the join page is public; don't probe a session
     api<Me>('/api/v1/auth/me')
       .then(setMe)
       .catch(() => setMe(null));
-  }, []);
+  }, [joining]);
 
   useEffect(() => {
     localStorage.setItem('fx.theme', dark ? 'dark' : 'light');
     notifyThemeChange(); // CodeMirror chrome follows the antd theme
   }, [dark]);
 
+  if (joining) return <JoinPage />;
   if (me === undefined)
     return <Spin size="large" style={{ display: 'block', margin: '25vh auto' }} />;
   if (me === null) return <Login onLogin={setMe} />;
@@ -81,6 +88,7 @@ export default function App() {
   ];
   if (isMgr) {
     items.push({ key: 'users', label: 'Users', children: <UsersPanel me={me} /> });
+    items.push({ key: 'pairings', label: 'Pairings', children: <PairingsPanel me={me} /> });
     items.push({ key: 'groups', label: 'Groups', children: <GroupsPanel me={me} /> });
     items.push({ key: 'events', label: 'Events', children: <EventsPanel me={me} visible={tab === 'events' && !fileTarget} /> });
   }

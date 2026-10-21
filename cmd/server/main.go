@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -75,6 +76,7 @@ func main() {
 	rburst := flag.Int("rburst", envIntOr("R_BURST", 60), "burst allowance for -rps")
 	authRPS := flag.Float64("auth-rps", envFloatOr("AUTH_RPS", 3), "login requests/sec per source IP (0 disables)")
 	authBurst := flag.Int("auth-burst", envIntOr("AUTH_BURST", 10), "burst allowance for -auth-rps")
+	authConcurrency := flag.Int("auth-concurrency", envIntOr("AUTH_CONCURRENCY", 4), "simultaneous bcrypt operations allowed (0 disables the cap)")
 	logLevel := flag.String("log-level", envOr("LOG_LEVEL", "info"), "log level: debug|info|warn|error")
 	logJSON := flag.Bool("log-json", envOr("LOG_JSON", "true") == "true", "emit JSON logs (false = human-readable text)")
 	tlsCert := flag.String("tls-cert", envOr("TLS_CERT", ""), "TLS certificate file; with -tls-key serves HTTPS on -addr instead of the default self-signed cert")
@@ -172,6 +174,8 @@ func main() {
 		RBurst:     *rburst,
 		AuthRPS:    *authRPS,
 		AuthBurst:  *authBurst,
+
+		AuthConcurrency: *authConcurrency,
 	}
 	api.CookieSecure = cookieSecureOn
 	mux := http.NewServeMux()
@@ -180,11 +184,19 @@ func main() {
 	if *webDir != "" {
 		if info, err := os.Stat(*webDir); err == nil && info.IsDir() {
 			mux.Handle("GET /", cacheStatic(http.FileServer(http.Dir(*webDir))))
+			// /join is a GUI route: the pairing page lives inside the
+			// bundle, so serve it the same index.html as '/'.
+			mux.HandleFunc("GET /join", func(w http.ResponseWriter, r *http.Request) {
+				http.ServeFile(w, r, filepath.Join(*webDir, "index.html"))
+			})
 			log.Info("web gui enabled", "dir", *webDir)
 		} else if gui := frontend.BundleFS(); gui != nil {
 			// release build (-tags embedweb): the GUI travels inside the
 			// binary, so an unpacked bundle needs no -web and no web/ dir.
 			mux.Handle("GET /", cacheStatic(http.FileServerFS(gui)))
+			mux.HandleFunc("GET /join", func(w http.ResponseWriter, r *http.Request) {
+				http.ServeFileFS(w, r, gui, "index.html")
+			})
 			log.Info("web gui enabled", "dir", "(embedded)")
 		} else {
 			log.Warn("web dir missing, GUI disabled", "dir", *webDir)

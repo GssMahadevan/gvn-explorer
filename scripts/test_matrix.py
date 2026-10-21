@@ -15,6 +15,10 @@ must never get wrong:
          over-long names — every input must be rejected cleanly or
          normalise back inside the sandbox; it must never 500 and never
          escape the file root.
+  pair   device-pairing invites: who may open them, the once-only claim
+         secrets, redeem-once/expiry/revoke semantics, tenant scoping,
+         and the login-concurrency guard (-auth-concurrency) refusing a
+         burst of simultaneous bcrypts with 503 + Retry-After.
 
 Standard library only — no pip installs. Works over plain HTTP or over
 https with a self-signed cert (--insecure).
@@ -36,6 +40,7 @@ differs, only Api changes — never a check.
 """
 
 import argparse
+import concurrent.futures
 import json
 import random
 import ssl
@@ -215,6 +220,22 @@ class Api:
     def events(self):
         return self.c.call("GET", "/api/v1/events?limit=200")
 
+    # --- device pairing (admins) and the public join
+    def create_pairing(self, description, **kw):
+        body = {"description": description}
+        body.update(kw)
+        return self.c.call("POST", "/api/v1/pairings", body)
+
+    def pairings(self, **params):
+        q = "&".join("%s=%s" % (k, v) for k, v in params.items())
+        return self.c.call("GET", "/api/v1/pairings?limit=500" + ("&" + q if q else ""))
+
+    def delete_pairing(self, pid):
+        return self.c.call("DELETE", "/api/v1/pairings/%d" % pid)
+
+    def join(self, body):
+        return self.c.call("POST", "/api/v1/join", body)
+
 
 class Rep:
     """Prints one line per check, like the shell suites; collects failures."""
@@ -279,6 +300,9 @@ class Fix:
         self.mx, self.fx, self.ct = "/mx" + rid, "/fx" + rid, "/ct"
         self.uid, self.gid, self.tid, self.sess = {}, {}, {}, {}
         self.super = None
+        # pairing fixtures (ids of opened invites, uids of accounts they
+        # created) — torn down with the rest
+        self.pair_ids, self.pair_uids = [], []
 
 
 def die(msg):
@@ -349,6 +373,10 @@ def teardown(x, keep):
         print("(--keep: fixtures left behind, run id " + x.rid + ")")
         return
     sup = x.super
+    for uid in x.pair_uids:
+        sup.delete_user(uid)
+    for pid in x.pair_ids:
+        sup.delete_pairing(pid)  # best effort: unrevoked invites stay "used" or live
     for gid in x.gid.values():
         sup.delete_group(gid)
     for uid in x.uid.values():
@@ -739,7 +767,160 @@ def suite_paths(x, rep):
     rep.ck("deep nested write+read round trip", st == 200 and raw == b"DEEP")
 
 
-SUITES = {"cross": suite_cross, "acl": suite_acl, "paths": suite_paths}
+CROCK = set("0123456789ABCDEFGHJKMNPQRSTVWXYZ")
+
+
+def suite_pair(x, rep):
+    """Device-pairing invites: permission to open them, once-only claim
+    secrets, redeem-once/revoke/expiry semantics, tenant scoping, the
+    apikey + account-expiry extras, and the global login-concurrency
+    guard (-auth-concurrency) that refuses a bcrypt storm with 503."""
+    sup = x.super
+    # Fresh sessions, not the setup ones: earlier suites deliberately
+    # suspend accounts and tenants, which kills the session cookies those
+    # suites used. Every account here is back to active by teardown of
+    # the earlier suites, so re-login and assert it.
+    alice = fresh(x)
+    rep.want(alice.login(x.ta, x.alice, x.pw), 200, "pair suite: tenant admin session up")
+    mallory = fresh(x)
+    rep.want(mallory.login(x.ta, x.mallory, x.pw), 200, "pair suite: plain user session up")
+
+    # only admins open invites
+    rep.want(mallory.create_pairing("nope"), 403, "plain user cannot open invites")
+    rep.want(mallory.pairings(), 403, "plain user cannot list invites")
+    rep.want(mallory.delete_pairing(1), 403, "plain user cannot revoke invites")
+
+    # a tenant admin opens one; claim secrets are shown exactly once
+    res = alice.create_pairing("matrix tv")
+    rep.want(res, 201, "tenant admin opens an invite")
+    st, obj, _ = res
+    tok, code = obj["token"], obj["code"]
+    pid = obj["pairing"]["id"]
+    x.pair_ids.append(pid)
+    rep.ck("claim token is a long unguessable secret", len(tok) >= 40)
+    rep.ck("short code is 7 Crockford characters (no I/L/O/U)",
+           len(code) == 7 and all(ch in CROCK for ch in code))
+    rep.ck("invite starts pending, unused, unexpired",
+           obj["pairing"]["status"] == "pending"
+           and not obj["pairing"].get("used_at"))
+
+    # listing exposes metadata only — knowing about an invite is not
+    # enough to redeem it
+    st, rows, raw = alice.pairings()
+    rep.want((st,), 200, "admin lists invites")
+    rep.ck("list leaks no redeemable secret",
+           tok not in raw.decode() and code not in raw.decode())
+    rep.ck("list shows the invite as pending",
+           any(r["id"] == pid and r["status"] == "pending" for r in rows))
+
+    # same paging/search/validation contract as every other list
+    for i in range(2):
+        x.pair_ids.append(alice.create_pairing("matrix bulk %d" % i)[1]["pairing"]["id"])
+    rep.ck("limit=2 returns exactly 2 rows",
+           len(alice.c.call("GET", "/api/v1/pairings?limit=2")[1]) == 2)
+    q = alice.pairings(q=enc("bulk 1"))[1]
+    rep.ck("q finds the one invite by description",
+           len(q) == 1 and "bulk 1" in q[0]["description"])
+    for bad in ("limit=abc", "sort=nope", "dir=sideways", "col=nope"):
+        rep.want(alice.c.call("GET", "/api/v1/pairings?" + bad), 400,
+                 "pairings list rejects %s" % bad.split("=")[0])
+
+    # redeem with the QR token: plain account, live session, shown password
+    dev = fresh(x)
+    res = dev.join({"token": tok})
+    rep.want(res, 200, "join redeems the claim token")
+    st, obj, _ = res
+    joined = obj["user"]
+    x.pair_uids.append(joined["id"])
+    rep.ck("joined account is plain, in the inviting tenant, auto-named",
+           joined["tenant"] == x.ta and not joined["is_admin"]
+           and not joined["is_super"] and joined["username"].startswith("dev-"))
+    rep.ck("the generated password is shown once, in the response",
+           len(obj["password"]) >= 40)
+    rep.want(dev.me(), 200, "join established a session cookie")
+    rep.want(fresh(x).login(x.ta, joined["username"], obj["password"]), 200,
+             "the generated password really logs in")
+
+    # spent invites answer distinctly
+    rep.want(fresh(x).join({"token": tok}), 409, "the token is single-use")
+    st, rows, _ = alice.pairings(q=enc("matrix tv"))
+    rep.ck("the used invite reports its consumer",
+           rows and rows[0]["status"] == "used"
+           and rows[0]["used_by"] == joined["username"])
+    rep.want(fresh(x).join({"code": "ZZZZZZZ"}), 404, "unknown code is a plain 404")
+    rep.want(fresh(x).join({"token": tok, "code": "AB345CD"}), 422,
+             "token and code together is a validation error")
+    rep.want(fresh(x).join({}), 422, "empty join is a validation error")
+
+    # create-time validation: preset collisions and silly TTLs
+    rep.want(alice.create_pairing("dupe", username=x.alice), 409,
+             "a preset username that exists conflicts at create time")
+    rep.want(alice.create_pairing("short ttl", ttl_seconds=10), 422,
+             "ttl below the 30s floor is rejected")
+    rep.want(alice.create_pairing("long ttl", ttl_seconds=90000), 422,
+             "ttl above the 24h ceiling is rejected")
+
+    # tenant scoping: revoke inside, refuse outside
+    x.pair_ids.append(sup.create_pairing("system phone")[1]["pairing"]["id"])
+    rep.want(alice.delete_pairing(x.pair_ids[-1]), 404,
+             "tenant admin cannot revoke another tenant's invite")
+    res = alice.create_pairing("revocable")
+    rep.want(res, 201, "tenant admin opens a second invite")
+    st, obj, _ = res
+    x.pair_ids.append(obj["pairing"]["id"])
+    rep.want(alice.delete_pairing(obj["pairing"]["id"]), 204, "revoking an unused invite")
+    rep.want(alice.delete_pairing(obj["pairing"]["id"]), 404, "revoking twice is a clean miss")
+    rep.want(fresh(x).join({"code": obj["code"]}), 409,
+             "a revoked invite cannot be redeemed")
+
+    # the apikey + account-expiry extras, end to end via the typed code
+    res = alice.create_pairing("api device", apikey=True, expires_days=7)
+    rep.want(res, 201, "invite may preset API key issuance and account expiry")
+    st, obj, _ = res
+    res = fresh(x).join({"code": obj["code"]})
+    rep.want(res, 200, "join redeems the typed short code")
+    st, obj, _ = res
+    x.pair_uids.append(obj["user"]["id"])
+    rep.ck("the created account carries the preset expiry",
+           bool(obj["user"].get("expires_at")))
+    rep.ck("the invite handed out an API key", len(obj.get("apikey", "")) >= 40)
+    rep.want(fresh(x).c.call("GET", "/api/v1/auth/me", bearer=obj["apikey"]), 200,
+             "the paired API key authenticates")
+
+    # --- the global bcrypt cap (-auth-concurrency, default 4) ----------
+    # Raw urllib here: the Client above quietly retries 429, which would
+    # blur the shape of a simultaneous burst. The per-IP auth limiter
+    # allows 3/s burst 10, so first let its bucket refill, then fire 9
+    # wrong-password logins at once — every one costs a full bcrypt, so
+    # more than the slot count must be refused *now*, not queued.
+    time.sleep(4)
+
+    def hammer():
+        req = urllib.request.Request(
+            x.base + "/api/v1/auth/login", method="POST",
+            data=json.dumps({"tenant": x.ta, "username": x.alice,
+                             "password": "not-the-password"}).encode())
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return r.status, r.headers.get("Retry-After")
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers.get("Retry-After")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+        burst = [f.result() for f in
+                 [pool.submit(hammer) for _ in range(9)]]
+    capped = [c for c in burst if c[0] == 503]
+    rep.ck("a concurrent login storm is capped (statuses=%s, %d refused)"
+           % (sorted(c[0] for c in burst), len(capped)),
+           len(capped) >= 1 and all(ra for _, ra in capped))
+    time.sleep(2)
+    rep.want(fresh(x).login(x.ta, x.alice, x.pw), 200,
+             "normal login works again immediately after the burst")
+
+
+SUITES = {"cross": suite_cross, "acl": suite_acl, "paths": suite_paths,
+          "pair": suite_pair}
 
 
 def main():
@@ -753,7 +934,7 @@ def main():
     ap.add_argument("--admin-pass", default="admin")
     ap.add_argument("--insecure", action="store_true",
                     help="skip TLS verification (for self-signed certs)")
-    ap.add_argument("--only", default="cross,acl,paths",
+    ap.add_argument("--only", default="cross,acl,paths,pair",
                     help="comma-separated subset of: " + ",".join(SUITES))
     ap.add_argument("--keep", action="store_true",
                     help="leave all fixtures in place after the run")

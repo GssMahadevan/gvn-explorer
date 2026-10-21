@@ -56,6 +56,7 @@ Flags (env fallbacks in caps; flags win):
 | -rburst | —         | burst allowance for -rps (default 60)                |
 | -auth-rps | —       | login requests/sec per source IP, 0 disables (default 3) |
 | -auth-burst | —     | burst allowance for -auth-rps (default 10)           |
+| -auth-concurrency | — | max simultaneous password hashes (login + join); extras get an instant `503` + `Retry-After` (default 4) |
 | -log-level | LOG_LEVEL | debug|info|warn|error (default info)               |
 | -log-json  | LOG_JSON  | JSON log lines, one object per line (default true; false = human text) |
 | -tls-cert / -tls-key | TLS_CERT / TLS_KEY | serve HTTPS from this cert/key pair instead of the default self-signed cert (must be set together) |
@@ -286,7 +287,36 @@ no extra infra): every authenticated principal gets `-rps`/`-rburst`
 (default 20/60 req/s, so one compromised or runaway device cannot hammer the
 download endpoint), and login is bucketed per source IP at `-auth-rps`
 (default 3/s) against password brute force. Over the limit returns `429`
-with `Retry-After`. Buckets reset on restart, which is fine at this scale.
+with `Retry-After`. Per-IP buckets stop one attacker, but N different IPs
+can still each pay a bcrypt; on a router-class machine that aggregate is
+bounded by `-auth-concurrency` (default 4 simultaneous hashes — login and
+join share the slots; when they are all busy a new auth request is refused
+with `503` + `Retry-After` instead of queuing). Buckets reset on restart,
+which is fine at this scale.
+
+## Device pairing (QR join)
+
+The "enter the code on the TV" flow: an admin opens a short-lived,
+single-use invite; the other device scans a QR code or types a 7-character
+code at the public `/join` page — which **creates a plain account in the
+inviting tenant and signs the browser in on the spot**. No account
+sign-up dance on a small screen.
+
+| endpoint | meaning |
+|----------|---------|
+| `POST /api/v1/pairings` `{"description","ttl_seconds?","username?","apikey?","expires_days?"}` | open an invite; the reply carries `token` + `code` **shown exactly once** |
+| `GET /api/v1/pairings` | list invites (metadata only: pending/used/expired/revoked; same paging/search contract as every list) |
+| `DELETE /api/v1/pairings/{id}` | revoke an unused invite — a stamp, not a delete; history survives |
+| `POST /api/v1/join` `{"token"}` or `{"code"}` | public, rate-limited: creates the account (auto-named `dev-…` unless a username was preset), returns `{"user","password","apikey?"}` and sets the session cookie |
+
+Only **sha256 hashes** of the token and the short code are stored; the QR
+link puts the token in the URL `#fragment`, so it never reaches any
+server log. Single-use is an atomic claim — concurrent joins cannot
+double-redeem. Claim errors answer distinctly: unknown `404`, expired
+`410`, used-or-revoked `409`, both secrets in one request `422`. TTL
+defaults to 10 minutes (30 s … 24 h), the generated password and the
+optional API key are shown once on the join screen, and the new account
+deliberately carries **zero grants** until someone grants it paths.
 
 ## Suspension (`active` flag)
 
