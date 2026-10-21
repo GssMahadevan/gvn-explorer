@@ -9,5 +9,8 @@
   },
   "devDependencies": {
     "puppeteer-core": "^25.14.0"
+  },
+  "dependencies": {
+    "jsqr": "^1.4.0"
   }
 }

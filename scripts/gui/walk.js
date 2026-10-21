@@ -15,6 +15,11 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const puppeteer = require('puppeteer-core');
+// jsQR (Apache-2.0): decode the pairing QR bitmap the modal renders, so
+// the walk proves the pixels themselves encode a working join URL — the
+// only layer that can, since the QR is drawn client-side.
+let jsQR = null;
+try { jsQR = require('jsqr'); } catch { /* the decode check reports it */ }
 const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const B = process.env.BASE_URL || 'http://localhost:8096';
 const OUT = process.env.OUT_DIR || path.join(os.tmpdir(), 'fx-gui');
@@ -798,6 +803,34 @@ fs.mkdirSync(OUT, { recursive: true });
       pairCode = ((await modalText()).match(/\b[0-9A-Z]{7}\b/) ?? [])[0] ?? null;
     } catch { /* falls through to the check below */ }
     check('invite renders a QR image and a 7-character code', pairCode !== null);
+
+    // Decode the bitmap itself: what a TV's camera will see is exactly
+    // this canvas, and it must literally say "<this origin>/join#<opaque
+    // claim token>". Pull the RGBA pixels out of the page (the img is a
+    // data: URL, so the canvas stays untainted) and decode in Node.
+    const qr = await page.evaluate(() => {
+      const m = [...document.querySelectorAll('.ant-modal')]
+        .find((x) => x.offsetParent !== null);
+      const img = m?.querySelector('img[alt="pairing QR code"]');
+      if (!img || !img.complete || !img.naturalWidth) return null;
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      c.getContext('2d').drawImage(img, 0, 0);
+      const d = c.getContext('2d').getImageData(0, 0, c.width, c.height);
+      let bin = '';
+      for (let i = 0; i < d.data.length; i++) bin += String.fromCharCode(d.data[i]);
+      return { w: d.width, h: d.height, b64: btoa(bin) };
+    });
+    let qrText = null;
+    if (qr && jsQR) {
+      const decoded = jsQR(new Uint8ClampedArray(Buffer.from(qr.b64, 'base64')), qr.w, qr.h);
+      qrText = decoded ? decoded.data : null;
+    }
+    const originRe = B.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    check('the QR bitmap decodes to a /join#<token> URL on this origin',
+          typeof qrText === 'string' &&
+          new RegExp('^' + originRe + '/join#[A-Za-z0-9_-]{40,}$').test(qrText));
     await closeModals();
     check('pairings list shows the open invite', await page
       .waitForFunction(() => [...document.querySelectorAll('tbody tr.ant-table-row')].some((tr) =>

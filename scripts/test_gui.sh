@@ -34,7 +34,7 @@ step "go build bin/server" env GO111MODULE=on go build -o bin/server ./cmd/serve
 if [ ! -d frontend/dist ]; then
   step "frontend build" sh -c 'npm --prefix frontend ci --silent && npm --prefix frontend run build'
 fi
-if [ ! -d scripts/gui/node_modules/puppeteer-core ]; then
+if [ ! -d scripts/gui/node_modules/puppeteer-core ] || [ ! -d scripts/gui/node_modules/jsqr ]; then
   step "npm install (scripts/gui)" npm --prefix scripts/gui install --silent
 fi
 [ -x bin/server ] && [ -d frontend/dist ] && [ -d scripts/gui/node_modules/puppeteer-core ] || {
